@@ -3,7 +3,7 @@
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ProfessionalSearch } from "@/components/ui/professional-search"
-import { Plug, Search } from "lucide-react"
+import { Plug, Search, AlertTriangle } from "lucide-react"
 import { useConnections, StatusFilter } from "./useConnections"
 import { ConnectionRow } from "./ConnectionRow"
 import { cn } from "@/lib/utils"
