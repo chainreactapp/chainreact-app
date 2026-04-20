@@ -492,7 +492,7 @@ export const predefinedTemplates: PredefinedTemplate[] = [
     description: "Automatically respond to support requests in Discord, create tickets, and escalate to team members",
     category: "Customer Service",
     tags: ["discord", "support", "automation", "tickets"],
-    integrations: ["discord"],
+    integrations: ["discord", "notion"],
     difficulty: "intermediate",
     estimatedTime: "10 mins",
     workflow_json: {
