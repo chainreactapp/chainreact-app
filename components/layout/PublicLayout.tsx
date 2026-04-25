@@ -424,16 +424,6 @@ export function PublicLayout({ children }: PublicLayoutProps) {
               <h4 className="font-semibold mb-4 text-orange-300">Company</h4>
               <ul className="space-y-2 text-slate-400">
                 <li>
-                  <Link href="/community" className="hover:text-orange-300 transition-colors duration-200">
-                    Community
-                  </Link>
-                </li>
-                <li>
-                  <Link href="/learn" className="hover:text-orange-300 transition-colors duration-200">
-                    Learn
-                  </Link>
-                </li>
-                <li>
                   <Link href="/enterprise" className="hover:text-orange-300 transition-colors duration-200">
                     Enterprise
                   </Link>

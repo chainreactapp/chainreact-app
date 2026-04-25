@@ -66,6 +66,7 @@ export function NavPanel({ section, isPanelOpen, onClose }: NavPanelProps) {
         </div>
         <button
           onClick={onClose}
+          aria-label={`Collapse ${panelLabel} panel`}
           className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
         >
           <PanelLeftClose className="h-5 w-5" />

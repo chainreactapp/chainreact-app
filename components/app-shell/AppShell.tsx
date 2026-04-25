@@ -25,6 +25,7 @@ export function AppShell({
   noPadding = false,
 }: AppShellProps) {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
 
   const handleOpenCommandPalette = useCallback(() => {
     setCommandPaletteOpen(true)
@@ -38,12 +39,18 @@ export function AppShell({
         pageShortcuts={pageShortcuts}
       >
         <div className="flex h-screen overflow-hidden bg-white dark:bg-gray-950">
-          {/* Sidebar: icon rail + nav panel */}
-          <UnifiedSidebar />
+          {/* Sidebar: icon rail + nav panel (off-canvas drawer on mobile) */}
+          <UnifiedSidebar
+            isMobileOpen={mobileSidebarOpen}
+            onMobileClose={() => setMobileSidebarOpen(false)}
+          />
 
           {/* Main content area */}
-          <div className="flex-1 flex flex-col overflow-hidden">
-            <UnifiedTopBar actions={headerActions} />
+          <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+            <UnifiedTopBar
+              actions={headerActions}
+              onMenuClick={() => setMobileSidebarOpen(true)}
+            />
 
             <main className="flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-950 relative">
               {noPadding ? (

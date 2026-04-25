@@ -205,6 +205,7 @@ function CustomNode({ id, data, selected }: NodeProps) {
   const updateNodeInternals = typeof updateNodeInternalsHook === 'function'
     ? updateNodeInternalsHook
     : null
+  const reactFlowInstance = useReactFlow()
   const nodeData = data as unknown as CustomNodeData & { debugListeningMode?: boolean; debugExecutionStatus?: string }
 
   // Phase 1: Node state helpers

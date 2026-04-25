@@ -128,7 +128,10 @@ export default function TrelloAuthCallback() {
         }, 2000)
 
       } catch (error: any) {
-        logger.error('Trello auth error:', error)
+        logger.error('Trello auth error:', {
+          message: error?.message ?? String(error),
+          name: error?.name,
+        })
         
         // Send error message to parent window if it exists
         if (window.opener) {

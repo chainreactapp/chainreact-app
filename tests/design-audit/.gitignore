@@ -1,0 +1,5 @@
+.auth/
+screenshots/
+reports/
+artifacts/
+*.log

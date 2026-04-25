@@ -1696,6 +1696,7 @@ export function WorkflowsContentInner() {
                       <Checkbox
                         checked={selectedIds.length === allVisibleWorkflowIds.length && allVisibleWorkflowIds.length > 0}
                         onCheckedChange={handleSelectAll}
+                        aria-label="Select all workflows"
                       />
                     </th>
                     <th className="px-3 py-3 text-left">
@@ -1773,6 +1774,7 @@ export function WorkflowsContentInner() {
                           <Checkbox
                             checked={selectedIds.includes(workflow.id)}
                             onCheckedChange={() => handleSelectOne(workflow.id)}
+                            aria-label={`Select workflow ${workflow.name}`}
                           />
                         </td>
                         <td className="px-3 py-4">
@@ -2104,6 +2106,7 @@ export function WorkflowsContentInner() {
                                   size="sm"
                                   className="h-8 w-8 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
                                   onClick={(e) => e.stopPropagation()}
+                                  aria-label={`Workflow options for ${workflow.name}`}
                                 >
                                   <MoreHorizontal className="h-4 w-4" />
                                 </Button>
@@ -2452,6 +2455,7 @@ export function WorkflowsContentInner() {
                                 size="sm"
                                 className="h-8 w-8 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
                                 onClick={(e) => e.stopPropagation()}
+                                aria-label="Folder actions"
                               >
                                 <MoreHorizontal className="h-4 w-4" />
                               </Button>
@@ -2650,6 +2654,7 @@ export function WorkflowsContentInner() {
                                   size="icon"
                                   className="h-8 w-8 text-slate-500 hover:text-slate-800"
                                   onClick={(e) => e.stopPropagation()}
+                                  aria-label="Folder actions"
                                 >
                                   <MoreHorizontal className="w-4 h-4" />
                                 </Button>

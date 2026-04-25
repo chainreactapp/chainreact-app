@@ -94,8 +94,20 @@ export function useWorkspaces() {
       })
 
     } catch (err: any) {
-      logger.error('[useWorkspaces] Error fetching workspaces:', err)
-      setError(err.message || 'Failed to fetch workspaces')
+      const isAbort =
+        err?.name === 'AbortError' ||
+        (err?.name === 'TypeError' && /failed to fetch|load failed|network/i.test(err?.message ?? ''))
+      if (isAbort) {
+        logger.debug('[useWorkspaces] Fetch aborted (likely navigation)', {
+          message: err?.message ?? String(err),
+        })
+      } else {
+        logger.error('[useWorkspaces] Error fetching workspaces:', {
+          message: err?.message ?? String(err),
+          name: err?.name,
+        })
+      }
+      setError(err?.message || 'Failed to fetch workspaces')
       // On error, at least show personal workspace
       setWorkspaces([
         {

@@ -105,8 +105,8 @@ export function AccessGuard({ pathname, children }: AccessGuardProps) {
         {children}
       </div>
 
-      {/* Modal overlay - covers only content area, not sidebar */}
-      <div className="absolute inset-0 flex items-center justify-center z-10">
+      {/* Modal overlay - covers only content area, not sidebar. Top-aligned with padding so heading is always visible; scrolls if card is taller than viewport. */}
+      <div className="absolute inset-0 flex items-start justify-center z-10 overflow-y-auto py-8">
         <div className="max-w-lg w-full mx-6 bg-white dark:bg-slate-900 rounded-xl border border-border shadow-xl p-8">
           <div className="space-y-5">
             <div className="text-center space-y-2">

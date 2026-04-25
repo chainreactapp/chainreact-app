@@ -11,7 +11,12 @@ import { useWorkflowCreation } from "@/hooks/useWorkflowCreation"
 import { IconRail } from "./IconRail"
 import { NavPanel } from "./NavPanel"
 
-export function UnifiedSidebar() {
+interface UnifiedSidebarProps {
+  isMobileOpen?: boolean
+  onMobileClose?: () => void
+}
+
+export function UnifiedSidebar({ isMobileOpen = false, onMobileClose }: UnifiedSidebarProps) {
   const pathname = usePathname()
   const { profile } = useAuthStore()
   const { isPanelOpen, activeSection, setActiveSection, setPanelOpen } = useSidebarState()
@@ -39,6 +44,21 @@ export function UnifiedSidebar() {
     }
   }, [pathname, sections, activeSection, setActiveSection])
 
+  // Close mobile drawer on navigation
+  useEffect(() => {
+    if (isMobileOpen) onMobileClose?.()
+  }, [pathname])
+
+  // Close mobile drawer on Escape
+  useEffect(() => {
+    if (!isMobileOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onMobileClose?.()
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [isMobileOpen, onMobileClose])
+
   const currentSection = sections.find((s) => s.id === activeSection) ?? null
 
   const handleSectionClick = (sectionId: string) => {
@@ -59,12 +79,30 @@ export function UnifiedSidebar() {
 
   // Prevent hydration mismatch
   if (!isMounted) {
-    return <div className="flex h-full w-[84px] bg-orange-500 shrink-0" />
+    return <div className="hidden md:flex h-full w-[84px] bg-orange-500 shrink-0" />
   }
 
   return (
     <>
-      <div className="flex h-full shrink-0">
+      {/* Mobile backdrop */}
+      {isMobileOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/50 md:hidden"
+          aria-hidden="true"
+          onClick={onMobileClose}
+        />
+      )}
+
+      <div
+        className={
+          // Desktop: in-flow flex child.
+          // Mobile: hidden by default; when opened, fixed overlay on top of content.
+          "flex h-full shrink-0 " +
+          (isMobileOpen
+            ? "fixed inset-y-0 left-0 z-50 md:relative md:z-auto"
+            : "hidden md:flex")
+        }
+      >
         <IconRail
           sections={sections}
           activeSection={activeSection}

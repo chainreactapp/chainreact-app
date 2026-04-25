@@ -60,12 +60,33 @@ export async function checkUsageLimit(
       .eq("status", "active")
       .single()
 
-    if (!subscription?.plans) {
-      // No active subscription, use free tier limits
+    let plan: any = subscription?.plans ?? null
+
+    if (!plan) {
+      // No active subscription row — fall back to the plan named on user_profiles.plan
+      // (which is the canonical source for free-tier and admin/test-set plans).
+      const { data: profile } = await supabase
+        .from("user_profiles")
+        .select("plan")
+        .eq("id", userId)
+        .single()
+
+      const planName = (profile?.plan as string | undefined)?.toLowerCase() || "free"
+      const { data: planRow } = await supabase
+        .from("plans")
+        .select("*")
+        .eq("name", planName)
+        .eq("is_active", true)
+        .single()
+
+      plan = planRow ?? null
+    }
+
+    if (!plan) {
+      // No plan resolvable — definitely not allowed
       return { allowed: false, limit: 0, current: 0 }
     }
 
-    const plan = subscription.plans
     let limit = getPlanLimit(plan, resourceType)
 
     // 7-day trial: free plan users get Pro-level assistant access for first 7 days

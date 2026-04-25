@@ -168,7 +168,6 @@ export const config = {
     '/organization/:path*',
     '/ai-assistant/:path*',
     '/admin/:path*',
-    '/learn/:path*',
     '/settings/:path*',
     '/subscription',
   ],
