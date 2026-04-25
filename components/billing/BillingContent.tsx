@@ -198,6 +198,7 @@ export default function BillingContent({ isModal = false }: BillingContentProps)
         <select
           value={sourceFilter}
           onChange={(e) => setSourceFilter(e.target.value)}
+          aria-label="Filter payments by source"
           className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-orange-500"
         >
           {SOURCE_OPTIONS.map((opt) => (

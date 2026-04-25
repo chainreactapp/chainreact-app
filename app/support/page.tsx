@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   MessageSquare, Mail, Book, Zap, ArrowRight, LogIn,
-  ChevronDown, ChevronRight, CheckCircle, Users, HelpCircle
+  ChevronDown, ChevronRight, CheckCircle, HelpCircle
 } from 'lucide-react'
 import { useAuthStore } from '@/stores/authStore'
 import { PublicPageHeader } from '@/components/layout/PublicPageHeader'
@@ -87,12 +87,12 @@ export default function SupportPage() {
           </button>
 
           <button
-            onClick={() => router.push('/community')}
+            onClick={() => router.push('/contact')}
             className="bg-white border border-gray-200 rounded-lg p-5 text-left hover:border-orange-300 hover:shadow-sm transition-all group"
           >
-            <Users className="w-5 h-5 text-orange-500 mb-3" />
-            <h3 className="text-sm font-semibold text-gray-900 mb-1 group-hover:text-orange-600 transition-colors">Community</h3>
-            <p className="text-xs text-gray-500 leading-relaxed">Get help from other ChainReact users.</p>
+            <MessageSquare className="w-5 h-5 text-orange-500 mb-3" />
+            <h3 className="text-sm font-semibold text-gray-900 mb-1 group-hover:text-orange-600 transition-colors">Send Feedback</h3>
+            <p className="text-xs text-gray-500 leading-relaxed">Tell us what's working, what's not, or what to build next.</p>
           </button>
         </div>
 

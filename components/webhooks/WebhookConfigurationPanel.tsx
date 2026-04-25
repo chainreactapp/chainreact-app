@@ -140,6 +140,7 @@ export default function WebhookConfigurationPanel({ className }: WebhookConfigur
                                 size="sm"
                                 variant="outline"
                                 onClick={() => copyToClipboard(webhookUrl, webhookUrl)}
+                                aria-label={copiedUrl === webhookUrl ? "Copied to clipboard" : "Copy webhook URL to clipboard"}
                               >
                                 {copiedUrl === webhookUrl ? (
                                   <CheckCircle className="w-4 h-4 text-green-500" />
@@ -189,6 +190,7 @@ export default function WebhookConfigurationPanel({ className }: WebhookConfigur
                                 size="sm"
                                 variant="outline"
                                 onClick={() => copyToClipboard(webhookUrl, webhookUrl)}
+                                aria-label={copiedUrl === webhookUrl ? "Copied to clipboard" : "Copy webhook URL to clipboard"}
                               >
                                 {copiedUrl === webhookUrl ? (
                                   <CheckCircle className="w-4 h-4 text-green-500" />

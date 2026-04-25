@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { Search, HelpCircle, LogOut, Settings, ChevronDown, BarChart3 } from "lucide-react"
+import { Search, HelpCircle, LogOut, Settings, ChevronDown, BarChart3, Menu } from "lucide-react"
 import { useAuthStore } from "@/stores/authStore"
 import { useSignedAvatarUrl } from "@/hooks/useSignedAvatarUrl"
 import { getGravatarUrl } from "@/lib/utils/gravatar"
@@ -22,6 +22,7 @@ import { cn } from "@/lib/utils"
 
 interface UnifiedTopBarProps {
   actions?: React.ReactNode
+  onMenuClick?: () => void
 }
 
 function getInitials(profile: any, email?: string): string {
@@ -36,7 +37,7 @@ function getInitials(profile: any, email?: string): string {
   return (email?.charAt(0) || "U").toUpperCase()
 }
 
-export function UnifiedTopBar({ actions }: UnifiedTopBarProps) {
+export function UnifiedTopBar({ actions, onMenuClick }: UnifiedTopBarProps) {
   const router = useRouter()
   const { profile, user, signOut } = useAuthStore()
   const avatarUrl = profile?.avatar_url || null
@@ -70,14 +71,26 @@ export function UnifiedTopBar({ actions }: UnifiedTopBarProps) {
   return (
     <>
       <header className="flex items-center justify-between h-16 px-6 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 shrink-0">
-        {/* Left: spacer */}
-        <div className="flex items-center gap-3 min-w-0" />
+        {/* Left: mobile hamburger, otherwise spacer */}
+        <div className="flex items-center gap-3 min-w-0">
+          {onMenuClick && (
+            <button
+              type="button"
+              onClick={onMenuClick}
+              aria-label="Open navigation menu"
+              className="md:hidden flex items-center justify-center h-9 w-9 -ml-2 rounded-md text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            >
+              <Menu className="h-5 w-5" />
+            </button>
+          )}
+        </div>
 
         {/* Right: Search + Tasks + Help + Notifications + Profile */}
         <div className="flex items-center gap-1.5">
           {/* Search */}
           <button
             onClick={() => setCommandPaletteOpen(true)}
+            aria-label="Open command palette"
             className="hidden md:flex items-center gap-2 h-8 px-3 rounded-md border border-gray-200 dark:border-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:border-gray-300 dark:hover:border-gray-600 transition-colors text-xs"
           >
             <Search className="h-3.5 w-3.5" />
@@ -89,6 +102,7 @@ export function UnifiedTopBar({ actions }: UnifiedTopBarProps) {
 
           <button
             onClick={() => setCommandPaletteOpen(true)}
+            aria-label="Search"
             className="md:hidden flex items-center justify-center h-8 w-8 rounded-md text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
           >
             <Search className="h-4 w-4" />

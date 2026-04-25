@@ -94,42 +94,39 @@ function ResetPasswordForm() {
 
   if (success) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background p-4">
-        <Card className="w-full max-w-md">
-          <CardHeader className="text-center">
-            <div className="mx-auto w-12 h-12 bg-green-500/10 rounded-full flex items-center justify-center mb-4">
-              <CheckCircle className="w-6 h-6 text-green-500" />
-            </div>
-            <CardTitle>Password Reset Successful</CardTitle>
-            <CardDescription>
-              Your password has been updated successfully
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="text-center space-y-4">
-            <p className="text-sm text-muted-foreground">
-              You're being redirected to your settings...
-            </p>
-            <div className="flex justify-center">
-              <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      <Card className="w-full max-w-md bg-white rounded-2xl shadow-lg border border-slate-200">
+        <CardHeader className="text-center">
+          <div className="mx-auto w-12 h-12 bg-green-100 rounded-full flex items-center justify-center mb-4">
+            <CheckCircle className="w-6 h-6 text-green-500" />
+          </div>
+          <CardTitle className="text-slate-900">Password Reset Successful</CardTitle>
+          <CardDescription className="text-slate-600">
+            Your password has been updated successfully
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="text-center space-y-4">
+          <p className="text-sm text-slate-600">
+            You're being redirected to your settings...
+          </p>
+          <div className="flex justify-center">
+            <Loader2 className="w-5 h-5 animate-spin text-slate-400" />
+          </div>
+        </CardContent>
+      </Card>
     )
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <div className="mx-auto w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center mb-4">
-            <Lock className="w-6 h-6 text-primary" />
-          </div>
-          <CardTitle className="text-center">Reset Your Password</CardTitle>
-          <CardDescription className="text-center">
-            Enter your new password below
-          </CardDescription>
-        </CardHeader>
+    <Card className="w-full max-w-md bg-white rounded-2xl shadow-lg border border-slate-200">
+      <CardHeader>
+        <div className="mx-auto w-12 h-12 bg-orange-100 rounded-full flex items-center justify-center mb-4">
+          <Lock className="w-6 h-6 text-orange-500" />
+        </div>
+        <CardTitle className="text-center text-slate-900">Reset Your Password</CardTitle>
+        <CardDescription className="text-center text-slate-600">
+          Enter your new password below
+        </CardDescription>
+      </CardHeader>
         <CardContent>
           <form onSubmit={handleResetPassword} className="space-y-6">
             {error && (
@@ -218,7 +215,7 @@ function ResetPasswordForm() {
 
             <Button
               type="submit"
-              className="w-full"
+              className="w-full bg-gradient-to-r from-orange-500 to-rose-500 hover:from-orange-600 hover:to-rose-600 text-white"
               disabled={loading || Object.values(validationErrors).some(v => v === true)}
             >
               {loading ? (
@@ -234,7 +231,7 @@ function ResetPasswordForm() {
             <div className="text-center">
               <Link
                 href="/auth/login"
-                className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+                className="text-sm text-slate-600 hover:text-orange-500 transition-colors"
               >
                 Back to Login
               </Link>
@@ -242,20 +239,17 @@ function ResetPasswordForm() {
           </form>
         </CardContent>
       </Card>
-    </div>
   )
 }
 
 export default function ResetPasswordPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen flex items-center justify-center bg-background p-4">
-        <Card className="w-full max-w-md">
-          <CardContent className="flex items-center justify-center py-8">
-            <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
-          </CardContent>
-        </Card>
-      </div>
+      <Card className="w-full max-w-md bg-white rounded-2xl shadow-lg border border-slate-200">
+        <CardContent className="flex items-center justify-center py-8">
+          <Loader2 className="w-8 h-8 animate-spin text-slate-400" />
+        </CardContent>
+      </Card>
     }>
       <ResetPasswordForm />
     </Suspense>

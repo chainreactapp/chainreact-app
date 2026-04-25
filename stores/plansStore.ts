@@ -127,11 +127,20 @@ export const usePlansStore = create<PlansState>((set, get) => ({
     set({ loading: true, error: null })
     try {
       const response = await fetch('/api/plans')
-      if (!response.ok) throw new Error('Failed to fetch plans')
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const data = await response.json()
       set({ plans: data.plans || [], loading: false, lastFetched: Date.now() })
     } catch (error: any) {
-      logger.error('[PlansStore] Failed to fetch plans', { error: error.message })
+      // Browser fetch aborts (navigation, page reload) surface as "Failed to fetch" / TypeError.
+      // These are not real errors — downgrade to debug so we don't pollute error telemetry.
+      const isAbort =
+        error?.name === 'AbortError' ||
+        (error?.name === 'TypeError' && /failed to fetch|load failed|network/i.test(error?.message ?? ''))
+      if (isAbort) {
+        logger.debug('[PlansStore] Fetch aborted (likely navigation)', { error: error.message })
+      } else {
+        logger.error('[PlansStore] Failed to fetch plans', { error: error.message, name: error?.name })
+      }
       set({ error: error.message, loading: false })
     }
   },

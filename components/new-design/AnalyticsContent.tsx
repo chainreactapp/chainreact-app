@@ -775,7 +775,7 @@ export function AnalyticsContent() {
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
             <Select value={selectedPeriod.toString()} onValueChange={(v) => setSelectedPeriod(parseInt(v, 10))}>
-              <SelectTrigger className="w-[170px] h-9 text-sm sm:text-sm rounded-lg">
+              <SelectTrigger className="w-[170px] h-9 text-sm sm:text-sm rounded-lg" aria-label="Time period">
                 <Calendar className="w-3.5 h-3.5 mr-1.5 text-muted-foreground" />
                 <SelectValue />
               </SelectTrigger>
@@ -802,6 +802,7 @@ export function AnalyticsContent() {
               onClick={() => fetchDashboard()}
               disabled={dashboardLoading}
               className="h-9 w-9 p-0 rounded-lg"
+              aria-label="Refresh analytics"
             >
               <RefreshCw className={`w-4 h-4 ${dashboardLoading ? "animate-spin" : ""}`} />
             </Button>

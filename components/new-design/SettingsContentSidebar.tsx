@@ -535,6 +535,7 @@ export function SettingsContent({ initialSection }: SettingsContentProps) {
                   <button
                     onClick={handleAvatarButtonClick}
                     disabled={avatarUploading}
+                    aria-label={avatarUploading ? "Uploading profile photo" : "Change profile photo"}
                     className="absolute inset-0 rounded-full bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
                   >
                     {avatarUploading ? (
@@ -786,6 +787,7 @@ export function SettingsContent({ initialSection }: SettingsContentProps) {
                 <Switch
                   checked={notifications.email}
                   onCheckedChange={(checked) => setNotifications({ ...notifications, email: checked })}
+                  aria-label="Email notifications"
                 />
               </div>
 
@@ -801,6 +803,7 @@ export function SettingsContent({ initialSection }: SettingsContentProps) {
                 <Switch
                   checked={notifications.workflow_success}
                   onCheckedChange={(checked) => setNotifications({ ...notifications, workflow_success: checked })}
+                  aria-label="Workflow success notifications"
                 />
               </div>
 
@@ -816,6 +819,7 @@ export function SettingsContent({ initialSection }: SettingsContentProps) {
                 <Switch
                   checked={notifications.workflow_failure}
                   onCheckedChange={(checked) => setNotifications({ ...notifications, workflow_failure: checked })}
+                  aria-label="Workflow failure notifications"
                 />
               </div>
 
@@ -831,6 +835,7 @@ export function SettingsContent({ initialSection }: SettingsContentProps) {
                 <Switch
                   checked={notifications.weekly_digest}
                   onCheckedChange={(checked) => setNotifications({ ...notifications, weekly_digest: checked })}
+                  aria-label="Weekly digest notifications"
                 />
               </div>
 
@@ -845,6 +850,7 @@ export function SettingsContent({ initialSection }: SettingsContentProps) {
                 </div>
                 <Switch
                   checked={profile?.ai_agent_preference !== 'always_skip'}
+                  aria-label="Auto-open AI assistant when creating workflows"
                   onCheckedChange={async (checked) => {
                     try {
                       await updateProfile({

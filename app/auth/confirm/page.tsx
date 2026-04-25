@@ -71,7 +71,10 @@ export default function EmailConfirmPage() {
         const { data: { user }, error } = await supabase.auth.getUser()
         
         if (error || !user) {
-          logger.error('Error getting user:', error)
+          logger.error('Error getting user:', {
+            message: (error as any)?.message ?? 'no user returned',
+            name: (error as any)?.name,
+          })
           router.push('/auth/login')
           return
         }

@@ -77,6 +77,7 @@ export default function ErrorNotificationPopup({ workflowId }: ErrorNotification
                   variant="ghost"
                   size="sm"
                   onClick={toggleExpanded}
+                  aria-label={isExpanded ? "Collapse error details" : "Expand error details"}
                   className="h-6 w-6 p-0 text-red-600 hover:text-red-800"
                 >
                   {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
@@ -86,6 +87,7 @@ export default function ErrorNotificationPopup({ workflowId }: ErrorNotification
                 variant="ghost"
                 size="sm"
                 onClick={handleDismiss}
+                aria-label="Dismiss error notification"
                 className="h-6 w-6 p-0 text-red-600 hover:text-red-800"
               >
                 <X className="w-4 h-4" />

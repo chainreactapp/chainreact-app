@@ -10,7 +10,6 @@ import { useAuthStore } from "@/stores/authStore"
 const navLinks = [
   { label: "Docs", href: "/docs" },
   { label: "Templates", href: "/templates/showcase" },
-  { label: "Community", href: "/community" },
   { label: "Enterprise", href: "/enterprise" },
 ]
 

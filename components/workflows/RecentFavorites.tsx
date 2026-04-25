@@ -118,6 +118,7 @@ export function RecentFavorites({
                           e.stopPropagation()
                           toggleFavorite(workflow.id)
                         }}
+                        aria-label={`Remove ${workflow.name} from favorites`}
                       >
                         <Star className="w-3.5 h-3.5 text-yellow-500 fill-yellow-500" />
                       </Button>
@@ -190,6 +191,7 @@ export function RecentFavorites({
                             e.stopPropagation()
                             toggleFavorite(item.id)
                           }}
+                          aria-label={`${isFavorite(item.id) ? 'Remove' : 'Add'} ${item.name} ${isFavorite(item.id) ? 'from' : 'to'} favorites`}
                         >
                           <Star className={cn(
                             "w-3.5 h-3.5",
@@ -217,6 +219,7 @@ export function RecentFavorites({
                             e.stopPropagation()
                             removeFromRecent(item.id)
                           }}
+                          aria-label={`Remove ${item.name} from recent`}
                         >
                           <X className="w-3.5 h-3.5 text-muted-foreground" />
                         </Button>

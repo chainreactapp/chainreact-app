@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import React, { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
@@ -233,6 +233,7 @@ export default function WorkflowsNewlyPage() {
                   <Checkbox
                     checked={selectedIds.length === filteredWorkflows.length && filteredWorkflows.length > 0}
                     onCheckedChange={handleSelectAll}
+                    aria-label="Select all workflows"
                   />
                 </th>
                 <th className="w-12 px-3 py-3"></th>
@@ -256,9 +257,8 @@ export default function WorkflowsNewlyPage() {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {filteredWorkflows.map((workflow) => (
-                <>
+                <React.Fragment key={workflow.id}>
                   <tr
-                    key={workflow.id}
                     className={cn(
                       'group hover:bg-slate-50 transition-colors',
                       selectedIds.includes(workflow.id) && 'bg-indigo-50 hover:bg-indigo-50'
@@ -268,12 +268,14 @@ export default function WorkflowsNewlyPage() {
                       <Checkbox
                         checked={selectedIds.includes(workflow.id)}
                         onCheckedChange={() => handleSelectOne(workflow.id)}
+                        aria-label={`Select workflow ${workflow.name}`}
                       />
                     </td>
                     <td className="px-3 py-4">
                       <button
                         onClick={() => setExpandedId(expandedId === workflow.id ? null : workflow.id)}
                         className="text-slate-400 hover:text-slate-600"
+                        aria-label={expandedId === workflow.id ? `Collapse ${workflow.name}` : `Expand ${workflow.name}`}
                       >
                         {expandedId === workflow.id ? (
                           <ChevronDown className="w-4 h-4" />
@@ -304,6 +306,7 @@ export default function WorkflowsNewlyPage() {
                             variant="ghost"
                             size="icon"
                             className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity"
+                            aria-label={`Actions for ${workflow.name}`}
                           >
                             <MoreHorizontal className="w-4 h-4" />
                           </Button>
@@ -346,7 +349,7 @@ export default function WorkflowsNewlyPage() {
                       </td>
                     </tr>
                   )}
-                </>
+                </React.Fragment>
               ))}
             </tbody>
           </table>

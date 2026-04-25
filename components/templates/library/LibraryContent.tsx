@@ -66,7 +66,7 @@ export function LibraryContent() {
           />
         </div>
         <Select value={sortBy} onValueChange={setSortBy}>
-          <SelectTrigger className="w-[160px] h-10">
+          <SelectTrigger className="w-[160px] h-10" aria-label="Sort templates">
             <ArrowUpDown className="w-3.5 h-3.5 mr-1.5 text-muted-foreground shrink-0" />
             <SelectValue placeholder="Sort by" />
           </SelectTrigger>

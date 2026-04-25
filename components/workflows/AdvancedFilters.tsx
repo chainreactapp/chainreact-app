@@ -288,6 +288,7 @@ export function AdvancedFilters({
                           variant="ghost"
                           size="sm"
                           onClick={() => onDeleteSavedFilter?.(savedFilter.id)}
+                          aria-label={`Delete saved filter ${savedFilter.name}`}
                           className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100"
                         >
                           <Trash2 className="w-3 h-3 text-muted-foreground" />

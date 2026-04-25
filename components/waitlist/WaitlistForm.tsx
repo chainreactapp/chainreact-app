@@ -202,6 +202,7 @@ export function WaitlistForm() {
                   variant="outline"
                   role="combobox"
                   aria-expanded={open}
+                  aria-label="Select integrations you want to connect"
                   className="w-full justify-between h-11 text-base"
                   disabled={submitting}
                 >
