@@ -40,7 +40,7 @@ export default function ContactPage() {
           <div className="bg-white border border-gray-200 rounded-lg p-4">
             <Mail className="w-4 h-4 text-orange-500 mb-2" />
             <p className="text-xs font-medium text-gray-700">Email</p>
-            <p className="text-xs text-gray-500">support@chainreact.app</p>
+            <p className="text-xs text-gray-500">support<span>@</span>chainreact.app</p>
           </div>
           <div className="bg-white border border-gray-200 rounded-lg p-4">
             <MessageSquare className="w-4 h-4 text-orange-500 mb-2" />
