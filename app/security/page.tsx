@@ -84,7 +84,7 @@ export default function SecurityPage() {
               href="mailto:security@chainreact.app"
               className="text-orange-600 underline hover:text-orange-700 transition-colors"
             >
-              security@chainreact.app
+              security<span>@</span>chainreact.app
             </a>
             . We take all reports seriously and will respond promptly.
           </p>

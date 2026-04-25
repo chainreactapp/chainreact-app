@@ -232,7 +232,7 @@ export function TermsOfService() {
             <p className="text-gray-600 mb-4">If you have any questions about these Terms, please contact us:</p>
             <div className="bg-gray-50 border border-gray-200 p-4 rounded-lg">
               <p className="text-gray-600 text-sm">
-                <strong className="text-gray-900">Email:</strong> legal@chainreact.app
+                <strong className="text-gray-900">Email:</strong> legal<span>@</span>chainreact.app
               </p>
             </div>
           </section>

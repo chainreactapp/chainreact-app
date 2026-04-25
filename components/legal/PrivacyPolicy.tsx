@@ -136,7 +136,7 @@ export function PrivacyPolicy() {
               </li>
             </ul>
             <p className="text-gray-600 mt-4">
-              To exercise these rights, please contact us at privacy@chainreact.app.
+              To exercise these rights, please contact us at privacy<span>@</span>chainreact.app.
             </p>
           </section>
 
@@ -199,7 +199,7 @@ export function PrivacyPolicy() {
             </p>
             <div className="bg-gray-50 border border-gray-200 p-4 rounded-lg">
               <p className="text-gray-600 text-sm">
-                <strong className="text-gray-900">Email:</strong> privacy@chainreact.app
+                <strong className="text-gray-900">Email:</strong> privacy<span>@</span>chainreact.app
               </p>
             </div>
           </section>
