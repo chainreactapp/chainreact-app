@@ -115,19 +115,27 @@ export async function GET(request: NextRequest) {
         .single()
       
       const isNewUser = !existingProfile
-      
+
+      // Determine the auth provider — OAuth users (google, github, etc.) should skip
+      // the email-confirmed success page entirely and go straight to the app.
+      const authProvider = data.user.app_metadata?.provider
+      const isOAuthProvider = !!authProvider && authProvider !== 'email'
+
       // Check if this is a recent email confirmation (within last 15 minutes of creation)
-      const userCreatedRecently = data.user.created_at && 
+      const userCreatedRecently = data.user.created_at &&
         (new Date().getTime() - new Date(data.user.created_at).getTime() < 900000) // 15 minutes
-      
+
       // Check if the email was recently confirmed (within last minute)
       const emailJustConfirmed = data.user.email_confirmed_at &&
         (new Date().getTime() - new Date(data.user.email_confirmed_at).getTime() < 60000) // 1 minute
-      
+
       // Determine if this is an email confirmation flow
-      // Priority: explicit type param > recent confirmation > new user detection
-      const isEmailConfirmation = type === 'email-confirmation' ||
+      // OAuth providers (Google, GitHub, etc.) are never an email-confirmation flow —
+      // their `email_confirmed_at` is set automatically by the provider on first sign-in.
+      const isEmailConfirmation = !isOAuthProvider && (
+        type === 'email-confirmation' ||
         (data.user.email_confirmed_at && (isNewUser || userCreatedRecently || emailJustConfirmed))
+      )
 
       logger.info('Auth callback - Email confirmation check:', {
         isNewUser,

@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { useToast } from "@/hooks/use-toast"
 import { createClient } from "@/utils/supabaseClient"
-import { User, Bell, Shield, ShieldCheck, ShieldOff, Palette, Loader2, Sparkles, Camera, Key, Fingerprint, Monitor, LogOut } from "lucide-react"
+import { User, Bell, Shield, ShieldCheck, ShieldOff, Palette, Loader2, Sparkles, Camera, Key, Fingerprint, Monitor, LogOut, X } from "lucide-react"
 import { useTheme } from "next-themes"
 import { TwoFactorSetup } from "@/components/settings/TwoFactorSetup"
 import { SessionManagement } from "@/components/settings/SessionManagement"
@@ -57,13 +57,52 @@ export function SettingsContent({ initialSection }: SettingsContentProps) {
   const [newEmail, setNewEmail] = useState("")
   const [emailChanging, setEmailChanging] = useState(false)
   const [showEmailChange, setShowEmailChange] = useState(false)
+
+  // Avatar state
   const [avatarUploading, setAvatarUploading] = useState(false)
+  const [avatarDeleting, setAvatarDeleting] = useState(false)
   const [avatarError, setAvatarError] = useState<string | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [avatarImageError, setAvatarImageError] = useState(false)
+  const [gravatarFallbackUrl, setGravatarFallbackUrl] = useState<string | null>(null)
   const avatarInputRef = useRef<HTMLInputElement>(null)
 
-  const displayAvatarUrl = previewUrl || profile?.avatar_url
+  // Compute Gravatar URL from the user's email (SHA-256, ?d=404 so missing Gravatars 404)
+  const userEmail = (profile?.email || user?.email || "").trim().toLowerCase()
+  useEffect(() => {
+    if (!userEmail) {
+      setGravatarFallbackUrl(null)
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const encoded = new TextEncoder().encode(userEmail)
+        const digest = await crypto.subtle.digest("SHA-256", encoded)
+        const hash = Array.from(new Uint8Array(digest))
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("")
+        if (!cancelled) {
+          setGravatarFallbackUrl(`https://www.gravatar.com/avatar/${hash}?s=200&d=404`)
+        }
+      } catch {
+        if (!cancelled) setGravatarFallbackUrl(null)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [userEmail])
+
+  const displayAvatarUrl = previewUrl || profile?.avatar_url || gravatarFallbackUrl || undefined
   const { signedUrl: avatarSignedUrl } = useSignedAvatarUrl(displayAvatarUrl)
+  const hasUsableAvatar = !!avatarSignedUrl && !avatarImageError
+  // The X delete badge should only appear for an explicitly-set avatar — not for the Gravatar fallback
+  const hasExplicitAvatar = !!(previewUrl || profile?.avatar_url)
+
+  // Reset image-load error whenever the source URL changes
+  useEffect(() => {
+    setAvatarImageError(false)
+  }, [avatarSignedUrl])
+
   const [show2FASetup, setShow2FASetup] = useState(false)
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(false)
   const [twoFactorLoading, setTwoFactorLoading] = useState(true)
@@ -381,6 +420,30 @@ export function SettingsContent({ initialSection }: SettingsContentProps) {
     avatarInputRef.current?.click()
   }
 
+  const handleDeleteAvatar = async () => {
+    if (!profile?.avatar_url && !previewUrl) return
+
+    setAvatarError(null)
+    setAvatarDeleting(true)
+
+    try {
+      if (profile?.avatar_url?.includes("/user-avatars/")) {
+        const [, path] = profile.avatar_url.split("/user-avatars/")
+        if (path) {
+          await supabase.storage.from("user-avatars").remove([path]).catch(() => {})
+        }
+      }
+
+      setPreviewUrl(null)
+      await updateProfile({ avatar_url: null })
+      toast({ title: "Profile photo removed" })
+    } catch (error: any) {
+      setAvatarError(error?.message || "Unable to remove profile photo. Please try again.")
+    } finally {
+      setAvatarDeleting(false)
+    }
+  }
+
   const handleAvatarChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
@@ -510,6 +573,117 @@ export function SettingsContent({ initialSection }: SettingsContentProps) {
 
       <div className="space-y-6 pb-16">
 
+        {/* ═══════════ Profile Picture ═══════════ */}
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-2 mb-1">
+              <Camera className="w-4 h-4 text-muted-foreground" />
+              <h2 className="text-base font-semibold text-foreground">Profile Picture</h2>
+            </div>
+            <p className="text-sm text-muted-foreground mb-5">Your profile picture is visible to other members of your organization.</p>
+
+            <div className="flex items-center gap-4">
+              <div className="relative group">
+                <div className="w-16 h-16 rounded-full overflow-hidden bg-muted border-2 border-border">
+                  {hasUsableAvatar ? (
+                    <img
+                      src={avatarSignedUrl!}
+                      alt="Profile"
+                      className="w-full h-full object-cover"
+                      onError={() => setAvatarImageError(true)}
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-muted-foreground text-lg font-semibold">
+                      {(profile?.full_name || user?.email || "?")[0]?.toUpperCase()}
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={handleAvatarButtonClick}
+                  disabled={avatarUploading || avatarDeleting}
+                  aria-label={avatarUploading ? "Uploading profile photo" : "Change profile photo"}
+                  className="absolute inset-0 rounded-full bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                >
+                  {avatarUploading ? (
+                    <Loader2 className="w-5 h-5 text-white animate-spin" />
+                  ) : (
+                    <Camera className="w-5 h-5 text-white" />
+                  )}
+                </button>
+                {hasExplicitAvatar && hasUsableAvatar && !avatarUploading && (
+                  <button
+                    onClick={handleDeleteAvatar}
+                    disabled={avatarDeleting}
+                    aria-label="Remove profile photo"
+                    className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center shadow-sm border-2 border-background opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity disabled:opacity-50"
+                  >
+                    {avatarDeleting ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <X className="w-3 h-3" strokeWidth={3} />
+                    )}
+                  </button>
+                )}
+                <input
+                  ref={avatarInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif,image/webp"
+                  onChange={handleAvatarChange}
+                  className="hidden"
+                />
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Click your photo to upload. PNG, JPG, or GIF. Max 1.5MB.</p>
+                <a
+                  href="https://gravatar.com/profile"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 mt-2 text-sm font-medium text-emerald-600 hover:text-emerald-700 dark:text-emerald-500 dark:hover:text-emerald-400 group/gravatar"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="w-4 h-4"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M12 2L21 7V17L12 22L3 17V7L12 2Z"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d="M8 12L11 15L16 9"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                  <span>Edit Gravatar</span>
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="w-3 h-3 transition-transform group-hover/gravatar:translate-x-0.5 group-hover/gravatar:-translate-y-0.5"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M7 17L17 7M17 7H8M17 7V16"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </a>
+                {avatarError && <p className="text-xs text-red-500 mt-1">{avatarError}</p>}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
         {/* ═══════════ Profile ═══════════ */}
         <Card id="section-account">
           <CardContent className="pt-6">
@@ -519,55 +693,14 @@ export function SettingsContent({ initialSection }: SettingsContentProps) {
             </div>
             <p className="text-sm text-muted-foreground mb-5">Your personal information associated with this account.</p>
 
-            <div className="space-y-5">
-              {/* Avatar upload */}
-              <div className="flex items-center gap-4">
-                <div className="relative group">
-                  <div className="w-16 h-16 rounded-full overflow-hidden bg-muted border-2 border-border">
-                    {avatarSignedUrl ? (
-                      <img src={avatarSignedUrl} alt="Profile" className="w-full h-full object-cover" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-muted-foreground text-lg font-semibold">
-                        {(profile?.full_name || user?.email || "?")[0]?.toUpperCase()}
-                      </div>
-                    )}
-                  </div>
-                  <button
-                    onClick={handleAvatarButtonClick}
-                    disabled={avatarUploading}
-                    aria-label={avatarUploading ? "Uploading profile photo" : "Change profile photo"}
-                    className="absolute inset-0 rounded-full bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
-                  >
-                    {avatarUploading ? (
-                      <Loader2 className="w-5 h-5 text-white animate-spin" />
-                    ) : (
-                      <Camera className="w-5 h-5 text-white" />
-                    )}
-                  </button>
-                  <input
-                    ref={avatarInputRef}
-                    type="file"
-                    accept="image/png,image/jpeg,image/gif,image/webp"
-                    onChange={handleAvatarChange}
-                    className="hidden"
-                  />
-                </div>
-                <div>
-                  <p className="text-sm font-medium">Profile photo</p>
-                  <p className="text-xs text-muted-foreground">Click to upload. PNG, JPG, or GIF. Max 1.5MB.</p>
-                  {avatarError && <p className="text-xs text-red-500 mt-1">{avatarError}</p>}
-                </div>
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="full-name" className="text-sm font-medium">Full name</Label>
-                <Input
-                  id="full-name"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  placeholder="Your name"
-                />
-              </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="full-name" className="text-sm font-medium">Full name</Label>
+              <Input
+                id="full-name"
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                placeholder="Your name"
+              />
             </div>
 
             <div className="flex justify-end mt-5">
