@@ -34,7 +34,7 @@ export interface Profile {
   full_name?: string
   first_name?: string
   last_name?: string
-  avatar_url?: string
+  avatar_url?: string | null
   company?: string
   job_title?: string
   secondary_email?: string
