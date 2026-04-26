@@ -23,14 +23,14 @@ const PAGE_DISPLAY_NAMES: Record<string, string> = {
   '/ai-assistant': 'Assistant',
   '/analytics': 'Analytics',
   '/teams': 'Teams',
-  '/organization': 'Organization',
+  '/org': 'Organization',
 }
 
 const PAGE_DESCRIPTIONS: Record<string, string> = {
   '/ai-assistant': 'Build workflows faster with AI-powered assistance',
   '/analytics': 'Track workflow performance and usage metrics',
   '/teams': 'Collaborate with your team on shared workflows and integrations',
-  '/organization': 'Manage your organization, teams, members, and shared resources',
+  '/org': 'Manage your organization, teams, members, and shared resources',
 }
 
 /**
@@ -94,26 +94,36 @@ export function AccessGuard({ pathname, children }: AccessGuardProps) {
   const displayName = PAGE_DISPLAY_NAMES[pathname] ?? pathname.replace(/^\//, '').replace(/-/g, ' ')
   const description = PAGE_DESCRIPTIONS[pathname] ?? `Access ${displayName} features`
 
-  // Get features for the required plan, filtering out "Everything in X" lines
+  // Top 5 features keeps the card short enough to fit any reasonable viewport without
+  // a scrollbar. Plan feature arrays are ordered by importance, so head-of-list wins.
   const requiredPlanFeatures = (getPlanFeatures(requiredPlan) ?? [])
     .filter((f: string) => !f.startsWith('Everything in'))
+    .slice(0, 5)
+  const totalFeatureCount = (getPlanFeatures(requiredPlan) ?? [])
+    .filter((f: string) => !f.startsWith('Everything in'))
+    .length
+  const remainingFeatureCount = Math.max(0, totalFeatureCount - requiredPlanFeatures.length)
 
   return (
-    <div className="relative min-h-[60vh] w-full">
-      {/* Page content rendered but blurred - sidebar stays interactive */}
-      <div className="blur-sm pointer-events-none select-none opacity-40">
-        {children}
+    <div className="relative w-full min-h-[calc(100dvh-10rem)]">
+      {/* Blurred page content rendered as a clipped background so it never inflates the
+          section beyond the visible viewport (which would push the modal off-screen
+          and force a page scrollbar). */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="blur-sm select-none opacity-40">
+          {children}
+        </div>
       </div>
 
-      {/* Modal overlay - covers only content area, not sidebar. Top-aligned with padding so heading is always visible; scrolls if card is taller than viewport. */}
-      <div className="absolute inset-0 flex items-start justify-center z-10 overflow-y-auto py-8">
-        <div className="max-w-lg w-full mx-6 bg-white dark:bg-slate-900 rounded-xl border border-border shadow-xl p-8">
-          <div className="space-y-5">
-            <div className="text-center space-y-2">
-              <div className="mx-auto w-12 h-12 rounded-full bg-orange-50 dark:bg-orange-900/20 flex items-center justify-center">
-                <Lock className="w-6 h-6 text-orange-500" />
+      {/* Modal centered in the visible content area on every screen size. */}
+      <div className="relative min-h-[calc(100dvh-10rem)] flex items-center justify-center z-10 p-4">
+        <div className="max-w-md w-full bg-white dark:bg-slate-900 rounded-xl border border-border shadow-xl p-6">
+          <div className="space-y-4">
+            <div className="text-center space-y-1.5">
+              <div className="mx-auto w-10 h-10 rounded-full bg-orange-50 dark:bg-orange-900/20 flex items-center justify-center">
+                <Lock className="w-5 h-5 text-orange-500" />
               </div>
-              <h2 className="text-xl font-semibold text-foreground">
+              <h2 className="text-lg font-semibold text-foreground">
                 Unlock {displayName}
               </h2>
               <p className="text-sm text-muted-foreground">
@@ -122,25 +132,30 @@ export function AccessGuard({ pathname, children }: AccessGuardProps) {
             </div>
 
             {/* Plan card with benefits */}
-            <div className="bg-slate-50 dark:bg-slate-800/50 rounded-lg p-5 border border-border">
-              <div className="flex items-center justify-between mb-4">
+            <div className="bg-slate-50 dark:bg-slate-800/50 rounded-lg p-4 border border-border">
+              <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-orange-500" />
                   <span className="font-semibold text-foreground">{planInfo.name} Plan</span>
                 </div>
-                <span className="text-lg font-bold text-foreground">
+                <span className="text-base font-bold text-foreground">
                   ${planInfo.price}<span className="text-sm font-normal text-muted-foreground">/mo</span>
                 </span>
               </div>
 
               {/* Benefits list */}
-              <ul className="space-y-2.5">
+              <ul className="space-y-2">
                 {requiredPlanFeatures.map((feature) => (
-                  <li key={feature} className="flex items-start gap-2.5">
+                  <li key={feature} className="flex items-start gap-2">
                     <Check className="w-4 h-4 text-orange-500 mt-0.5 shrink-0" />
-                    <span className="text-sm text-foreground">{feature}</span>
+                    <span className="text-sm text-foreground leading-snug">{feature}</span>
                   </li>
                 ))}
+                {remainingFeatureCount > 0 && (
+                  <li className="text-xs text-muted-foreground pl-6">
+                    + {remainingFeatureCount} more
+                  </li>
+                )}
               </ul>
             </div>
 

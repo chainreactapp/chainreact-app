@@ -165,7 +165,7 @@ export const config = {
     '/integrations/:path*',
     '/analytics/:path*',
     '/teams/:path*',
-    '/organization/:path*',
+    '/org/:path*',
     '/ai-assistant/:path*',
     '/admin/:path*',
     '/settings/:path*',
