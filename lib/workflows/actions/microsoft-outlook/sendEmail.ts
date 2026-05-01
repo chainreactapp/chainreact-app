@@ -1,5 +1,6 @@
 import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
 import { resolveValue } from '../core/resolveValue'
+import { parseRecipients } from '../core/parseRecipients'
 import { ActionResult } from '../core/executeWait'
 import { FileStorageService } from "@/lib/storage/fileStorage"
 import { deleteWorkflowTempFiles } from '@/lib/utils/workflowFileCleanup'
@@ -76,21 +77,17 @@ export async function sendOutlookEmail(
       }
     }
 
-    // Process recipients - handle both string and array formats
-    const processRecipients = (recipients: string | string[] | undefined) => {
-      if (!recipients) return []
-
-      const recipientList = Array.isArray(recipients) ? recipients : [recipients]
-      return recipientList.filter(Boolean).map(email => ({
-        emailAddress: {
-          address: email.trim()
-        }
+    // Process recipients via the shared Q7 normalizer. CSV strings split into
+    // individual addresses (Outlook UX change per Q7 — pre-PR-C2 the entire
+    // CSV was sent as ONE address). See learning/docs/handler-contracts.md.
+    const toGraphAddress = (recipients: string | string[] | undefined) =>
+      parseRecipients(recipients).map(address => ({
+        emailAddress: { address },
       }))
-    }
 
-    emailData.message.toRecipients = processRecipients(to)
-    emailData.message.ccRecipients = processRecipients(cc)
-    emailData.message.bccRecipients = processRecipients(bcc)
+    emailData.message.toRecipients = toGraphAddress(to)
+    emailData.message.ccRecipients = toGraphAddress(cc)
+    emailData.message.bccRecipients = toGraphAddress(bcc)
 
     // Validate that we have at least one recipient
     if (emailData.message.toRecipients.length === 0 &&

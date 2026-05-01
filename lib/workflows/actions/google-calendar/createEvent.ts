@@ -1,5 +1,6 @@
 import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
 import { resolveValue } from '../core/resolveValue'
+import { parseRecipients } from '../core/parseRecipients'
 import { ActionResult } from '../core/executeWait'
 import { google } from 'googleapis'
 
@@ -158,19 +159,16 @@ export async function createGoogleCalendarEvent(
       }
     }
 
-    // Process attendees if provided
-    if (attendees && attendees.length > 0) {
-      const attendeeList = typeof attendees === 'string'
-        ? attendees.split(',').map((email: string) => email.trim())
-        : Array.isArray(attendees) ? attendees : [attendees]
-
-      const validAttendees = attendeeList
-        .filter(email => email && email.includes('@'))
-        .map(email => ({ email: email.trim() }))
-
-      if (validAttendees.length > 0) {
-        eventData.attendees = validAttendees
-      }
+    // Process attendees via the shared Q7 normalizer. Calendar already split
+    // CSVs inline; routing through `parseRecipients` keeps behavior identical
+    // and consolidates the splitting logic with Gmail/Outlook. See
+    // learning/docs/handler-contracts.md Q7.
+    const parsedAttendees = parseRecipients(attendees)
+    const validAttendees = parsedAttendees
+      .filter(email => email.includes('@'))
+      .map(email => ({ email }))
+    if (validAttendees.length > 0) {
+      eventData.attendees = validAttendees
     }
 
     // Add reminders from notifications array
@@ -255,8 +253,8 @@ export async function createGoogleCalendarEvent(
       eventData.recurrence = [recurrence]
     }
 
-    // Guest permissions
-    if (attendees && attendees.length > 0) {
+    // Guest permissions — only set when there are valid attendees on the event.
+    if (validAttendees.length > 0) {
       eventData.guestsCanInviteOthers = guestsCanInviteOthers
       eventData.guestsCanSeeOtherGuests = guestsCanSeeOtherGuests
       eventData.guestsCanModify = guestsCanModify

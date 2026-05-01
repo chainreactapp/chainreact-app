@@ -249,6 +249,9 @@ useEffect(() => {
 ## Handler Contracts (source of truth)
 Every workflow action handler must follow the documented behavioral contracts in [`/learning/docs/handler-contracts.md`](./learning/docs/handler-contracts.md) — failure modes, variable resolution, 401 handling, idempotency, multi-recipient parsing, safety floors, and more. Tests cite contracts by Q-number. Contract first, then tests, then source — never reverse.
 
+## Multi-Recipient Fields
+Schema-declared multi-recipient / multi-value fields (Gmail / Outlook `to`/`cc`/`bcc`, Calendar `attendees`, future provider mentions) MUST route through `parseRecipients` from [`lib/workflows/actions/core/parseRecipients.ts`](./lib/workflows/actions/core/parseRecipients.ts) — splits CSV on `,`, trims, drops empties, flattens mixed array-of-CSV inputs. Single-value schema-typed fields are passed through unchanged. RFC 5322 display-name parsing is out of scope per Q7.
+
 ## Variable Resolution — Strict at Runtime, Soft at Design-Time
 - Runtime workflow execution uses **strict pre-resolution** at the engine layer (`nodeExecutionService.executeNodeByType`) via `DataFlowManager.resolveObjectStrict`. Missing `{{...}}` references become the standardized **config-failure shape** (`{success:false, category:'config', error:{code:'MISSING_VARIABLE', path}, message}`) **before** action / integration handler dispatch — handlers never see unresolved templates at runtime.
 - Design-time / preview / planner / AI-agent suggestion flows continue to use the **soft** `resolveValue` / `resolveValueWithTracking` (returns `undefined` or preserves the literal `{{...}}`, optionally populating an `unresolvedCollector`).

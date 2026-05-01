@@ -198,3 +198,108 @@ describe("sendGmailEmail — input/variable resolution", () => {
     expect(decoded).toContain("Hello Resolved Name")
   })
 })
+
+// Q7 — recipient parsing.
+// `to` / `cc` / `bcc` are schema-declared multi-recipient fields, so the
+// handler routes them through `parseRecipients`: CSV strings split, arrays
+// pass through, mixed inputs flatten. See learning/docs/handler-contracts.md.
+describe("sendGmailEmail — Q7 — recipient parsing", () => {
+  test("CSV string in `to` is split and joined back with comma+space in the To header", async () => {
+    mockGmailApi.users.messages.send.mockResolvedValue({ data: { id: "m" } })
+
+    await sendGmailEmail({
+      config: {
+        to: "a@x.com, b@x.com,c@x.com",
+        subject: "S",
+        body: "B",
+      },
+      userId: "user-1",
+      input: {},
+    })
+
+    const decoded = decodeRawMessage(
+      mockGmailApi.users.messages.send.mock.calls[0][0].requestBody.raw,
+    )
+    expect(decoded).toContain("To: a@x.com, b@x.com, c@x.com")
+  })
+
+  test("CSV string in `cc` produces a Cc header with each address joined", async () => {
+    mockGmailApi.users.messages.send.mockResolvedValue({ data: { id: "m" } })
+
+    await sendGmailEmail({
+      config: {
+        to: "to@x.com",
+        cc: "x@x.com,  y@x.com",
+        subject: "S",
+        body: "B",
+      },
+      userId: "user-1",
+      input: {},
+    })
+
+    const decoded = decodeRawMessage(
+      mockGmailApi.users.messages.send.mock.calls[0][0].requestBody.raw,
+    )
+    expect(decoded).toContain("Cc: x@x.com, y@x.com")
+  })
+
+  test("array form is preserved (one entry per address)", async () => {
+    mockGmailApi.users.messages.send.mockResolvedValue({ data: { id: "m" } })
+
+    await sendGmailEmail({
+      config: {
+        to: ["a@x.com", "b@x.com"],
+        subject: "S",
+        body: "B",
+      },
+      userId: "user-1",
+      input: {},
+    })
+
+    const decoded = decodeRawMessage(
+      mockGmailApi.users.messages.send.mock.calls[0][0].requestBody.raw,
+    )
+    expect(decoded).toContain("To: a@x.com, b@x.com")
+  })
+
+  test("mixed input — array containing CSV strings — flattens to a single recipient list", async () => {
+    mockGmailApi.users.messages.send.mockResolvedValue({ data: { id: "m" } })
+
+    await sendGmailEmail({
+      config: {
+        to: ["a@x.com, b@x.com", "c@x.com"],
+        subject: "S",
+        body: "B",
+      },
+      userId: "user-1",
+      input: {},
+    })
+
+    const decoded = decodeRawMessage(
+      mockGmailApi.users.messages.send.mock.calls[0][0].requestBody.raw,
+    )
+    expect(decoded).toContain("To: a@x.com, b@x.com, c@x.com")
+  })
+
+  test("empty/undefined recipient fields drop the corresponding header (no empty Cc:)", async () => {
+    mockGmailApi.users.messages.send.mockResolvedValue({ data: { id: "m" } })
+
+    await sendGmailEmail({
+      config: {
+        to: "a@x.com",
+        cc: "",
+        bcc: undefined,
+        subject: "S",
+        body: "B",
+      },
+      userId: "user-1",
+      input: {},
+    })
+
+    const decoded = decodeRawMessage(
+      mockGmailApi.users.messages.send.mock.calls[0][0].requestBody.raw,
+    )
+    expect(decoded).not.toContain("Cc:")
+    expect(decoded).not.toContain("Bcc:")
+  })
+})

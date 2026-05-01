@@ -70,13 +70,40 @@ describe("sendOutlookEmail — happy path: recipient shape", () => {
   })
 
   test("supports an array of recipients (one entry per address)", async () => {
-    // The handler does NOT split a comma-separated string into multiple
-    // recipients. The contract is: pass an array for multi-recipient.
+    // Q7 — the handler splits CSV per the multi-recipient contract; an
+    // explicit array also produces one entry per address. Both shapes are
+    // accepted because the schema declares `to`/`cc`/`bcc` as multi-value
+    // and routes through `parseRecipients`.
     fetchMock.mockResponse("", { status: 202 })
 
     await sendOutlookEmail(
       {
         to: ["a@x.com", "b@x.com", "c@x.com"],
+        subject: "S",
+        body: "B",
+      },
+      "user-1",
+      {},
+    )
+
+    const sendCall = getFetchCalls()[0]
+    expect(sendCall.body.message.toRecipients).toEqual([
+      { emailAddress: { address: "a@x.com" } },
+      { emailAddress: { address: "b@x.com" } },
+      { emailAddress: { address: "c@x.com" } },
+    ])
+  })
+
+  test("Q7 — splits a CSV recipient string into multiple toRecipients (deliberate UX change vs. pre-PR-C2)", async () => {
+    // Pre-PR-C2 the handler treated a CSV string as a single address (which
+    // Microsoft Graph would have rejected). Post-PR-C2 the handler routes
+    // recipient fields through `parseRecipients`, splitting CSVs into one
+    // entry per address. See learning/docs/handler-contracts.md Q7.
+    fetchMock.mockResponse("", { status: 202 })
+
+    await sendOutlookEmail(
+      {
+        to: "a@x.com, b@x.com,c@x.com",
         subject: "S",
         body: "B",
       },
@@ -121,6 +148,93 @@ describe("sendOutlookEmail — happy path: recipient shape", () => {
     expect(sendCall.body.message.bccRecipients).toEqual([
       { emailAddress: { address: "bcc@x.com" } },
     ])
+  })
+})
+
+// Q7 — recipient parsing.
+// Pre-PR-C2 the handler treated CSV as a single address. Post-PR-C2 the
+// `to`/`cc`/`bcc` fields route through `parseRecipients` and split CSVs.
+// See learning/docs/handler-contracts.md.
+describe("sendOutlookEmail — Q7 — recipient parsing", () => {
+  test("CSV string in `cc` is split into multiple ccRecipients", async () => {
+    fetchMock.mockResponse("", { status: 202 })
+
+    await sendOutlookEmail(
+      {
+        to: "to@x.com",
+        cc: "x@x.com, y@x.com,z@x.com",
+        subject: "S",
+        body: "B",
+      },
+      "user-1",
+      {},
+    )
+
+    const sendCall = getFetchCalls()[0]
+    expect(sendCall.body.message.ccRecipients).toEqual([
+      { emailAddress: { address: "x@x.com" } },
+      { emailAddress: { address: "y@x.com" } },
+      { emailAddress: { address: "z@x.com" } },
+    ])
+  })
+
+  test("CSV string in `bcc` is split into multiple bccRecipients", async () => {
+    fetchMock.mockResponse("", { status: 202 })
+
+    await sendOutlookEmail(
+      {
+        to: "to@x.com",
+        bcc: "p@x.com,q@x.com",
+        subject: "S",
+        body: "B",
+      },
+      "user-1",
+      {},
+    )
+
+    const sendCall = getFetchCalls()[0]
+    expect(sendCall.body.message.bccRecipients).toEqual([
+      { emailAddress: { address: "p@x.com" } },
+      { emailAddress: { address: "q@x.com" } },
+    ])
+  })
+
+  test("array form passes through; addresses are individually trimmed", async () => {
+    fetchMock.mockResponse("", { status: 202 })
+
+    await sendOutlookEmail(
+      {
+        to: ["  alice@x.com  ", "bob@x.com"],
+        subject: "S",
+        body: "B",
+      },
+      "user-1",
+      {},
+    )
+
+    const sendCall = getFetchCalls()[0]
+    expect(sendCall.body.message.toRecipients).toEqual([
+      { emailAddress: { address: "alice@x.com" } },
+      { emailAddress: { address: "bob@x.com" } },
+    ])
+  })
+
+  test("empty CSV (just commas / whitespace) produces no recipients on that field", async () => {
+    fetchMock.mockResponse("", { status: 202 })
+
+    await sendOutlookEmail(
+      {
+        to: "to@x.com",
+        cc: " , , ",
+        subject: "S",
+        body: "B",
+      },
+      "user-1",
+      {},
+    )
+
+    const sendCall = getFetchCalls()[0]
+    expect(sendCall.body.message.ccRecipients).toEqual([])
   })
 })
 

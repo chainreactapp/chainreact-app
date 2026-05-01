@@ -1,4 +1,5 @@
 import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
+import { parseRecipients } from '../core/parseRecipients'
 import { resolveValue } from '../core/resolveValue'
 import { ActionResult } from '../core/executeWait'
 import { FileStorageService } from "@/lib/storage/fileStorage"
@@ -32,9 +33,12 @@ export async function sendGmailEmail(
 
     // Resolve each field individually (like createDraft does) to ensure all fields are properly resolved
     const from = resolveValue(config.from, input)
-    const to = resolveValue(config.to, input)
-    const cc = resolveValue(config.cc, input)
-    const bcc = resolveValue(config.bcc, input)
+    // Q7 — schema-declared multi-recipient fields are normalized through
+    // `parseRecipients` so CSV strings, arrays, and mixed shapes all produce
+    // a clean array of trimmed addresses. See learning/docs/handler-contracts.md.
+    const to = parseRecipients(resolveValue(config.to, input))
+    const cc = parseRecipients(resolveValue(config.cc, input))
+    const bcc = parseRecipients(resolveValue(config.bcc, input))
     const rawSubject = resolveValue(config.subject, input)
     const rawBody = resolveValue(config.body, input)
     const signature = resolveValue(config.signature, input)
@@ -52,7 +56,7 @@ export async function sendGmailEmail(
     const trackClicks = resolveValue(config.trackClicks, input) || false
     const isHtml = resolveValue(config.isHtml, input) || false
 
-    logger.debug('📧 [sendGmailEmail] Resolved recipients', { hasTo: !!to, hasCc: !!cc, hasBcc: !!bcc })
+    logger.debug('📧 [sendGmailEmail] Resolved recipients', { toCount: to.length, ccCount: cc.length, bccCount: bcc.length })
     logger.debug('📧 [sendGmailEmail] Body field', { hasBody: !!rawBody, length: rawBody?.length })
 
     // Apply meta-variable resolution to subject and body
@@ -85,24 +89,25 @@ export async function sendGmailEmail(
     oauth2Client.setCredentials({ access_token: accessToken })
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client })
 
-    // Build email headers
-    logger.debug('📧 [sendGmailEmail] Building headers', { hasCc: !!cc, ccIsArray: Array.isArray(cc) })
+    // Build email headers. After Q7 normalization the recipient fields are
+    // always arrays, so header assembly is a single .join().
+    logger.debug('📧 [sendGmailEmail] Building headers', { ccCount: cc.length })
 
     const headers: Record<string, string> = {
-      'To': Array.isArray(to) ? to.join(', ') : to,
+      'To': to.join(', '),
       'Subject': subject,
       'From': from || 'me', // Use specified sender or default to authenticated user
     }
 
-    if (cc && (Array.isArray(cc) ? cc.length > 0 : cc.trim())) {
-      headers['Cc'] = Array.isArray(cc) ? cc.join(', ') : cc
+    if (cc.length > 0) {
+      headers['Cc'] = cc.join(', ')
       logger.debug('📧 [sendGmailEmail] CC header set')
     } else {
       logger.debug('📧 [sendGmailEmail] CC field empty, skipping header')
     }
 
-    if (bcc && (Array.isArray(bcc) ? bcc.length > 0 : bcc.trim())) {
-      headers['Bcc'] = Array.isArray(bcc) ? bcc.join(', ') : bcc
+    if (bcc.length > 0) {
+      headers['Bcc'] = bcc.join(', ')
     }
 
     if (replyTo) {

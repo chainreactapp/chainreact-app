@@ -159,6 +159,77 @@ describe("createGoogleCalendarEvent — attendees", () => {
   })
 })
 
+// Q7 — recipient parsing.
+// `attendees` is a schema-declared multi-value field; the handler routes it
+// through `parseRecipients` (consolidated with Gmail / Outlook in PR-C2).
+// See learning/docs/handler-contracts.md.
+describe("createGoogleCalendarEvent — Q7 — recipient parsing", () => {
+  test("CSV string of attendees is split and trimmed", async () => {
+    mockCalendarApi.events.insert.mockResolvedValue({ data: { id: "e" } })
+
+    await createGoogleCalendarEvent(
+      {
+        title: "T",
+        startDate: "2026-05-01",
+        startTime: "09:00",
+        attendees: " alice@x.com,bob@x.com  , carol@x.com",
+      },
+      "user-1",
+      {},
+    )
+
+    const call = mockCalendarApi.events.insert.mock.calls[0][0]
+    expect(call.requestBody.attendees).toEqual([
+      { email: "alice@x.com" },
+      { email: "bob@x.com" },
+      { email: "carol@x.com" },
+    ])
+  })
+
+  test("array form passes through unchanged", async () => {
+    mockCalendarApi.events.insert.mockResolvedValue({ data: { id: "e" } })
+
+    await createGoogleCalendarEvent(
+      {
+        title: "T",
+        startDate: "2026-05-01",
+        startTime: "09:00",
+        attendees: ["alice@x.com", "bob@x.com"],
+      },
+      "user-1",
+      {},
+    )
+
+    const call = mockCalendarApi.events.insert.mock.calls[0][0]
+    expect(call.requestBody.attendees).toEqual([
+      { email: "alice@x.com" },
+      { email: "bob@x.com" },
+    ])
+  })
+
+  test("array containing a CSV string flattens to a single attendee list", async () => {
+    mockCalendarApi.events.insert.mockResolvedValue({ data: { id: "e" } })
+
+    await createGoogleCalendarEvent(
+      {
+        title: "T",
+        startDate: "2026-05-01",
+        startTime: "09:00",
+        attendees: ["alice@x.com, bob@x.com", "carol@x.com"],
+      },
+      "user-1",
+      {},
+    )
+
+    const call = mockCalendarApi.events.insert.mock.calls[0][0]
+    expect(call.requestBody.attendees).toEqual([
+      { email: "alice@x.com" },
+      { email: "bob@x.com" },
+      { email: "carol@x.com" },
+    ])
+  })
+})
+
 // Bug class: Google Meet link silently dropped — the user toggled the
 // "Add Meet link" option, but the event arrived without one. Customer-
 // visible because they expected a join URL.

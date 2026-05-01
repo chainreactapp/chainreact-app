@@ -1,6 +1,7 @@
 export { getDecryptedAccessToken } from './getDecryptedAccessToken'
 export { resolveValue } from './resolveValue'
+export { parseRecipients } from './parseRecipients'
 export { evaluateCondition } from './evaluateCondition'
 export { executeWaitForTime, convertToMilliseconds, calculateBusinessHoursWait } from './executeWait'
 export type { ActionResult } from './executeWait'
-export { executeIfThenCondition } from './executeIfThen' 
+export { executeIfThenCondition } from './executeIfThen'
