@@ -399,16 +399,39 @@ export async function createGoogleCalendarEvent(
       statusText: error.response?.statusText
     })
 
-    // Check if it's a token error
+    // PR-C5 (Q1) — expected provider failures return ActionResult instead of
+    // throwing. The execution layer's outer catch is for *unexpected*
+    // throws only (programmer errors, invariants); a rejected create-event
+    // request is a documented failure path and should be a typed failure.
+
+    // Auth failure path. `refreshAndRetry` already converts SDK 401s into a
+    // structured auth failure ActionResult earlier in the function, so this
+    // branch fires only for 401-shaped errors that bubble up from outside
+    // the principal call (e.g., the `getDecryptedAccessToken` call).
     if (error.message?.includes('401') || error.message?.includes('Unauthorized') || error.code === 401) {
-      throw new Error('Google Calendar authentication failed. Please reconnect your account.')
+      return {
+        success: false,
+        output: {},
+        category: 'auth',
+        message: 'Google Calendar authentication failed. Please reconnect your account.',
+      }
     }
 
-    // Provide more helpful error message
+    // Provider-side error message — surface the underlying API error verbatim.
     if (error.response?.data?.error?.message) {
-      throw new Error(`Google Calendar API Error: ${error.response.data.error.message}`)
+      return {
+        success: false,
+        output: {},
+        category: 'provider',
+        message: `Google Calendar API Error: ${error.response.data.error.message}`,
+      }
     }
 
-    throw error
+    return {
+      success: false,
+      output: {},
+      category: 'provider',
+      message: error.message || 'Google Calendar create event failed',
+    }
   }
 }

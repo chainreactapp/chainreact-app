@@ -358,9 +358,17 @@ export async function sendOutlookEmail(
     })
 
     if (!sendResult.success) {
-      // Q3 standardized auth failure — surface its message via the existing
-      // outer-catch path so Outlook's contract stays "throws on failure".
-      throw new Error(sendResult.message)
+      // PR-C5 (Q1) — Q3 standardized auth failure becomes a typed
+      // ActionResult; the outer catch is now reserved for unexpected throws.
+      if (cleanupPaths.size > 0) {
+        await deleteWorkflowTempFiles(Array.from(cleanupPaths))
+      }
+      return {
+        success: false,
+        output: {},
+        category: 'auth',
+        message: sendResult.message,
+      }
     }
 
     const response = sendResult.data
@@ -378,7 +386,15 @@ export async function sendOutlookEmail(
         // If error text is not JSON, use the default message
       }
 
-      throw new Error(errorMessage)
+      if (cleanupPaths.size > 0) {
+        await deleteWorkflowTempFiles(Array.from(cleanupPaths))
+      }
+      return {
+        success: false,
+        output: {},
+        category: 'provider',
+        message: errorMessage,
+      }
     }
 
     // Clean up temporary files
@@ -437,11 +453,23 @@ export async function sendOutlookEmail(
       await deleteWorkflowTempFiles(Array.from(cleanupPaths))
     }
 
-    // Check if it's a token error
+    // PR-C5 (Q1) — return ActionResult instead of throwing. The
+    // execution-layer catch is reserved for unexpected programmer / system
+    // throws; expected provider / config / auth failures are typed.
     if (error.message?.includes('401') || error.message?.includes('Unauthorized')) {
-      throw new Error('Microsoft Outlook authentication failed. Please reconnect your account.')
+      return {
+        success: false,
+        output: {},
+        category: 'auth',
+        message: 'Microsoft Outlook authentication failed. Please reconnect your account.',
+      }
     }
 
-    throw error
+    return {
+      success: false,
+      output: {},
+      category: 'provider',
+      message: error.message || 'Microsoft Outlook send email failed',
+    }
   }
 }

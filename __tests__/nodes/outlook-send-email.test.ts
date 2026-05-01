@@ -124,10 +124,16 @@ describe("sendOutlookEmail — happy path: recipient shape", () => {
   })
 
   test("returns failure when no recipients are provided in to/cc/bcc", async () => {
-    // The handler throws on no recipients. Pin the throw contract.
-    await expect(
-      sendOutlookEmail({ subject: "S", body: "B" }, "user-1", {}),
-    ).rejects.toThrow(/at least one recipient/i)
+    // PR-C5 (Q1) — the handler returns a typed ActionResult on validation
+    // failure rather than throwing. The execution-layer catch is reserved
+    // for unexpected throws.
+    const result = await sendOutlookEmail(
+      { subject: "S", body: "B" },
+      "user-1",
+      {},
+    )
+    expect(result.success).toBe(false)
+    expect(result.message).toMatch(/at least one recipient/i)
   })
 
   test("populates ccRecipients and bccRecipients when provided", async () => {
@@ -307,29 +313,31 @@ describe("sendOutlookEmail — importance flag", () => {
   })
 })
 
-// Bug class: error masked. The handler throws on send failure so the
-// surrounding execution engine sees a real error, not a silent success.
+// Bug class: error masked. PR-C5 (Q1) — the handler returns a typed
+// ActionResult on every expected failure path so downstream nodes / logs
+// see a consistent shape. The execution layer's outer catch is reserved
+// for unexpected throws (programmer / system errors).
 describe("sendOutlookEmail — failure paths", () => {
-  test("throws when token retrieval fails (no Graph call fired)", async () => {
+  test("returns auth failure when token retrieval fails (no Graph call fired)", async () => {
     setMockToken(null)
 
-    await expect(
-      sendOutlookEmail(
-        { to: "x@y.com", subject: "S", body: "B" },
-        "user-1",
-        {},
-      ),
-    ).rejects.toThrow()
+    const result = await sendOutlookEmail(
+      { to: "x@y.com", subject: "S", body: "B" },
+      "user-1",
+      {},
+    )
 
+    expect(result.success).toBe(false)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
   // 401 handling moved to the Q3 block below — pre-PR-C3 the handler's
   // outer catch threw "authentication failed; reconnect"; post-PR-C3 the
   // sendMail POST is wrapped in `refreshAndRetry`, so transient 401s are
-  // recovered and permanent 401s throw the structured auth-failure message.
+  // recovered and permanent 401s return a structured auth-failure
+  // ActionResult.
 
-  test("surfaces the Graph error message verbatim on a generic 400", async () => {
+  test("surfaces the Graph error message verbatim on a generic 400 (provider category)", async () => {
     fetchMock.mockResponseOnce(
       JSON.stringify({
         error: { message: "Recipient address is invalid" },
@@ -337,21 +345,23 @@ describe("sendOutlookEmail — failure paths", () => {
       { status: 400 },
     )
 
-    await expect(
-      sendOutlookEmail(
-        { to: "bogus", subject: "S", body: "B" },
-        "user-1",
-        {},
-      ),
-    ).rejects.toThrow(/Recipient address is invalid/i)
+    const result = await sendOutlookEmail(
+      { to: "bogus", subject: "S", body: "B" },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(false)
+    expect(result.category).toBe("provider")
+    expect(result.message).toMatch(/Recipient address is invalid/i)
   })
 })
 
 // Q3 — 401 handling.
 // Outlook is OAuth-with-refresh; raw-fetch returns Response objects. The
 // handler wraps the sendMail POST in `refreshAndRetry`. Transient 401s are
-// recovered; permanent 401s throw the standardized auth-failure message.
-// See learning/docs/handler-contracts.md.
+// recovered; permanent 401s — POST-PR-C5 — return a typed ActionResult
+// auth failure (not a throw). See learning/docs/handler-contracts.md.
 describe("sendOutlookEmail — Q3 — 401 handling", () => {
   test("transient 401 → refresh succeeds → retry succeeds → success", async () => {
     setMockTokenRefreshOutcome("success")
@@ -370,38 +380,40 @@ describe("sendOutlookEmail — Q3 — 401 handling", () => {
     expect(getHealthEngineCalls()).toHaveLength(0)
   })
 
-  test("permanent 401 (refresh succeeds but retry still 401) → throws structured auth-failure message + token_revoked signal", async () => {
+  test("permanent 401 (refresh succeeds but retry still 401) → ActionResult auth failure + token_revoked signal", async () => {
     setMockTokenRefreshOutcome("success")
     fetchMock
       .mockResponseOnce("", { status: 401 })
       .mockResponseOnce("", { status: 401 })
 
-    await expect(
-      sendOutlookEmail(
-        { to: "x@y.com", subject: "S", body: "B" },
-        "user-1",
-        {},
-      ),
-    ).rejects.toThrow(/reconnect|token|refresh/i)
+    const result = await sendOutlookEmail(
+      { to: "x@y.com", subject: "S", body: "B" },
+      "user-1",
+      {},
+    )
 
+    expect(result.success).toBe(false)
+    expect(result.category).toBe("auth")
+    expect(result.message).toMatch(/reconnect|token|refresh/i)
     expect(getFetchCalls().filter((c) => c.method === "POST")).toHaveLength(2)
     const signals = getHealthEngineCalls()
     expect(signals).toHaveLength(1)
     expect(signals[0].signal.classifiedError.requiresUserAction).toBe(true)
   })
 
-  test("permanent 401 with refresh failing immediately → no retry, throws auth failure", async () => {
+  test("permanent 401 with refresh failing immediately → no retry, ActionResult auth failure", async () => {
     setMockTokenRefreshOutcome("permanent_401")
     fetchMock.mockResponseOnce("", { status: 401 })
 
-    await expect(
-      sendOutlookEmail(
-        { to: "x@y.com", subject: "S", body: "B" },
-        "user-1",
-        {},
-      ),
-    ).rejects.toThrow(/reconnect|token|refresh/i)
+    const result = await sendOutlookEmail(
+      { to: "x@y.com", subject: "S", body: "B" },
+      "user-1",
+      {},
+    )
 
+    expect(result.success).toBe(false)
+    expect(result.category).toBe("auth")
+    expect(result.message).toMatch(/reconnect|token|refresh/i)
     expect(getFetchCalls().filter((c) => c.method === "POST")).toHaveLength(1)
     expect(getHealthEngineCalls()).toHaveLength(1)
   })

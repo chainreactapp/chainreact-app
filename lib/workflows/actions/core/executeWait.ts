@@ -3,7 +3,21 @@ import { createSupabaseServerClient } from "@/utils/supabase/server"
 import { logger } from '@/lib/utils/logger'
 
 /**
- * Interface for action results
+ * Interface for action results.
+ *
+ * `category` enumerates documented failure modes (Q1) so callers and the
+ * execution layer can branch on intent without parsing message strings:
+ *   - 'provider'    — the integration's API rejected the request
+ *   - 'config'      — required field missing or unresolved variable
+ *   - 'auth'        — token expired / revoked / insufficient scope
+ *   - 'validation'  — handler self-validation failed (amount < 0, etc.)
+ *   - 'idempotency' — replay attempted with mutated input (Q4 PAYLOAD_MISMATCH)
+ *   - 'billing'     — pre-execution cost check returned insufficient_balance
+ *   - 'internal'    — programmer / invariant error (engine catch-and-convert)
+ *
+ * Optional — handlers that pre-date the contract may omit it. Tests assert
+ * on `category` only when they're pinning the Q1 contract; legacy tests
+ * still use the message field.
  */
 export interface ActionResult {
   success: boolean
@@ -13,6 +27,14 @@ export interface ActionResult {
   selectedPaths?: string[]
   message?: string
   error?: string
+  category?:
+    | 'provider'
+    | 'config'
+    | 'auth'
+    | 'validation'
+    | 'idempotency'
+    | 'billing'
+    | 'internal'
   pauseExecution?: boolean
 }
 

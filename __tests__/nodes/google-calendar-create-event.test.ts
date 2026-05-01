@@ -282,21 +282,22 @@ describe("createGoogleCalendarEvent — Google Meet", () => {
   })
 })
 
-// Bug class: auth/provider error masked. The contract here is unusual:
-// the handler THROWS, where most others return { success: false }. Tests
-// pin the throw behavior so a refactor doesn't accidentally silence errors.
+// Bug class: auth/provider error masked. PR-C5 (Q1) — handler returns a
+// typed ActionResult with `category: 'provider' | 'auth' | ...` instead of
+// throwing. The execution layer catches *unexpected* throws; expected
+// failures must surface as ActionResult so downstream nodes / logs see a
+// consistent shape.
 describe("createGoogleCalendarEvent — failure paths", () => {
-  test("throws when token retrieval fails (no SDK call fired)", async () => {
+  test("returns auth failure when token retrieval fails (no SDK call fired)", async () => {
     setMockToken(null)
 
-    await expect(
-      createGoogleCalendarEvent(
-        { title: "T", startDate: "2026-05-01", startTime: "09:00" },
-        "user-1",
-        {},
-      ),
-    ).rejects.toThrow()
+    const result = await createGoogleCalendarEvent(
+      { title: "T", startDate: "2026-05-01", startTime: "09:00" },
+      "user-1",
+      {},
+    )
 
+    expect(result.success).toBe(false)
     expect(mockCalendarApi.events.insert).not.toHaveBeenCalled()
   })
 
@@ -305,18 +306,20 @@ describe("createGoogleCalendarEvent — failure paths", () => {
   // wrapped in `refreshAndRetry`, so transient 401s are recovered and
   // permanent 401s return a structured ActionResult auth failure.
 
-  test("surfaces the Google API error message verbatim on generic failure", async () => {
+  test("surfaces the Google API error message verbatim on generic failure (provider category)", async () => {
     mockCalendarApi.events.insert.mockRejectedValueOnce({
       response: { data: { error: { message: "Calendar usage limits exceeded" } } },
     })
 
-    await expect(
-      createGoogleCalendarEvent(
-        { title: "T", startDate: "2026-05-01", startTime: "09:00" },
-        "user-1",
-        {},
-      ),
-    ).rejects.toThrow(/Calendar usage limits exceeded/i)
+    const result = await createGoogleCalendarEvent(
+      { title: "T", startDate: "2026-05-01", startTime: "09:00" },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(false)
+    expect(result.category).toBe("provider")
+    expect(result.message).toMatch(/Calendar usage limits exceeded/i)
   })
 })
 
