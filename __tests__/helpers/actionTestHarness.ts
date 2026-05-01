@@ -205,6 +205,80 @@ jest.mock("@/lib/utils/workflowFileCleanup", () => ({
   deleteWorkflowTempFiles: jest.fn(async () => undefined),
 }))
 
+// ─── PR-C3 — token refresh + health engine fixtures ────────────────────────
+//
+// `refreshAndRetry` calls these two boundaries on a 401. Mock them at the
+// module level so per-test hooks can drive both behaviors uniformly:
+//   - `setMockTokenRefreshOutcome('success' | 'permanent_401')` controls
+//     what `tokenRefreshService.refresh` returns when the wrapper invokes it.
+//   - `getHealthEngineCalls()` returns the captured signal payloads passed
+//     to `computeTransitionAndNotify` (so tests can assert
+//     `classifiedError.requiresUserAction`, etc.).
+//
+// Both default to "success" / silent capture. Tests opt in.
+
+let mockRefreshOutcome: "success" | "permanent_401" = "success"
+
+jest.mock("@/lib/integrations/tokenRefreshService", () => ({
+  refresh: jest.fn(async (provider: string, _userId: string) => {
+    if (mockRefreshOutcome === "permanent_401") {
+      return {
+        success: false,
+        error: "invalid_grant",
+        statusCode: 400,
+        needsReauthorization: true,
+        classifiedError: {
+          code: "invalid_grant",
+          isRecoverable: false,
+          requiresUserAction: true,
+          userActionType: "reconnect",
+          message: "Authentication expired. Please reconnect your account.",
+        },
+      }
+    }
+    return {
+      success: true,
+      accessToken: `mock-refreshed-token-for-${provider}`,
+      accessTokenExpiresIn: 3600,
+    }
+  }),
+  // The wrapper in `tokenRefreshService.ts` also re-exports the lower-level
+  // helpers; nothing else in the harness uses them, so stub minimally.
+  refreshTokenForProvider: jest.fn(),
+  shouldRefreshToken: jest.fn(),
+  TokenRefreshService: {},
+}))
+
+const healthEngineCallLog: Array<{
+  integration: any
+  signal: any
+}> = []
+
+jest.mock("@/lib/integrations/healthTransitionEngine", () => ({
+  computeTransitionAndNotify: jest.fn(async (_supabase: any, integration: any, signal: any) => {
+    healthEngineCallLog.push({ integration, signal })
+    return { stateChanged: true }
+  }),
+}))
+
+// Stub admin Supabase client so `refreshAndRetry`'s default integration
+// lookup returns a row matching the harness's mock integration. Tests that
+// override the integration via `setMockIntegration` are reflected here too.
+jest.mock("@/lib/supabase/admin", () => ({
+  createAdminClient: jest.fn(() => ({
+    from: () => ({
+      select: () => ({
+        eq: () => ({
+          eq: () => ({
+            single: async () => ({ data: mockIntegrationValue, error: null }),
+          }),
+          single: async () => ({ data: mockIntegrationValue, error: null }),
+        }),
+      }),
+    }),
+  })),
+}))
+
 // Enable fetch-mock once at module load.
 fetchMock.enableMocks()
 
@@ -251,6 +325,33 @@ const DEFAULT_INTEGRATION = {
 const DEFAULT_TOKEN = "mock-token-12345"
 
 /**
+ * PR-C3 — control what `tokenRefreshService.refresh` returns when
+ * `refreshAndRetry` invokes it during a 401 recovery attempt.
+ *
+ *   - `'success'` (default): refresh returns a new access token; the
+ *     wrapper retries the original call once with the refreshed token.
+ *   - `'permanent_401'`: refresh returns a classified `invalid_grant`
+ *     failure; the wrapper does NOT retry and emits a `token_revoked`
+ *     health signal.
+ */
+export function setMockTokenRefreshOutcome(outcome: "success" | "permanent_401"): void {
+  mockRefreshOutcome = outcome
+}
+
+/**
+ * PR-C3 — return the captured `computeTransitionAndNotify` invocations in
+ * call order. Each entry holds the `integration` row + `signal` payload
+ * (`{ classifiedError, source, isRecovery }`). Tests assert on
+ * `signal.classifiedError.requiresUserAction`, etc.
+ */
+export function getHealthEngineCalls(): Array<{
+  integration: any
+  signal: any
+}> {
+  return [...healthEngineCallLog]
+}
+
+/**
  * Reset all harness state between tests. Call this in `afterEach`.
  *
  * Note: jest.clearAllMocks() clears call history but does NOT reset mock
@@ -263,6 +364,8 @@ export function resetHarness(): void {
   jest.clearAllMocks()
   mockTokenValue = DEFAULT_TOKEN
   mockIntegrationValue = DEFAULT_INTEGRATION
+  mockRefreshOutcome = "success"
+  healthEngineCallLog.length = 0
   const tokenMod = require("@/lib/workflows/actions/core/getDecryptedAccessToken")
   ;(tokenMod.getDecryptedAccessToken as jest.Mock).mockImplementation(
     async () => mockTokenValue,
@@ -274,6 +377,41 @@ export function resetHarness(): void {
   const exec = require("@/lib/workflows/executeNode")
   ;(exec.getIntegrationById as jest.Mock).mockImplementation(
     async () => mockIntegrationValue,
+  )
+
+  // Re-establish refresh / health-engine mock implementations cleared by
+  // jest.clearAllMocks().
+  const tokenRefreshMod = require("@/lib/integrations/tokenRefreshService")
+  ;(tokenRefreshMod.refresh as jest.Mock).mockImplementation(
+    async (provider: string, _userId: string) => {
+      if (mockRefreshOutcome === "permanent_401") {
+        return {
+          success: false,
+          error: "invalid_grant",
+          statusCode: 400,
+          needsReauthorization: true,
+          classifiedError: {
+            code: "invalid_grant",
+            isRecoverable: false,
+            requiresUserAction: true,
+            userActionType: "reconnect",
+            message: "Authentication expired. Please reconnect your account.",
+          },
+        }
+      }
+      return {
+        success: true,
+        accessToken: `mock-refreshed-token-for-${provider}`,
+        accessTokenExpiresIn: 3600,
+      }
+    },
+  )
+  const healthMod = require("@/lib/integrations/healthTransitionEngine")
+  ;(healthMod.computeTransitionAndNotify as jest.Mock).mockImplementation(
+    async (_supabase: any, integration: any, signal: any) => {
+      healthEngineCallLog.push({ integration, signal })
+      return { stateChanged: true }
+    },
   )
 }
 

@@ -18,6 +18,8 @@ import {
   resetHarness,
   setMockToken,
   mockCalendarApi,
+  setMockTokenRefreshOutcome,
+  getHealthEngineCalls,
 } from "../helpers/actionTestHarness"
 
 import { createGoogleCalendarEvent } from "@/lib/workflows/actions/google-calendar/createEvent"
@@ -296,19 +298,10 @@ describe("createGoogleCalendarEvent — failure paths", () => {
     expect(mockCalendarApi.events.insert).not.toHaveBeenCalled()
   })
 
-  test("throws a reconnect-prompt error when the API returns 401", async () => {
-    mockCalendarApi.events.insert.mockRejectedValueOnce(
-      Object.assign(new Error("Unauthorized"), { code: 401 }),
-    )
-
-    await expect(
-      createGoogleCalendarEvent(
-        { title: "T", startDate: "2026-05-01", startTime: "09:00" },
-        "user-1",
-        {},
-      ),
-    ).rejects.toThrow(/authentication failed.*reconnect/i)
-  })
+  // 401 handling moved to the Q3 block below — pre-PR-C3 the handler's
+  // outer catch threw a reconnect-prompt; post-PR-C3 the insert call is
+  // wrapped in `refreshAndRetry`, so transient 401s are recovered and
+  // permanent 401s return a structured ActionResult auth failure.
 
   test("surfaces the Google API error message verbatim on generic failure", async () => {
     mockCalendarApi.events.insert.mockRejectedValueOnce({
@@ -322,5 +315,70 @@ describe("createGoogleCalendarEvent — failure paths", () => {
         {},
       ),
     ).rejects.toThrow(/Calendar usage limits exceeded/i)
+  })
+})
+
+// Q3 — 401 handling.
+// Calendar is OAuth-with-refresh; the googleapis SDK throws 401 errors with
+// `code: 401`. `createGoogleCalendarEvent` wraps `calendar.events.insert` in
+// `refreshAndRetry`, so a transient 401 is recovered transparently and a
+// permanent 401 returns an ActionResult auth failure with a `token_revoked`
+// health signal. See learning/docs/handler-contracts.md.
+describe("createGoogleCalendarEvent — Q3 — 401 handling", () => {
+  test("transient SDK 401 → refresh succeeds → retry succeeds → caller sees success", async () => {
+    setMockTokenRefreshOutcome("success")
+    mockCalendarApi.events.insert
+      .mockRejectedValueOnce(
+        Object.assign(new Error("Unauthorized"), { code: 401 }),
+      )
+      .mockResolvedValueOnce({ data: { id: "evt-after-refresh" } })
+
+    const result = await createGoogleCalendarEvent(
+      { title: "T", startDate: "2026-05-01", startTime: "09:00" },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(true)
+    expect((result.output as any).eventId).toBe("evt-after-refresh")
+    expect(mockCalendarApi.events.insert).toHaveBeenCalledTimes(2)
+    expect(getHealthEngineCalls()).toHaveLength(0)
+  })
+
+  test("permanent SDK 401 → ActionResult auth failure + token_revoked signal", async () => {
+    setMockTokenRefreshOutcome("success")
+    mockCalendarApi.events.insert.mockRejectedValue(
+      Object.assign(new Error("Unauthorized"), { code: 401 }),
+    )
+
+    const result = await createGoogleCalendarEvent(
+      { title: "T", startDate: "2026-05-01", startTime: "09:00" },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(false)
+    expect(result.message).toMatch(/reconnect|token|refresh/i)
+    expect(mockCalendarApi.events.insert).toHaveBeenCalledTimes(2)
+    const signals = getHealthEngineCalls()
+    expect(signals).toHaveLength(1)
+    expect(signals[0].signal.classifiedError.requiresUserAction).toBe(true)
+  })
+
+  test("permanent 401 with refresh failing immediately → no retry, ActionResult auth failure", async () => {
+    setMockTokenRefreshOutcome("permanent_401")
+    mockCalendarApi.events.insert.mockRejectedValue(
+      Object.assign(new Error("Unauthorized"), { code: 401 }),
+    )
+
+    const result = await createGoogleCalendarEvent(
+      { title: "T", startDate: "2026-05-01", startTime: "09:00" },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(false)
+    expect(mockCalendarApi.events.insert).toHaveBeenCalledTimes(1)
+    expect(getHealthEngineCalls()).toHaveLength(1)
   })
 })

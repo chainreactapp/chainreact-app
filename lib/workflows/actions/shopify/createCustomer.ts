@@ -2,6 +2,7 @@ import { ActionResult } from '../index'
 import { makeShopifyGraphQLRequest, validateShopifyIntegration, getShopDomain } from '@/app/api/integrations/shopify/data/utils'
 import { getIntegrationById } from '../../executeNode'
 import { resolveValue } from '../core/resolveValue'
+import { refreshAndRetry } from '../core/refreshAndRetry'
 import { logger } from '@/lib/utils/logger'
 
 /**
@@ -73,9 +74,30 @@ export async function createShopifyCustomer(
     if (tags) variables.input.tags = tags.split(',').map((t: string) => t.trim())
     if (sendWelcomeEmail) variables.input.emailMarketingConsent = { marketingState: 'SUBSCRIBED' }
 
-    // 4. Make GraphQL request
-    const result = await makeShopifyGraphQLRequest(integration, mutation, variables, selectedStore)
+    // 4. Make GraphQL request. Wrapped in `refreshAndRetry` (Q3) — Shopify
+    // is non_refreshable in our authSchemes registry (offline tokens have
+    // no refresh grant), so a 401 short-circuits to a structured
+    // action_required auth failure with no refresh attempt.
+    const wrapped = await refreshAndRetry({
+      provider: 'shopify',
+      userId,
+      // Shopify auth is the encrypted token on the integration row; we pass
+      // a placeholder here because makeShopifyGraphQLRequest reads the token
+      // from `integration.access_token` directly via getShopifyHeaders.
+      accessToken: integration.access_token ?? '',
+      call: async () =>
+        makeShopifyGraphQLRequest(integration, mutation, variables, selectedStore),
+    })
 
+    if (!wrapped.success) {
+      return {
+        success: false,
+        output: {},
+        message: wrapped.message,
+      }
+    }
+
+    const result = wrapped.data
     const customer = result.customerCreate.customer
     const shopDomain = getShopDomain(integration, selectedStore)
     const customerId = extractNumericId(customer.id)

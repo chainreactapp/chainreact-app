@@ -1,4 +1,5 @@
 import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
+import { refreshAndRetry } from '../core/refreshAndRetry'
 import { resolveValue } from '../core/resolveValue'
 import { ActionResult } from '../core/executeWait'
 import { FileStorageService } from "@/lib/storage/fileStorage"
@@ -79,10 +80,16 @@ export async function uploadGoogleDriveFile(
       throw new Error(`Failed to get Google Drive access token: ${error.message}`);
     }
     
-    // Initialize Drive API
-    const oauth2Client = new google.auth.OAuth2()
-    oauth2Client.setCredentials({ access_token: accessToken })
-    const drive = google.drive({ version: 'v3', auth: oauth2Client })
+    // Build a Drive SDK client for the given access token. The principal
+    // upload call (`drive.files.create`) is wrapped in `refreshAndRetry`
+    // (Q3); auxiliary calls (revisions / permissions) keep their own retry
+    // semantics for now and are best-effort.
+    const buildDriveClient = (token: string) => {
+      const oauth2Client = new google.auth.OAuth2()
+      oauth2Client.setCredentials({ access_token: token })
+      return google.drive({ version: 'v3', auth: oauth2Client })
+    }
+    const drive = buildDriveClient(accessToken)
 
     const uploadedFileResults = []
 
@@ -381,19 +388,38 @@ export async function uploadGoogleDriveFile(
         // Convert Buffer to Stream for Google Drive API
         const fileStream = Readable.from(file.data);
         
+        // Upload the file. Wrapped in `refreshAndRetry` (Q3) — a 401 from
+        // googleapis triggers one refresh+retry; permanent failure throws an
+        // error carrying the structured auth-failure message so the outer
+        // catch surfaces it as the handler's failure path.
         let uploadResponse;
         try {
-          uploadResponse = await drive.files.create({
-            requestBody: fileMetadata,
-            media: {
-              mimeType: uploadMimeType,
-              body: fileStream
+          const uploadResult = await refreshAndRetry({
+            provider: 'google-drive',
+            userId,
+            accessToken,
+            call: async (token) => {
+              const client = buildDriveClient(token)
+              return client.files.create({
+                requestBody: fileMetadata,
+                media: {
+                  mimeType: uploadMimeType,
+                  body: fileStream,
+                },
+                fields:
+                  'id, name, mimeType, webViewLink, webContentLink, parents, size',
+                // OCR options
+                ocrLanguage: ocr ? ocrLanguage : undefined,
+                useContentAsIndexableText: ocr,
+              })
             },
-            fields: 'id, name, mimeType, webViewLink, webContentLink, parents, size',
-            // OCR options
-            ocrLanguage: ocr ? ocrLanguage : undefined,
-            useContentAsIndexableText: ocr
           })
+
+          if (!uploadResult.success) {
+            throw new Error(uploadResult.message)
+          }
+
+          uploadResponse = uploadResult.data
         } catch (uploadError: any) {
           logger.error('❌ [uploadGoogleDriveFile] Google Drive API error:', {
             message: uploadError.message,

@@ -56,6 +56,18 @@
 | Why deferred | Audit captured decisions; PR-G applies them after the contract refactors (C1–C5/D/E/F) land. |
 | Pre-launch action | Ship PR-G to apply all `Require` and `Change` decisions before launch. |
 
+### A5. Auxiliary provider calls not covered by `refreshAndRetry`
+
+| Field | Value |
+|---|---|
+| Status | OPEN |
+| Files | Various — see below |
+| What | PR-C3b wraps each handler's **principal** outbound write call in `refreshAndRetry` (Q3). **Auxiliary** calls — secondary reads / permission / revision / sentitems lookups — are NOT wrapped yet. |
+| Why deferred | Each auxiliary call is an independent migration with its own test surface. Wrapping the principal write covered the dominant 401 case for the 8 already-tested handlers and kept PR-C3b reviewable. |
+| Pre-launch action | Migrate the auxiliary calls listed below to use `refreshAndRetry` so 401s anywhere in a handler produce the standardized auth-failure shape. |
+| Known auxiliary calls | (a) **Sheets** — header GET (`/values/<sheet>!1:1`), metadata GET, insertRow PUT/POST when inserting before/after a specific row. (b) **Notion** — every other `notionApiRequest` call site (update, archive, query, append, manage-database, etc.); only `/pages` POST in `notionCreatePage` is wrapped. (c) **Drive** — `drive.revisions.list` / `drive.revisions.update` / `drive.permissions.create` (per-share), and the schema GET; only `drive.files.create` is wrapped. (d) **Outlook** — the post-send `/me/mailFolders/sentitems/messages` GET that retrieves `messageId`. (e) **Gmail** — `gmail.users.messages.modify` (label application after send). (f) **Airtable** — every `/meta/bases/.../tables` schema GET. |
+| Tracking | [`learning/docs/handler-contracts.md`](handler-contracts.md) Q3 |
+
 ---
 
 ## B. Trigger lifecycle migration — old per-provider webhook setup

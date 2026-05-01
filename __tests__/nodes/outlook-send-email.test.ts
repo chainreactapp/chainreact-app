@@ -20,6 +20,8 @@ import {
   fetchMock,
   getFetchCalls,
   assertFetchCalled,
+  setMockTokenRefreshOutcome,
+  getHealthEngineCalls,
 } from "../helpers/actionTestHarness"
 
 import { sendOutlookEmail } from "@/lib/workflows/actions/microsoft-outlook/sendEmail"
@@ -320,20 +322,10 @@ describe("sendOutlookEmail — failure paths", () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  test("throws a reconnect-prompt error when Graph returns 401", async () => {
-    fetchMock.mockResponseOnce(
-      JSON.stringify({ error: { message: "401 Unauthorized" } }),
-      { status: 401 },
-    )
-
-    await expect(
-      sendOutlookEmail(
-        { to: "x@y.com", subject: "S", body: "B" },
-        "user-1",
-        {},
-      ),
-    ).rejects.toThrow(/authentication failed.*reconnect/i)
-  })
+  // 401 handling moved to the Q3 block below — pre-PR-C3 the handler's
+  // outer catch threw "authentication failed; reconnect"; post-PR-C3 the
+  // sendMail POST is wrapped in `refreshAndRetry`, so transient 401s are
+  // recovered and permanent 401s throw the structured auth-failure message.
 
   test("surfaces the Graph error message verbatim on a generic 400", async () => {
     fetchMock.mockResponseOnce(
@@ -350,5 +342,65 @@ describe("sendOutlookEmail — failure paths", () => {
         {},
       ),
     ).rejects.toThrow(/Recipient address is invalid/i)
+  })
+})
+
+// Q3 — 401 handling.
+// Outlook is OAuth-with-refresh; raw-fetch returns Response objects. The
+// handler wraps the sendMail POST in `refreshAndRetry`. Transient 401s are
+// recovered; permanent 401s throw the standardized auth-failure message.
+// See learning/docs/handler-contracts.md.
+describe("sendOutlookEmail — Q3 — 401 handling", () => {
+  test("transient 401 → refresh succeeds → retry succeeds → success", async () => {
+    setMockTokenRefreshOutcome("success")
+    fetchMock
+      .mockResponseOnce("", { status: 401 })
+      .mockResponseOnce("", { status: 202 })
+
+    const result = await sendOutlookEmail(
+      { to: "x@y.com", subject: "S", body: "B" },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(true)
+    expect(getFetchCalls().filter((c) => c.method === "POST")).toHaveLength(2)
+    expect(getHealthEngineCalls()).toHaveLength(0)
+  })
+
+  test("permanent 401 (refresh succeeds but retry still 401) → throws structured auth-failure message + token_revoked signal", async () => {
+    setMockTokenRefreshOutcome("success")
+    fetchMock
+      .mockResponseOnce("", { status: 401 })
+      .mockResponseOnce("", { status: 401 })
+
+    await expect(
+      sendOutlookEmail(
+        { to: "x@y.com", subject: "S", body: "B" },
+        "user-1",
+        {},
+      ),
+    ).rejects.toThrow(/reconnect|token|refresh/i)
+
+    expect(getFetchCalls().filter((c) => c.method === "POST")).toHaveLength(2)
+    const signals = getHealthEngineCalls()
+    expect(signals).toHaveLength(1)
+    expect(signals[0].signal.classifiedError.requiresUserAction).toBe(true)
+  })
+
+  test("permanent 401 with refresh failing immediately → no retry, throws auth failure", async () => {
+    setMockTokenRefreshOutcome("permanent_401")
+    fetchMock.mockResponseOnce("", { status: 401 })
+
+    await expect(
+      sendOutlookEmail(
+        { to: "x@y.com", subject: "S", body: "B" },
+        "user-1",
+        {},
+      ),
+    ).rejects.toThrow(/reconnect|token|refresh/i)
+
+    expect(getFetchCalls().filter((c) => c.method === "POST")).toHaveLength(1)
+    expect(getHealthEngineCalls()).toHaveLength(1)
   })
 })

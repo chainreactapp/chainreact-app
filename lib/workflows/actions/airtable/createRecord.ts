@@ -1,5 +1,6 @@
 import { Buffer } from 'buffer'
 import { getDecryptedAccessToken, resolveValue, ActionResult } from '@/lib/workflows/actions/core'
+import { refreshAndRetry } from '@/lib/workflows/actions/core/refreshAndRetry'
 import {
   deleteTempAttachments,
   scheduleTempAttachmentCleanup,
@@ -750,17 +751,31 @@ export async function createAirtableRecord(
 
     logger.info(`📊 [Airtable] Sending request to table: ${tableName}`)
 
-    const response = await fetch(
-      `https://api.airtable.com/v0/${baseId}/${encodeURIComponent(tableName)}`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
-      }
-    )
+    // Q3 — wrap the create-record POST in refreshAndRetry. Airtable is
+    // OAuth-with-refresh; on 401 the wrapper refreshes once and retries.
+    const writeResult = await refreshAndRetry({
+      provider: 'airtable',
+      userId,
+      accessToken,
+      call: async (token) =>
+        fetch(
+          `https://api.airtable.com/v0/${baseId}/${encodeURIComponent(tableName)}`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(requestBody),
+          }
+        ),
+    })
+
+    if (!writeResult.success) {
+      throw new Error(writeResult.message)
+    }
+
+    const response = writeResult.data
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}))

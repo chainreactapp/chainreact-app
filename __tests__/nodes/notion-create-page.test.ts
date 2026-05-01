@@ -19,6 +19,8 @@ import {
   setMockToken,
   fetchMock,
   assertFetchCalled,
+  setMockTokenRefreshOutcome,
+  getHealthEngineCalls,
 } from "../helpers/actionTestHarness"
 
 import { executeNotionCreatePage } from "@/lib/workflows/actions/notion/pageActions"
@@ -191,9 +193,74 @@ describe("executeNotionCreatePage — provider API error", () => {
     expect(result.message).toMatch(/400|validation/i)
   })
 
-  test("returns failure when Notion responds with 401 (token revoked)", async () => {
+  // 401 handling moved to the Q3 block below — pre-PR-C3 the handler
+  // surfaced the raw Notion error message; post-PR-C3 the create-page POST
+  // is wrapped in `refreshAndRetry`.
+})
+
+// Q3 — 401 handling.
+// Notion is OAuth-with-refresh; raw fetch returns Response objects. The
+// create-page POST is wrapped in `refreshAndRetry`. Transient 401 → refresh
+// + retry; permanent 401 → ActionResult auth failure with token_revoked
+// signal. See learning/docs/handler-contracts.md.
+describe("executeNotionCreatePage — Q3 — 401 handling", () => {
+  test("transient 401 → refresh succeeds → retry succeeds → success", async () => {
+    setMockTokenRefreshOutcome("success")
+    fetchMock
+      .mockResponseOnce(
+        JSON.stringify({ message: "Unauthorized" }),
+        { status: 401 },
+      )
+      .mockResponseOnce(JSON.stringify({ id: "page-after-refresh", url: "u" }))
+
+    const result = await executeNotionCreatePage(
+      {
+        parentType: "database",
+        parentDatabase: "db-xyz",
+        title: "T",
+      },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(true)
+    expect(result.output.page_id).toBe("page-after-refresh")
+    expect(getHealthEngineCalls()).toHaveLength(0)
+  })
+
+  test("permanent 401 → ActionResult auth failure + token_revoked signal", async () => {
+    setMockTokenRefreshOutcome("success")
+    fetchMock
+      .mockResponseOnce(
+        JSON.stringify({ message: "Unauthorized" }),
+        { status: 401 },
+      )
+      .mockResponseOnce(
+        JSON.stringify({ message: "Unauthorized" }),
+        { status: 401 },
+      )
+
+    const result = await executeNotionCreatePage(
+      {
+        parentType: "database",
+        parentDatabase: "db-xyz",
+        title: "T",
+      },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(false)
+    expect(result.message).toMatch(/reconnect|token|refresh/i)
+    const signals = getHealthEngineCalls()
+    expect(signals).toHaveLength(1)
+    expect(signals[0].signal.classifiedError.requiresUserAction).toBe(true)
+  })
+
+  test("permanent 401 with refresh failing immediately → no retry, ActionResult auth failure", async () => {
+    setMockTokenRefreshOutcome("permanent_401")
     fetchMock.mockResponseOnce(
-      JSON.stringify({ message: "API token is invalid" }),
+      JSON.stringify({ message: "Unauthorized" }),
       { status: 401 },
     )
 
@@ -208,6 +275,6 @@ describe("executeNotionCreatePage — provider API error", () => {
     )
 
     expect(result.success).toBe(false)
-    expect(result.message).toMatch(/401|invalid/i)
+    expect(getHealthEngineCalls()).toHaveLength(1)
   })
 })

@@ -1,5 +1,6 @@
 import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
 import { parseRecipients } from '../core/parseRecipients'
+import { refreshAndRetry } from '../core/refreshAndRetry'
 import { resolveValue } from '../core/resolveValue'
 import { ActionResult } from '../core/executeWait'
 import { FileStorageService } from "@/lib/storage/fileStorage"
@@ -83,11 +84,18 @@ export async function sendGmailEmail(
        body.includes('<span') || body.includes('<table')))
 
     const accessToken = await getDecryptedAccessToken(userId, "gmail")
-    
-    // Initialize Gmail API
-    const oauth2Client = new google.auth.OAuth2()
-    oauth2Client.setCredentials({ access_token: accessToken })
-    const gmail = google.gmail({ version: 'v1', auth: oauth2Client })
+
+    // Build a Gmail SDK client for the given access token. The send call is
+    // wrapped in `refreshAndRetry` (Q3) so a 401 from the SDK triggers one
+    // refresh-and-retry attempt with the new token. Building the client
+    // inside the closure means the retry uses the refreshed token end-to-end
+    // (the OAuth2 client carries the credentials).
+    const buildGmailClient = (token: string) => {
+      const oauth2Client = new google.auth.OAuth2()
+      oauth2Client.setCredentials({ access_token: token })
+      return google.gmail({ version: 'v1', auth: oauth2Client })
+    }
+    const gmail = buildGmailClient(accessToken)
 
     // Build email headers. After Q7 normalization the recipient fields are
     // always arrays, so header assembly is a single .join().
@@ -429,16 +437,40 @@ export async function sendGmailEmail(
       logger.warn('📧 [sendGmailEmail] Scheduled send requested but Gmail API does not support native scheduling — sending immediately', { scheduleSend })
     }
 
-    // Send the email
-    const result = await gmail.users.messages.send({
-      userId: 'me',
-      requestBody: {
-        raw: encodedMessage,
-        labelIds: labels.length > 0 ? labels : undefined
-      }
+    // Send the email — wrapped in `refreshAndRetry` (Q3). On a 401 from the
+    // googleapis SDK, the wrapper refreshes the token once and retries. A
+    // permanent 401 surfaces as a structured auth failure; everything else
+    // throws / returns normally.
+    const sendResult = await refreshAndRetry({
+      provider: 'gmail',
+      userId,
+      accessToken,
+      call: async (token) => {
+        const client = buildGmailClient(token)
+        return client.users.messages.send({
+          userId: 'me',
+          requestBody: {
+            raw: encodedMessage,
+            labelIds: labels.length > 0 ? labels : undefined,
+          },
+        })
+      },
     })
 
-    // Apply labels if specified
+    if (!sendResult.success) {
+      return {
+        success: false,
+        output: {},
+        message: sendResult.message,
+      }
+    }
+
+    const result = sendResult.data
+
+    // Apply labels if specified. Best-effort; uses the original Gmail client
+    // (token may have been refreshed during the send retry — but `gmail.users
+    // .messages.modify` is rare enough that a stale-token failure here is
+    // logged-and-swallowed rather than failing the email).
     if (labels.length > 0 && result.data.id) {
       try {
         await gmail.users.messages.modify({
@@ -462,7 +494,7 @@ export async function sendGmailEmail(
         subject,
         labelIds: result.data.labelIds
       },
-      message: `Email sent successfully to ${Array.isArray(to) ? to.join(', ') : to}`
+      message: `Email sent successfully to ${to.join(', ')}`
     }
 
   } catch (error: any) {

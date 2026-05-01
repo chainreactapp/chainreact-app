@@ -1,6 +1,7 @@
 import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
 import { resolveValue } from '../core/resolveValue'
 import { parseRecipients } from '../core/parseRecipients'
+import { refreshAndRetry } from '../core/refreshAndRetry'
 import { ActionResult } from '../core/executeWait'
 import { google } from 'googleapis'
 
@@ -77,12 +78,15 @@ export async function createGoogleCalendarEvent(
       logger.info(`🌍 [Google Calendar] Auto-detected end timezone: ${eventEndTimeZone}`)
     }
 
-    // Create OAuth2 client
-    const oauth2Client = new google.auth.OAuth2()
-    oauth2Client.setCredentials({ access_token: accessToken })
-
-    // Create calendar API client
-    const calendar = google.calendar({ version: 'v3', auth: oauth2Client })
+    // Build a Calendar SDK client for the given access token. The insert
+    // call below is wrapped in `refreshAndRetry` (Q3) so a 401 from the SDK
+    // triggers a single refresh-and-retry attempt.
+    const buildCalendarClient = (token: string) => {
+      const oauth2Client = new google.auth.OAuth2()
+      oauth2Client.setCredentials({ access_token: token })
+      return google.calendar({ version: 'v3', auth: oauth2Client })
+    }
+    const calendar = buildCalendarClient(accessToken)
 
     // Parse dates and times with proper validation
     const parseDateTime = (date: string, time: string) => {
@@ -274,14 +278,34 @@ export async function createGoogleCalendarEvent(
       eventData: JSON.stringify(eventData, null, 2)
     })
 
-    // Always create a new event (each workflow execution creates a fresh event)
-    const response = await calendar.events.insert({
-      calendarId: calendarId,
-      requestBody: eventData,
-      sendUpdates: sendUpdates,
-      conferenceDataVersion: createMeetLink ? 1 : 0
+    // Always create a new event (each workflow execution creates a fresh event).
+    // Wrapped in `refreshAndRetry` per Q3 — a 401 from googleapis triggers
+    // one refresh+retry attempt; permanent failure returns a structured auth
+    // failure that the outer mapping converts to ActionResult.
+    const insertResult = await refreshAndRetry({
+      provider: 'google-calendar',
+      userId,
+      accessToken,
+      call: async (token) => {
+        const client = buildCalendarClient(token)
+        return client.events.insert({
+          calendarId: calendarId,
+          requestBody: eventData,
+          sendUpdates: sendUpdates,
+          conferenceDataVersion: createMeetLink ? 1 : 0,
+        })
+      },
     })
 
+    if (!insertResult.success) {
+      return {
+        success: false,
+        output: {},
+        message: insertResult.message,
+      }
+    }
+
+    const response = insertResult.data
     const createdEvent = response.data
 
     // Extract Google Meet link from conference data

@@ -252,6 +252,13 @@ Every workflow action handler must follow the documented behavioral contracts in
 ## Multi-Recipient Fields
 Schema-declared multi-recipient / multi-value fields (Gmail / Outlook `to`/`cc`/`bcc`, Calendar `attendees`, future provider mentions) MUST route through `parseRecipients` from [`lib/workflows/actions/core/parseRecipients.ts`](./lib/workflows/actions/core/parseRecipients.ts) — splits CSV on `,`, trims, drops empties, flattens mixed array-of-CSV inputs. Single-value schema-typed fields are passed through unchanged. RFC 5322 display-name parsing is out of scope per Q7.
 
+## OAuth 401 Handling — Provider-Aware Refresh+Retry
+- Every action handler's **principal outbound write call** must be wrapped in `refreshAndRetry` from [`lib/workflows/actions/core/refreshAndRetry.ts`](./lib/workflows/actions/core/refreshAndRetry.ts).
+- Auth scheme is decided by the registry at [`lib/integrations/authSchemes.ts`](./lib/integrations/authSchemes.ts). Add a new provider there before adding a handler that uses it.
+- OAuth-with-refresh providers (Google / Microsoft / Notion / HubSpot / Airtable / Mailchimp / etc.): on 401 → `tokenRefreshService.refresh(provider, userId)` → retry once → permanent failure → `token_revoked` health signal. Non-refreshable (Slack / Discord / GitHub / Stripe / Shopify offline tokens): on 401 → `action_required` health signal immediately, no refresh attempt.
+- Auxiliary calls (header GETs, metadata fetches, post-send lookups) are NOT yet wrapped — see [`/learning/docs/pre-launch-cleanup.md`](./learning/docs/pre-launch-cleanup.md) §A5.
+- See [`/learning/docs/handler-contracts.md`](./learning/docs/handler-contracts.md) Q3.
+
 ## Variable Resolution — Strict at Runtime, Soft at Design-Time
 - Runtime workflow execution uses **strict pre-resolution** at the engine layer (`nodeExecutionService.executeNodeByType`) via `DataFlowManager.resolveObjectStrict`. Missing `{{...}}` references become the standardized **config-failure shape** (`{success:false, category:'config', error:{code:'MISSING_VARIABLE', path}, message}`) **before** action / integration handler dispatch — handlers never see unresolved templates at runtime.
 - Design-time / preview / planner / AI-agent suggestion flows continue to use the **soft** `resolveValue` / `resolveValueWithTracking` (returns `undefined` or preserves the literal `{{...}}`, optionally populating an `unresolvedCollector`).

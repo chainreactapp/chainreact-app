@@ -9,9 +9,10 @@ import type { Integration } from "@/types/integration"
 import { getOAuthConfig, getOAuthClientCredentials } from "./oauthConfig"
 import fetch from "node-fetch"
 import { getBaseUrl } from "@/lib/utils/getBaseUrl"
-import { decrypt } from "@/lib/security/encryption"
+import { decrypt, encrypt } from "@/lib/security/encryption"
 import { getSecret } from "@/lib/secrets"
 import { classifyOAuthError, type ClassifiedError } from "./errorClassificationService"
+import { createAdminClient } from "@/lib/supabase/admin"
 
 import { logger } from '@/lib/utils/logger'
 
@@ -497,12 +498,138 @@ export async function refreshTokenForProvider(
   }
 }
 
+// ---------------------------------------------------------------------------
+// PR-C3a — high-level refresh wrapper for runtime callers (refreshAndRetry).
+// ---------------------------------------------------------------------------
+//
+// `refreshTokenForProvider` requires the caller to load the integration row,
+// decrypt the refresh token, and persist the new tokens. That's the right
+// shape for cron jobs, but runtime action handlers shouldn't have to do all
+// of that on every 401 retry. `refresh(provider, userId)` is the thin
+// wrapper that:
+//   1. Loads the integration row from the `integrations` table.
+//   2. Calls `refreshTokenForProvider` with the encrypted refresh token.
+//   3. On success, persists the new encrypted access token + expiry (and
+//      rotated refresh token if the provider returned one), then returns a
+//      `RefreshResult` whose `accessToken` field holds the **decrypted**
+//      access token ready for `refreshAndRetry` to retry the original call.
+//   4. On any failure (no row, no refresh token, provider error, persistence
+//      error) returns `{ success: false, ... }` — never throws an
+//      "expected" auth failure. Per Q1, only unexpected/system errors should
+//      surface as throws; refreshAndRetry's caller relies on the structured
+//      shape to drive its standardized auth-failure response.
+//
+// Persistence is best-effort: if the new tokens can't be saved (e.g.,
+// transient DB issue), we still return the decrypted access token so the
+// retry can succeed. The next refresh cycle will re-persist.
+//
+// Contract: see learning/docs/handler-contracts.md Q3.
+// ---------------------------------------------------------------------------
+
+/**
+ * Refresh the OAuth access token for a (provider, userId) pair using the
+ * existing `refreshTokenForProvider` flow. Loads, refreshes, persists, and
+ * returns a `RefreshResult` whose `accessToken` is decrypted and ready to
+ * use. Never throws expected auth failures — caller inspects `success` and
+ * `classifiedError`.
+ *
+ * Pass `options.supabase` to inject a client (used by tests). Defaults to
+ * the admin client.
+ */
+export async function refresh(
+  provider: string,
+  userId: string,
+  options: { supabase?: any; verbose?: boolean } = {}
+): Promise<RefreshResult> {
+  const supabase = options.supabase ?? createAdminClient()
+
+  let integration: Integration | null = null
+  try {
+    const { data, error } = await supabase
+      .from("integrations")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("provider", provider)
+      .eq("status", "connected")
+      .single()
+
+    if (error || !data) {
+      return {
+        success: false,
+        error: `Integration not found for provider "${provider}" (user "${userId}")`,
+        needsReauthorization: true,
+        statusCode: 404,
+      }
+    }
+    integration = data as Integration
+  } catch (err: any) {
+    return {
+      success: false,
+      error: `Failed to load integration row: ${err?.message ?? "unknown error"}`,
+      statusCode: 500,
+      needsReauthorization: false,
+    }
+  }
+
+  if (!integration?.refresh_token) {
+    return {
+      success: false,
+      error: `No refresh token stored for provider "${provider}" — user must reconnect`,
+      needsReauthorization: true,
+      statusCode: 401,
+    }
+  }
+
+  const result = await refreshTokenForProvider(
+    provider,
+    integration.refresh_token,
+    integration,
+    { verbose: options.verbose }
+  )
+
+  if (!result.success || !result.accessToken) {
+    return result
+  }
+
+  // Best-effort persist. Failure here doesn't fail the refresh — the caller
+  // can still use the new access token, and the next cron sweep will repair
+  // persistence if it didn't land here.
+  try {
+    const updateData: Record<string, any> = {
+      access_token: encrypt(result.accessToken),
+    }
+
+    if (typeof result.accessTokenExpiresIn === "number") {
+      updateData.expires_at = new Date(
+        Date.now() + result.accessTokenExpiresIn * 1000
+      ).toISOString()
+    }
+
+    if (result.refreshToken) {
+      updateData.refresh_token = encrypt(result.refreshToken)
+    }
+
+    await supabase
+      .from("integrations")
+      .update(updateData)
+      .eq("id", integration.id)
+  } catch (err: any) {
+    logger.warn(
+      `[tokenRefreshService.refresh] Persist after-refresh failed for ${provider}: ${err?.message}`
+    )
+    // Continue — the refreshed token is still valid for the immediate retry.
+  }
+
+  return result
+}
+
 /**
  * Export convenience methods for use in API routes and other services
  */
 export const TokenRefreshService = {
   shouldRefreshToken,
   refreshTokenForProvider,
+  refresh,
 }
 
 export default TokenRefreshService

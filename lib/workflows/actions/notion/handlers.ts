@@ -348,7 +348,24 @@ export async function notionCreatePage(
       payload.children = config.content_blocks
     }
 
-    const result = await notionApiRequest("/pages", "POST", accessToken, payload)
+    // Q3 — wrap the create-page call in `refreshAndRetry`. Notion is
+    // OAuth-with-refresh; on 401 the wrapper refreshes once, retries, and
+    // surfaces a structured auth failure on permanent failure.
+    const { refreshAndRetry: notionRefreshAndRetry } = await import('@/lib/workflows/actions/core/refreshAndRetry')
+    const wrapped = await notionRefreshAndRetry({
+      provider: 'notion',
+      userId: context.userId,
+      accessToken,
+      call: async (token) => notionApiRequest("/pages", "POST", token, payload),
+    })
+    if (!wrapped.success) {
+      return {
+        success: false,
+        output: {},
+        message: wrapped.message,
+      }
+    }
+    const result = wrapped.data
 
     return {
       success: true,

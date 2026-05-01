@@ -17,6 +17,8 @@ import {
   fetchMock,
   getFetchCalls,
   assertFetchCalled,
+  setMockTokenRefreshOutcome,
+  getHealthEngineCalls,
 } from "../helpers/actionTestHarness"
 
 import { createAirtableRecord } from "@/lib/workflows/actions/airtable/createRecord"
@@ -214,24 +216,10 @@ describe("createAirtableRecord — provider error handling", () => {
     expect(result.error).toMatch(/does not exist|field mismatch/i)
   })
 
-  test("returns failure on a generic 401 from Airtable", async () => {
-    fetchMock.mockResponseOnce(
-      JSON.stringify({ error: { message: "Invalid token" } }),
-      { status: 401 },
-    )
-
-    const result = await createAirtableRecord(
-      {
-        baseId: "app1",
-        tableName: "Tasks",
-        airtable_field_Name: "Alice",
-      },
-      "user-1",
-      {},
-    )
-
-    expect(result.success).toBe(false)
-  })
+  // 401 handling moved to the Q3 block below — pre-PR-C3 the handler
+  // surfaced the raw Airtable error message; post-PR-C3 the create-record
+  // POST is wrapped in `refreshAndRetry` and a permanent 401 returns the
+  // standardized auth-failure message.
 
   test("returns failure when token retrieval fails (no fetch fired)", async () => {
     setMockToken(null)
@@ -275,5 +263,86 @@ describe("createAirtableRecord — input/variable resolution", () => {
     const postCall = calls.find((c) => c.method === "POST")
     expect(postCall).toBeDefined()
     expect(postCall!.url).toContain("/v0/app1/Tasks")
+  })
+})
+
+// Q3 — 401 handling.
+// Airtable is OAuth-with-refresh; raw fetch returns Response objects. The
+// handler wraps the create-record POST in `refreshAndRetry`. See
+// learning/docs/handler-contracts.md.
+describe("createAirtableRecord — Q3 — 401 handling", () => {
+  test("transient 401 on POST → refresh succeeds → retry succeeds", async () => {
+    setMockTokenRefreshOutcome("success")
+    let postCount = 0
+    fetchMock.mockResponse(async (req: any) => {
+      if (req.method === "POST") {
+        postCount += 1
+        if (postCount === 1) {
+          return { body: "", status: 401 }
+        }
+        return {
+          body: JSON.stringify({
+            id: "rec-after-refresh",
+            fields: { Name: "Alice" },
+            createdTime: "2026-04-30T10:00:00.000Z",
+          }),
+          status: 200,
+        }
+      }
+      return { body: JSON.stringify(SCHEMA_RESPONSE), status: 200 }
+    })
+
+    const result = await createAirtableRecord(
+      { baseId: "app1", tableName: "Tasks", airtable_field_Name: "Alice" },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(true)
+    expect(postCount).toBe(2)
+    expect(getHealthEngineCalls()).toHaveLength(0)
+  })
+
+  test("permanent 401 on POST → ActionResult auth failure + token_revoked signal", async () => {
+    setMockTokenRefreshOutcome("success")
+    fetchMock.mockResponse(async (req: any) => {
+      if (req.method === "POST") {
+        return { body: "", status: 401 }
+      }
+      return { body: JSON.stringify(SCHEMA_RESPONSE), status: 200 }
+    })
+
+    const result = await createAirtableRecord(
+      { baseId: "app1", tableName: "Tasks", airtable_field_Name: "Alice" },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(false)
+    const signals = getHealthEngineCalls()
+    expect(signals).toHaveLength(1)
+    expect(signals[0].signal.classifiedError.requiresUserAction).toBe(true)
+  })
+
+  test("permanent 401 with refresh failing immediately → no retry, ActionResult auth failure", async () => {
+    setMockTokenRefreshOutcome("permanent_401")
+    let postCount = 0
+    fetchMock.mockResponse(async (req: any) => {
+      if (req.method === "POST") {
+        postCount += 1
+        return { body: "", status: 401 }
+      }
+      return { body: JSON.stringify(SCHEMA_RESPONSE), status: 200 }
+    })
+
+    const result = await createAirtableRecord(
+      { baseId: "app1", tableName: "Tasks", airtable_field_Name: "Alice" },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(false)
+    expect(postCount).toBe(1)
+    expect(getHealthEngineCalls()).toHaveLength(1)
   })
 })

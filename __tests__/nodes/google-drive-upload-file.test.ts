@@ -15,6 +15,8 @@ import {
   resetHarness,
   setMockToken,
   mockDriveApi,
+  setMockTokenRefreshOutcome,
+  getHealthEngineCalls,
 } from "../helpers/actionTestHarness"
 
 import { uploadGoogleDriveFile } from "@/lib/workflows/actions/googleDrive/uploadFile"
@@ -226,5 +228,73 @@ describe("uploadGoogleDriveFile — failure paths", () => {
     expect(result.success).toBe(false)
     expect(result.message).toMatch(/access token/i)
     expect(mockDriveApi.files.create).not.toHaveBeenCalled()
+  })
+})
+
+// Q3 — 401 handling.
+// Drive is OAuth-with-refresh; the googleapis SDK throws 401 errors with
+// `code: 401`. `uploadGoogleDriveFile` wraps `drive.files.create` in
+// `refreshAndRetry`. See learning/docs/handler-contracts.md.
+describe("uploadGoogleDriveFile — Q3 — 401 handling", () => {
+  test("transient SDK 401 → refresh succeeds → retry succeeds → success", async () => {
+    setMockTokenRefreshOutcome("success")
+    mockDriveApi.files.create
+      .mockRejectedValueOnce(
+        Object.assign(new Error("Unauthorized"), { code: 401 }),
+      )
+      .mockResolvedValueOnce({ data: { id: "file-after-refresh", name: "doc.txt" } })
+
+    const result = await uploadGoogleDriveFile(
+      { sourceType: "node", fileFromNode: makeInlineFile("hi") },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(true)
+    expect(mockDriveApi.files.create).toHaveBeenCalledTimes(2)
+    expect(getHealthEngineCalls()).toHaveLength(0)
+  })
+
+  test("permanent SDK 401 → per-file auth failure recorded + token_revoked signal", async () => {
+    setMockTokenRefreshOutcome("success")
+    mockDriveApi.files.create.mockRejectedValue(
+      Object.assign(new Error("Unauthorized"), { code: 401 }),
+    )
+
+    const result = await uploadGoogleDriveFile(
+      { sourceType: "node", fileFromNode: makeInlineFile("hi") },
+      "user-1",
+      {},
+    )
+
+    // Drive aggregates per-file results; the overall result is failure
+    // because the only file failed. The per-file error carries the
+    // standardized auth-failure message from `refreshAndRetry`.
+    expect(result.success).toBe(false)
+    const uploaded = (result.output as any)?.uploadedFiles ?? []
+    expect(uploaded).toHaveLength(1)
+    expect(uploaded[0].success).toBe(false)
+    expect(uploaded[0].error).toMatch(/reconnect|token|refresh/i)
+    expect(mockDriveApi.files.create).toHaveBeenCalledTimes(2)
+    const signals = getHealthEngineCalls()
+    expect(signals).toHaveLength(1)
+    expect(signals[0].signal.classifiedError.requiresUserAction).toBe(true)
+  })
+
+  test("permanent 401 with refresh failing immediately → no retry, ActionResult auth failure", async () => {
+    setMockTokenRefreshOutcome("permanent_401")
+    mockDriveApi.files.create.mockRejectedValue(
+      Object.assign(new Error("Unauthorized"), { code: 401 }),
+    )
+
+    const result = await uploadGoogleDriveFile(
+      { sourceType: "node", fileFromNode: makeInlineFile("hi") },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(false)
+    expect(mockDriveApi.files.create).toHaveBeenCalledTimes(1)
+    expect(getHealthEngineCalls()).toHaveLength(1)
   })
 })

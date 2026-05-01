@@ -1,6 +1,7 @@
 import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
 import { resolveValue } from '../core/resolveValue'
 import { parseRecipients } from '../core/parseRecipients'
+import { refreshAndRetry } from '../core/refreshAndRetry'
 import { ActionResult } from '../core/executeWait'
 import { FileStorageService } from "@/lib/storage/fileStorage"
 import { deleteWorkflowTempFiles } from '@/lib/utils/workflowFileCleanup'
@@ -298,15 +299,30 @@ export async function sendOutlookEmail(
       emailData.message.attachments = outlookAttachments
     }
 
-    // Send the email using Microsoft Graph API
-    const response = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(emailData)
+    // Send the email using Microsoft Graph API. Wrapped in `refreshAndRetry`
+    // (Q3) — a 401 from Graph triggers one refresh+retry attempt.
+    const sendResult = await refreshAndRetry({
+      provider: 'microsoft-outlook',
+      userId,
+      accessToken,
+      call: async (token) =>
+        fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(emailData),
+        }),
     })
+
+    if (!sendResult.success) {
+      // Q3 standardized auth failure — surface its message via the existing
+      // outer-catch path so Outlook's contract stays "throws on failure".
+      throw new Error(sendResult.message)
+    }
+
+    const response = sendResult.data
 
     if (!response.ok) {
       const errorText = await response.text()

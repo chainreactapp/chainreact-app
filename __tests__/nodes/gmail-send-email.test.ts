@@ -15,6 +15,8 @@ import {
   resetHarness,
   setMockToken,
   mockGmailApi,
+  setMockTokenRefreshOutcome,
+  getHealthEngineCalls,
 } from "../helpers/actionTestHarness"
 
 import { sendGmailEmail } from "@/lib/workflows/actions/gmail/sendEmail"
@@ -154,22 +156,10 @@ describe("sendGmailEmail — provider API error", () => {
     expect(result.message).toMatch(/invalid message format/i)
   })
 
-  test("returns failure when the Gmail API rejects with a 401 (token revoked)", async () => {
-    mockGmailApi.users.messages.send.mockRejectedValueOnce(
-      Object.assign(new Error("Request had invalid authentication credentials"), {
-        code: 401,
-      }),
-    )
-
-    const result = await sendGmailEmail({
-      config: { to: "x@y.com", subject: "s", body: "b" },
-      userId: "user-1",
-      input: {},
-    })
-
-    expect(result.success).toBe(false)
-    expect(result.message).toMatch(/invalid authentication/i)
-  })
+  // 401 handling moved to the Q3 block below — pre-PR-C3 the handler simply
+  // surfaced the SDK error message; post-PR-C3 the handler wraps the send
+  // call in `refreshAndRetry`, so a 401 SDK error triggers refresh+retry
+  // with structured auth-failure on permanent failure.
 })
 
 // Bug class: variable mapping miscoded — config values that arrive as
@@ -301,5 +291,81 @@ describe("sendGmailEmail — Q7 — recipient parsing", () => {
     )
     expect(decoded).not.toContain("Cc:")
     expect(decoded).not.toContain("Bcc:")
+  })
+})
+
+
+// Q3 — 401 handling.
+// Gmail is OAuth-with-refresh; the SDK throws 401 errors with `code: 401`.
+// `sendGmailEmail` wraps `gmail.users.messages.send` in `refreshAndRetry`,
+// so a transient 401 is recovered transparently and a permanent 401 yields
+// a structured auth failure with a `token_revoked` health signal.
+// See learning/docs/handler-contracts.md.
+describe("sendGmailEmail — Q3 — 401 handling", () => {
+  test("transient SDK 401 → refresh succeeds → retry succeeds → caller sees success", async () => {
+    setMockTokenRefreshOutcome("success")
+    mockGmailApi.users.messages.send
+      .mockRejectedValueOnce(
+        Object.assign(new Error("Unauthorized"), { code: 401 }),
+      )
+      .mockResolvedValueOnce({ data: { id: "msg-after-refresh" } })
+
+    const result = await sendGmailEmail({
+      config: { to: "alice@x.com", subject: "S", body: "B" },
+      userId: "user-1",
+      input: {},
+    })
+
+    expect(result.success).toBe(true)
+    expect(result.output.messageId).toBe("msg-after-refresh")
+    // SDK called twice — once with the original token, once after refresh.
+    expect(mockGmailApi.users.messages.send).toHaveBeenCalledTimes(2)
+    // No health signal — the user shouldn't see a "reconnect" notification
+    // for a transient 401 the system recovered from.
+    expect(getHealthEngineCalls()).toHaveLength(0)
+  })
+
+  test("permanent SDK 401 (refresh succeeds but retry still 401) → structured auth failure + token_revoked signal", async () => {
+    setMockTokenRefreshOutcome("success")
+    mockGmailApi.users.messages.send.mockRejectedValue(
+      Object.assign(new Error("Request had invalid authentication credentials"), {
+        code: 401,
+      }),
+    )
+
+    const result = await sendGmailEmail({
+      config: { to: "alice@x.com", subject: "S", body: "B" },
+      userId: "user-1",
+      input: {},
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toMatch(/reconnect|token|refresh/i)
+    expect(mockGmailApi.users.messages.send).toHaveBeenCalledTimes(2)
+
+    const signals = getHealthEngineCalls()
+    expect(signals).toHaveLength(1)
+    expect(signals[0].signal.classifiedError.requiresUserAction).toBe(true)
+    expect(signals[0].signal.isRecovery).toBe(false)
+  })
+
+  test("permanent 401 with refresh failing immediately → no retry, structured auth failure", async () => {
+    setMockTokenRefreshOutcome("permanent_401")
+    mockGmailApi.users.messages.send.mockRejectedValue(
+      Object.assign(new Error("Unauthorized"), { code: 401 }),
+    )
+
+    const result = await sendGmailEmail({
+      config: { to: "alice@x.com", subject: "S", body: "B" },
+      userId: "user-1",
+      input: {},
+    })
+
+    expect(result.success).toBe(false)
+    // The SDK was only invoked once because refresh failed immediately.
+    expect(mockGmailApi.users.messages.send).toHaveBeenCalledTimes(1)
+    const signals = getHealthEngineCalls()
+    expect(signals).toHaveLength(1)
+    expect(signals[0].signal.classifiedError.requiresUserAction).toBe(true)
   })
 })

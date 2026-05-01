@@ -1,4 +1,5 @@
 import { getDecryptedAccessToken, resolveValue, ActionResult } from '@/lib/workflows/actions/core'
+import { refreshAndRetry } from '@/lib/workflows/actions/core/refreshAndRetry'
 
 import { logger } from '@/lib/utils/logger'
 import { parseSheetName } from './utils'
@@ -287,21 +288,35 @@ export async function createGoogleSheetsRow(
       apiMethod = 'update'
     }
 
-    // Insert or update the row data
-    const endpoint = apiMethod === 'append' 
+    // Insert or update the row data. Wrapped in `refreshAndRetry` (Q3) —
+    // a 401 from the Sheets API triggers one refresh+retry attempt.
+    const endpoint = apiMethod === 'append'
       ? `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=${insertDataOption}`
       : `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`
-      
-    const response = await fetch(endpoint, {
-      method: apiMethod === 'append' ? "POST" : "PUT",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        values: [finalRowValues],
-      }),
+
+    const writeResult = await refreshAndRetry({
+      provider: 'google-sheets',
+      userId,
+      accessToken,
+      call: async (token) =>
+        fetch(endpoint, {
+          method: apiMethod === 'append' ? 'POST' : 'PUT',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ values: [finalRowValues] }),
+        }),
     })
+
+    if (!writeResult.success) {
+      return {
+        success: false,
+        message: writeResult.message,
+      }
+    }
+
+    const response = writeResult.data
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}))

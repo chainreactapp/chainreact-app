@@ -17,6 +17,8 @@ import {
   fetchMock,
   assertFetchCalled,
   getFetchCalls,
+  setMockTokenRefreshOutcome,
+  getHealthEngineCalls,
 } from "../helpers/actionTestHarness"
 
 import { createGoogleSheetsRow } from "@/lib/workflows/actions/google-sheets/createRow"
@@ -238,5 +240,89 @@ describe("createGoogleSheetsRow — input/variable resolution", () => {
 
     const headerCall = assertFetchCalled({ method: "GET", url: "/ss-resolved/values/" })
     expect(headerCall.url).toContain("/spreadsheets/ss-resolved/")
+  })
+})
+
+// Q3 — 401 handling.
+// Sheets is OAuth-with-refresh; raw-fetch returns Response objects. The
+// handler wraps the principal write call (append POST) in `refreshAndRetry`,
+// so a transient 401 on the write triggers refresh+retry, and a permanent
+// 401 surfaces as a structured ActionResult auth failure with a token_revoked
+// signal. See learning/docs/handler-contracts.md.
+describe("createGoogleSheetsRow — Q3 — 401 handling", () => {
+  test("transient 401 on write → refresh succeeds → retry succeeds → success", async () => {
+    setMockTokenRefreshOutcome("success")
+    fetchMock
+      // Header GET (read-only, not wrapped — succeeds with original token).
+      .mockResponseOnce(JSON.stringify({ values: [["Email"]] }))
+      // First write POST returns 401.
+      .mockResponseOnce("", { status: 401 })
+      // Retry POST after refresh succeeds.
+      .mockResponseOnce(
+        JSON.stringify({ updates: { updatedRange: "Sheet1!A2:A2", updatedRows: 1 } }),
+      )
+
+    const result = await createGoogleSheetsRow(
+      {
+        spreadsheetId: "ss-1",
+        sheetName: "Sheet1",
+        newRow_Email: "alice@x.com",
+      },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(true)
+    // 1 GET + 2 POSTs (initial + retry).
+    expect(getFetchCalls().filter((c) => c.method === "POST")).toHaveLength(2)
+    expect(getHealthEngineCalls()).toHaveLength(0)
+  })
+
+  test("permanent 401 on write → ActionResult auth failure + token_revoked signal", async () => {
+    setMockTokenRefreshOutcome("success")
+    fetchMock
+      .mockResponseOnce(JSON.stringify({ values: [["Email"]] }))
+      // Both write attempts return 401.
+      .mockResponseOnce("", { status: 401 })
+      .mockResponseOnce("", { status: 401 })
+
+    const result = await createGoogleSheetsRow(
+      {
+        spreadsheetId: "ss-1",
+        sheetName: "Sheet1",
+        newRow_Email: "alice@x.com",
+      },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(false)
+    expect(result.message).toMatch(/reconnect|token|refresh/i)
+    expect(getFetchCalls().filter((c) => c.method === "POST")).toHaveLength(2)
+    const signals = getHealthEngineCalls()
+    expect(signals).toHaveLength(1)
+    expect(signals[0].signal.classifiedError.requiresUserAction).toBe(true)
+  })
+
+  test("permanent 401 with refresh failing immediately → no retry, ActionResult auth failure", async () => {
+    setMockTokenRefreshOutcome("permanent_401")
+    fetchMock
+      .mockResponseOnce(JSON.stringify({ values: [["Email"]] }))
+      .mockResponseOnce("", { status: 401 })
+
+    const result = await createGoogleSheetsRow(
+      {
+        spreadsheetId: "ss-1",
+        sheetName: "Sheet1",
+        newRow_Email: "alice@x.com",
+      },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(false)
+    // Only one POST attempt because refresh failed (no retry).
+    expect(getFetchCalls().filter((c) => c.method === "POST")).toHaveLength(1)
+    expect(getHealthEngineCalls()).toHaveLength(1)
   })
 })

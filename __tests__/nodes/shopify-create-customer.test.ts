@@ -15,6 +15,8 @@ import {
   setMockIntegration,
   fetchMock,
   assertFetchCalled,
+  setMockTokenRefreshOutcome,
+  getHealthEngineCalls,
 } from "../helpers/actionTestHarness"
 
 import { createShopifyCustomer } from "@/lib/workflows/actions/shopify/createCustomer"
@@ -238,21 +240,13 @@ describe("createShopifyCustomer — integration validation", () => {
   })
 })
 
-// Bug class: HTTP error masked. 401 must surface as failure with a
-// reconnect prompt.
+// Bug class: HTTP error masked.
 describe("createShopifyCustomer — HTTP error paths", () => {
-  test("returns failure when Shopify responds with 401", async () => {
-    fetchMock.mockResponseOnce("Unauthorized", { status: 401 })
-
-    const result = await createShopifyCustomer(
-      { integration_id: "integration-1", email: "x@y.com" },
-      "user-1",
-      {},
-    )
-
-    expect(result.success).toBe(false)
-    expect(result.message).toMatch(/authentication expired|reconnect/i)
-  })
+  // 401 handling moved to the Q3 block below — pre-PR-C3 the handler
+  // surfaced the underlying makeShopifyGraphQLRequest 401 message; post-
+  // PR-C3 the GraphQL call is wrapped in `refreshAndRetry`. Shopify is
+  // non_refreshable in our authSchemes registry — a 401 short-circuits to
+  // the standardized auth-failure shape with no refresh attempt.
 
   test("returns failure when Shopify responds with 429 rate limit", async () => {
     fetchMock.mockResponseOnce("Too Many Requests", { status: 429 })
@@ -265,5 +259,48 @@ describe("createShopifyCustomer — HTTP error paths", () => {
 
     expect(result.success).toBe(false)
     expect(result.message).toMatch(/rate limit/i)
+  })
+})
+
+// Q3 — 401 handling.
+// Shopify is **non_refreshable** in our authSchemes registry. Offline access
+// tokens have no refresh-token grant; a 401 means the merchant uninstalled
+// or the token was revoked, so we surface a structured action_required
+// failure with no refresh attempt. See learning/docs/handler-contracts.md.
+describe("createShopifyCustomer — Q3 — 401 handling (non_refreshable)", () => {
+  test("401 from Shopify → structured auth failure, NO refresh attempted", async () => {
+    fetchMock.mockResponseOnce("Unauthorized", { status: 401 })
+
+    const result = await createShopifyCustomer(
+      { integration_id: "integration-1", email: "x@y.com" },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(false)
+    // Non-refreshable path goes straight to action_required.
+    const signals = getHealthEngineCalls()
+    expect(signals).toHaveLength(1)
+    expect(signals[0].signal.classifiedError.requiresUserAction).toBe(true)
+    // Only ONE outbound POST — no retry, refresh was never invoked.
+    const calls = fetchMock.mock.calls.filter((c) => (c[1] as any)?.method === "POST")
+    expect(calls).toHaveLength(1)
+  })
+
+  test("setMockTokenRefreshOutcome is irrelevant on non_refreshable providers — refresh is never called", async () => {
+    setMockTokenRefreshOutcome("success") // would normally refresh — but Shopify is non_refreshable
+    fetchMock.mockResponseOnce("Unauthorized", { status: 401 })
+
+    const result = await createShopifyCustomer(
+      { integration_id: "integration-1", email: "x@y.com" },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(false)
+    expect(getHealthEngineCalls()).toHaveLength(1)
+    // Confirm refresh was not attempted — only one POST happened.
+    const calls = fetchMock.mock.calls.filter((c) => (c[1] as any)?.method === "POST")
+    expect(calls).toHaveLength(1)
   })
 })
