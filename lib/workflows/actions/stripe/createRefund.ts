@@ -3,6 +3,12 @@ import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
 import { ExecutionContext } from '../../execution/types'
 import { logger } from '@/lib/utils/logger'
 import { flattenForStripe } from './utils'
+import {
+  buildIdempotencyKey,
+  formatProviderIdempotencyKey,
+} from '../core/idempotencyKey'
+import { hashPayload } from '../core/hashPayload'
+import { checkReplay, recordFired } from '../core/sessionSideEffects'
 
 /**
  * Create a refund in Stripe
@@ -65,13 +71,42 @@ export async function stripeCreateRefund(
       }
     }
 
+    // Q4 — within-session idempotency. Refunds are particularly
+    // important to dedup — a duplicate refund silently double-credits
+    // the customer.
+    const idempotencyKey = buildIdempotencyKey({
+      executionSessionId: (context as any).executionSessionId ?? (context as any).executionId,
+      nodeId: (context as any).nodeId,
+      actionType: (context as any).actionType ?? 'stripe_action_create_refund',
+      provider: 'stripe',
+    })
+    const payloadHash = idempotencyKey ? hashPayload(body) : ''
+
+    if (idempotencyKey) {
+      const replay = await checkReplay(idempotencyKey, payloadHash)
+      if (replay.kind === 'cached') return replay.result
+      if (replay.kind === 'mismatch') {
+        return {
+          success: false,
+          output: {},
+          message: 'This action was already executed for this session with different input.',
+          error: 'PAYLOAD_MISMATCH',
+        }
+      }
+    }
+
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    }
+    if (idempotencyKey) {
+      headers['Idempotency-Key'] = formatProviderIdempotencyKey(idempotencyKey)
+    }
+
     // Make API call to create refund
     const response = await fetch('https://api.stripe.com/v1/refunds', {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
+      headers,
       body: new URLSearchParams(flattenForStripe(body)).toString()
     })
 
@@ -82,7 +117,7 @@ export async function stripeCreateRefund(
 
     const refund = await response.json()
 
-    return {
+    const actionResult: ActionResult = {
       success: true,
       output: {
         refundId: refund.id,
@@ -98,6 +133,15 @@ export async function stripeCreateRefund(
       },
       message: `Successfully created refund ${refund.id} for ${refund.amount / 100} ${refund.currency.toUpperCase()}`
     }
+
+    if (idempotencyKey) {
+      await recordFired(idempotencyKey, actionResult, payloadHash, {
+        provider: 'stripe',
+        externalId: refund.id ?? null,
+      })
+    }
+
+    return actionResult
   } catch (error: any) {
     logger.error('[Stripe Create Refund] Error:', error)
     return {

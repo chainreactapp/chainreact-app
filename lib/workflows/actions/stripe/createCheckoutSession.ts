@@ -3,6 +3,12 @@ import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
 import { ExecutionContext } from '../../execution/types'
 import { logger } from '@/lib/utils/logger'
 import { flattenForStripe } from './utils'
+import {
+  buildIdempotencyKey,
+  formatProviderIdempotencyKey,
+} from '../core/idempotencyKey'
+import { hashPayload } from '../core/hashPayload'
+import { checkReplay, recordFired } from '../core/sessionSideEffects'
 
 /**
  * Create a Checkout Session in Stripe
@@ -162,13 +168,40 @@ export async function stripeCreateCheckoutSession(
       body.locale = context.dataFlowManager.resolveVariable(config.locale)
     }
 
+    // Q4 — within-session idempotency.
+    const idempotencyKey = buildIdempotencyKey({
+      executionSessionId: (context as any).executionSessionId ?? (context as any).executionId,
+      nodeId: (context as any).nodeId,
+      actionType: (context as any).actionType ?? 'stripe_action_create_checkout_session',
+      provider: 'stripe',
+    })
+    const payloadHash = idempotencyKey ? hashPayload(body) : ''
+
+    if (idempotencyKey) {
+      const replay = await checkReplay(idempotencyKey, payloadHash)
+      if (replay.kind === 'cached') return replay.result
+      if (replay.kind === 'mismatch') {
+        return {
+          success: false,
+          output: {},
+          message: 'This action was already executed for this session with different input.',
+          error: 'PAYLOAD_MISMATCH',
+        }
+      }
+    }
+
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    }
+    if (idempotencyKey) {
+      headers['Idempotency-Key'] = formatProviderIdempotencyKey(idempotencyKey)
+    }
+
     // Make API call to create checkout session
     const response = await fetch('https://api.stripe.com/v1/checkout/sessions', {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
+      headers,
       body: new URLSearchParams(flattenForStripe(body)).toString()
     })
 
@@ -179,7 +212,7 @@ export async function stripeCreateCheckoutSession(
 
     const session = await response.json()
 
-    return {
+    const actionResult: ActionResult = {
       success: true,
       output: {
         sessionId: session.id,
@@ -196,6 +229,15 @@ export async function stripeCreateCheckoutSession(
       },
       message: `Successfully created checkout session ${session.id}. Redirect customer to: ${session.url}`
     }
+
+    if (idempotencyKey) {
+      await recordFired(idempotencyKey, actionResult, payloadHash, {
+        provider: 'stripe',
+        externalId: session.id ?? null,
+      })
+    }
+
+    return actionResult
   } catch (error: any) {
     logger.error('[Stripe Create Checkout Session] Error:', error)
     return {
