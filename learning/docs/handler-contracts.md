@@ -277,18 +277,30 @@ Tokens, API keys, and other secrets must never appear in any logger call (debug,
 
 Customer PII (email addresses, phone numbers, full names) must not appear at `info` or `warn` level. PII at `debug` level is OK (developer-only). Tests assert by capturing the logger mock and checking info/warn call arguments against known-PII values from the test input.
 
-### Q8c — Billing-impacting actions require pre-execution cost check
+### Q8c — Workflow-level pre-execution deduction is the billing safeguard
 
-Stripe charges, paid AI calls, and any other billing-impacting handler must call the cost-check helper before firing. If the cost check returns `insufficient_balance`, the handler returns `success: false` (`category: 'billing'`) without making the outbound call.
+**Decision (locked PR-D):** Task-budget enforcement is an **execution-layer responsibility**, not a per-handler one. The workflow engine deducts tasks **upfront** via `deductTasksAtomic` in [`lib/workflows/taskDeduction.ts`](../../lib/workflows/taskDeduction.ts) before any handler fires. The deduction is fail-closed on:
+- `insufficient_balance` (user out of tasks)
+- `subscription_inactive` (subscription expired)
+- `billing_unavailable` (RPC failure — fail closed)
 
-Applies to:
-- Stripe (charges, payment intents, subscriptions)
-- AI handlers calling paid models
-- Any future handler that has monetary impact
+When deduction fails, no handler in the workflow runs.
 
-Does NOT apply to:
-- Free actions (logic nodes, mappers)
-- Calls to user's own integrations where cost is the user's, not ours (Gmail send, Slack post — already covered by per-action task budget which is a different accounting layer)
+**Per-handler cost checks are NOT required and should not be added** unless we discover a real bypass path. Duplicating budget checks at the handler layer:
+- Adds a redundant DB roundtrip per billing-impacting handler invocation.
+- Risks divergence between handler-level and workflow-level rules.
+- Buys nothing the upstream check doesn't already provide.
+
+If a future code path turns out to invoke a handler without going through `deductTasksAtomic`, that's the bug to fix — not the missing handler-level shim. The test in [`__tests__/workflows/billing-gate.test.ts`](../../__tests__/workflows/billing-gate.test.ts) pins the upstream-only contract.
+
+### What the safety-floor helper does
+
+[`__tests__/helpers/safetyFloors.ts`](../../__tests__/helpers/safetyFloors.ts) `runSafetyFloorChecks(...)` enforces Q8a / Q8b / Q8d per handler. The `isBillingImpacting` flag is accepted on its API for forward compatibility (e.g., if a future RFC adds a per-handler shim) but currently has no behavior. Tests should still pass `isBillingImpacting: true` for Stripe handlers as documentation.
+
+### Out of scope for Q8c
+
+- Free actions (logic nodes, mappers, integrations using the user's own credentials where ChainReact isn't billed).
+- Calls priced by the upstream provider, not by ChainReact (Gmail send, Slack post).
 
 ### Q8d — `testMode` intercepts all outbound writes
 

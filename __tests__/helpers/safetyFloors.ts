@@ -20,17 +20,32 @@
  *         flag set, asserts no outbound provider call fires AND the
  *         result carries `output.simulated === true`.
  *
- * ─── Q8c (intentionally not enforced per-handler here) ───────────────
- *   The Q8 contract calls for a per-handler cost-check helper. ChainReact
- *   already enforces task budget at the WORKFLOW layer via
- *   `deductTasksAtomic` (lib/workflows/taskDeduction.ts) — it runs before
- *   any handler fires and is fail-closed on insufficient_balance,
- *   subscription_inactive, or billing_unavailable. Adding a per-handler
- *   duplicate would not catch a case the upstream check misses.
+ * ─── Q8c — locked decision: upstream-only ───────────────────────────
+ *   Task-budget enforcement is an EXECUTION-LAYER responsibility. The
+ *   workflow engine deducts tasks upfront via
+ *   `deductTasksAtomic` (lib/workflows/taskDeduction.ts) before any
+ *   handler fires; the deduction is fail-closed on `insufficient_balance`,
+ *   `subscription_inactive`, and `billing_unavailable`. Per-handler
+ *   budget checks are intentionally NOT added — duplicating budget
+ *   logic risks divergence between handler-level and workflow-level
+ *   rules and adds a redundant DB roundtrip per billing-impacting
+ *   handler invocation.
  *
- *   The `isBillingImpacting` flag is accepted on the helper API for
- *   forward compatibility — if a future RFC introduces a per-handler
- *   cost shim, the helper can wire it in without per-test churn.
+ *   The contract test in `__tests__/workflows/billing-gate.test.ts`
+ *   pins this:
+ *     - `deductTasksAtomic` returns the documented `resultType` shapes
+ *     - on RPC failure it FAIL-CLOSES (returns `billing_unavailable`,
+ *       not `deducted`)
+ *     - both production execute routes structurally invoke
+ *       `deductTasksAtomic` before any workflow execution begins
+ *
+ *   The `isBillingImpacting` flag below is accepted for documentation
+ *   only — Stripe handler tests pass it as a marker. It has no
+ *   behavioral effect.
+ *
+ *   If a real bypass is ever discovered (a handler reachable without
+ *   deduction), the fix is to plug the route, NOT to add a per-handler
+ *   shim. See learning/docs/handler-contracts.md Q8c.
  *
  * ─── Usage ───────────────────────────────────────────────────────────
  *   describe('Q8 — safety floors', () => {
