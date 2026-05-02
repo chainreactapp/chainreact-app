@@ -445,7 +445,8 @@ All AI/LLM infrastructure is centralized here. Do NOT create inline clients or h
 
 | File | Purpose |
 |------|---------|
-| `openai-client.ts` | Single shared client — use `getOpenAIClient()` |
+| `openai-client.ts` | Single shared client — use `getOpenAIClient()` (or `getOpenAIClientWithKey(apiKey)` for user-supplied keys) |
+| `anthropic-client.ts` | Single shared client — use `getAnthropicClient()` (or `getAnthropicClientWithKey(apiKey)` for user-supplied keys) |
 | `models.ts` | Centralized config — use `AI_MODELS.planning`, `.fast`, `.utility`, `.configuration` |
 | `llm-retry.ts` | `callLLMWithRetry()` — retry, timeout, model fallback |
 | `token-utils.ts` | Token-aware conversation history truncation |
@@ -455,13 +456,15 @@ All AI/LLM infrastructure is centralized here. Do NOT create inline clients or h
 
 **Rules:**
 - `import { getOpenAIClient } from '@/lib/ai/openai-client'` — never `new OpenAI()`
-- `import { AI_MODELS } from '@/lib/ai/models'` — never hardcode `'gpt-4o'` or `'gpt-4o-mini'`
+- `import { getAnthropicClient } from '@/lib/ai/anthropic-client'` — never `new Anthropic()`
+- `import { AI_MODELS } from '@/lib/ai/models'` — never hardcode `'gpt-4o'` or `'gpt-4o-mini'` at runtime selection points (price-book lookups and UI dropdown options are exempt — see `aiAgentAction.ts:calculateCost` and `aiAgentNode.ts:options`)
 - `import { callLLMWithRetry } from '@/lib/ai/llm-retry'` — never raw `openai.chat.completions.create()`
 
 ## Lazy Client Initialization — MANDATORY
-**NEVER initialize API clients at module level.** Module-level `new Stripe(...)`, `new OpenAI(...)`, `new Resend(...)` execute during `next build` and fail when env vars are missing (CI).
+**NEVER initialize API clients at module level.** Module-level `new Stripe(...)`, `new OpenAI(...)`, `new Anthropic(...)`, `new Resend(...)` execute during `next build` and fail when env vars are missing (CI).
 
 - **OpenAI:** `getOpenAIClient()` from `lib/ai/openai-client.ts`
+- **Anthropic:** `getAnthropicClient()` from `lib/ai/anthropic-client.ts`
 - **Stripe:** `getStripeClient()` from `lib/stripe/client.ts`
 - **Resend:** `getResendClient()` in `lib/notifications/email.ts`
 

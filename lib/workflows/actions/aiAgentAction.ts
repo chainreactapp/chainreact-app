@@ -17,6 +17,35 @@ import type { ActionResult } from './core/executeWait'
 import type { ExecutionContext } from '../core/executeWorkflow'
 import { resolveValue } from './core/resolveValue'
 import { missingRequiredFieldAsResult } from './core/requireExplicitField'
+import { AI_MODELS } from '@/lib/ai/models'
+import {
+  getOpenAIClient,
+  getOpenAIClientWithKey,
+} from '@/lib/ai/openai-client'
+import {
+  getAnthropicClient,
+  getAnthropicClientWithKey,
+} from '@/lib/ai/anthropic-client'
+
+/**
+ * Default AI agent generation parameters.
+ *
+ * §A3 — these used to be hardcoded inline at the call site
+ * (`config.model || 'gpt-4o-mini'`, `config.temperature ?? 0.7`,
+ * `config.maxTokens || 1500`). The model literal violated the
+ * CLAUDE.md rule "never hardcode model strings — use AI_MODELS."
+ *
+ * Resolution: `model` routes through `AI_MODELS.fast` (centralized
+ * registry, single source of truth for model identifiers).
+ * `temperature` and `maxTokens` stay as named constants in this file
+ * because they're behavioral defaults specific to the AI agent action,
+ * not application-wide tuning knobs. The schema in `aiAgentNode.ts`
+ * declares the same defaults at the field level, and these constants
+ * are the engine-side fallback when a config row predates the schema's
+ * defaultValue (e.g., legacy workflow rows).
+ */
+const AI_AGENT_DEFAULT_TEMPERATURE = 0.7
+const AI_AGENT_DEFAULT_MAX_TOKENS = 1500
 
 // Helper to create supabase client for fetching user profile
 const getSupabase = () => createClient(
@@ -587,29 +616,18 @@ function buildSmartContext(
   }
 }
 
-// Initialize AI clients (lazy loaded when needed)
-let openaiClient: OpenAI | null = null
-let anthropicClient: Anthropic | null = null
-
-function getOpenAIClient(apiKey?: string): OpenAI {
-  if (apiKey) {
-    return new OpenAI({ apiKey })
-  }
-  if (!openaiClient) {
-    openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  }
-  return openaiClient
-}
-
-function getAnthropicClient(apiKey?: string): Anthropic {
-  if (apiKey) {
-    return new Anthropic({ apiKey })
-  }
-  if (!anthropicClient) {
-    anthropicClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-  }
-  return anthropicClient
-}
+/**
+ * §A3 — the inline `getOpenAIClient` / `getAnthropicClient` and their
+ * module-level cached singletons used to live here. Removed in favor of
+ * the shared clients in `lib/ai/{openai,anthropic}-client.ts`, which
+ * already implement the same lazy-init + custom-key pattern. See
+ * CLAUDE.md "import { getOpenAIClient } from '@/lib/ai/openai-client'
+ * — never new OpenAI()" for the canonical rule.
+ *
+ * Call sites use `apiKey ? getOpenAIClientWithKey(apiKey) : getOpenAIClient()`
+ * (and the parallel Anthropic helpers) to choose between the user's
+ * custom key and the app-managed default.
+ */
 
 /**
  * Main Autonomous AI Agent Handler
@@ -1144,9 +1162,13 @@ async function generateWithAI(
   userPrompt: string,
   workflowContext: WorkflowContext
 ): Promise<{ content: string; tokensUsed: number; costIncurred: number }> {
-  const model = config.model || 'gpt-4o-mini'
-  const temperature = config.temperature ?? 0.7
-  const maxTokens = config.maxTokens || 1500
+  // §A3 — model routes through `AI_MODELS.fast` (centralized registry).
+  // temperature / maxTokens fall back to named constants defined at the
+  // top of this file; the same values are also declared as schema-level
+  // defaults in `aiAgentNode.ts`.
+  const model = config.model || AI_MODELS.fast
+  const temperature = config.temperature ?? AI_AGENT_DEFAULT_TEMPERATURE
+  const maxTokens = config.maxTokens || AI_AGENT_DEFAULT_MAX_TOKENS
 
   // Determine API source
   const apiKey = config.apiSource === 'custom' ? config.customApiKey : undefined
@@ -1156,7 +1178,7 @@ async function generateWithAI(
 
   // Use OpenAI for GPT models
   if (model.startsWith('gpt-')) {
-    const client = getOpenAIClient(apiKey)
+    const client = apiKey ? getOpenAIClientWithKey(apiKey) : getOpenAIClient()
 
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = []
     messages.push({ role: 'system', content: systemPrompt })
@@ -1184,7 +1206,7 @@ async function generateWithAI(
 
   // Use Anthropic for Claude models
   if (model.startsWith('claude-')) {
-    const client = getAnthropicClient(apiKey)
+    const client = apiKey ? getAnthropicClientWithKey(apiKey) : getAnthropicClient()
 
     const response = await client.messages.create({
       model,

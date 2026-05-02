@@ -39,12 +39,13 @@
 
 | Field | Value |
 |---|---|
-| Status | IN PROGRESS — scheduled tracking issue fires 2026-05-01 09:00 America/Chicago |
-| File | [`lib/workflows/actions/aiAgentAction.ts:1112-1114`](../../lib/workflows/actions/aiAgentAction.ts#L1112) |
-| What | `model = 'gpt-4o-mini'`, `temperature = 0.7`, `maxTokens = 1500` hardcoded at handler call site. |
-| Why | Violates CLAUDE.md "never hardcode model strings — use `AI_MODELS`." |
-| Pre-launch action | Route `model` through `AI_MODELS` from `lib/ai/models.ts`. Decide whether `temperature` / `maxTokens` belong in centralized AI defaults, schema defaults, or required workflow config. Add regression test preventing future hardcoded model literals. |
-| Tracking | Routine `trig_01WLq9mqbEmgmUUpfKrwCoh9`; documented in [`learning/docs/handler-defaults-audit.md`](handler-defaults-audit.md) §"ai" |
+| Status | DONE — 2026-05-02 |
+| File | [`lib/workflows/actions/aiAgentAction.ts`](../../lib/workflows/actions/aiAgentAction.ts) (`generateWithAI` call site, formerly L1112-1114) |
+| What | `model = 'gpt-4o-mini'`, `temperature = 0.7`, `maxTokens = 1500` hardcoded at handler call site. Plus inline `getOpenAIClient` / `getAnthropicClient` helpers duplicating the shared `lib/ai/{openai,anthropic}-client.ts` infrastructure. |
+| Resolution | (1) `model` fallback now routes through `AI_MODELS.fast` from `@/lib/ai/models`. (2) `temperature` / `maxTokens` fall back to named constants `AI_AGENT_DEFAULT_TEMPERATURE` (0.7) and `AI_AGENT_DEFAULT_MAX_TOKENS` (1500) defined at the top of the handler — same values declared at the schema level in `aiAgentNode.ts`. The named constants make the engine-side fallback discoverable and prevent drift from the schema defaults. (3) Inline client helpers removed; handler now imports `getOpenAIClient` / `getOpenAIClientWithKey` and `getAnthropicClient` / `getAnthropicClientWithKey` from the shared modules. New `getAnthropicClientWithKey` added to `lib/ai/anthropic-client.ts` mirroring the OpenAI parallel. |
+| Regression test | [`__tests__/workflows/a3-ai-defaults-no-hardcoded-models.test.ts`](../../__tests__/workflows/a3-ai-defaults-no-hardcoded-models.test.ts) reads the handler source and pins (a) the `config.model \|\| ...` line uses `AI_MODELS.*`, (b) temperature / maxTokens fallbacks use the named constants, (c) no `new OpenAI()` / `new Anthropic()` outside comment lines, (d) shared-client imports are present. 5 tests, all passing. |
+| Out of scope (kept as literals intentionally) | `calculateCost`'s `costPer1kTokens` price book — uses literal model identifiers as KEYS for a per-token rate lookup. Includes `gpt-4-turbo`, `gpt-3.5-turbo`, `claude-3-{opus,sonnet,haiku}` which are not in `AI_MODELS` (back-compat for older workflow rows). The schema's `options` array in `aiAgentNode.ts` also uses literals — those are user-facing dropdown values, not runtime selection. |
+| Tracking | Routine `trig_01WLq9mqbEmgmUUpfKrwCoh9` can be deactivated; documented in [`learning/docs/handler-defaults-audit.md`](handler-defaults-audit.md) §"ai" |
 
 ### A4. Handler defaults audit decisions
 
