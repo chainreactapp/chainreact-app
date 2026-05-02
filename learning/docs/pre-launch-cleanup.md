@@ -214,7 +214,7 @@ For the comment-rewrite items above, full removal lands when:
 
 | Status | File:Line | What |
 |---|---|---|
-| OPEN | [`app/api/integrations/facebook/data-deletion.ts:34`](../../app/api/integrations/facebook/data-deletion.ts#L34) | `// TODO: Delete all Facebook-related data for the authenticated user` — Facebook compliance requirement, must be implemented before any Facebook integration goes live |
+| DONE — 2026-05-02 | `app/api/integrations/facebook/data-deletion/route.ts` (was `app/api/integrations/facebook/data-deletion.ts`) | Implemented Facebook data-deletion callback per Meta's spec. Two findings during the audit: (1) the original file was at `data-deletion.ts` (not `data-deletion/route.ts`), so it wasn't actually exposed as a Next.js route — the endpoint was completely unreachable. Moved to the correct path. (2) The original file was a stub with 4 TODOs that never deleted anything. Replaced with a full implementation: HMAC-SHA256 signature verification using `FACEBOOK_CLIENT_SECRET`, base64url decode of the signed_request, constant-time signature compare; Facebook-initiated path looks up the integration by `provider = 'facebook'` AND `provider_user_id = signed.user_id`; user-initiated path authenticates via Supabase Bearer token and finds the user's facebook integrations. Both paths use the same cleanup pattern as `/api/integrations/[id]` DELETE: revoke OAuth token (fire-and-forget via `revokeOAuthTokenAsync`), explicitly clear `integration_permissions` and `integration_shares`, then delete the integration row (cascade handles trigger_resources et al.). Returns `{ url, confirmation_code }` per Meta's required shape for Facebook-initiated calls. |
 
 ---
 
