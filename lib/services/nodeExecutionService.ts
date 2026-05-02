@@ -119,7 +119,10 @@ export class NodeExecutionService {
           }
         }
       } else if (context.testMode && this.isExternalAction(node.data.type) && nodeResult) {
-        // Fallback to legacy test mode behavior for backwards compatibility
+        // Fallback for resume paths that don't reconstruct testModeConfig
+        // (e.g. app/api/webhooks/discord/hitl, app/api/workflows/[id]/resume,
+        // app/api/workflows/events). Migration: read workflow_execution_sessions.test_mode_config
+        // when resuming a test-mode session and pass it through, then remove this branch.
         nodeResult = {
           ...nodeResult,
           intercepted: {
@@ -512,7 +515,6 @@ export class NodeExecutionService {
     // Determine where this action would send data
     switch (nodeType) {
       case 'gmail_action_send_email':
-      case 'gmail_send':
         return config.to || 'unknown recipient'
       case 'slack_send_message':
       case 'slack_action_send_message':
@@ -536,7 +538,6 @@ export class NodeExecutionService {
     // Generate a preview of what would be sent in test mode
     switch (nodeType) {
       case 'gmail_action_send_email':
-      case 'gmail_send':
         return {
           to: config.to || 'recipient@example.com',
           subject: config.subject || 'Test Email',

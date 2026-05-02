@@ -14,7 +14,6 @@ export class GmailIntegrationService {
 
     switch (nodeType) {
       case "gmail_action_send_email":
-      case "gmail_send": // Handle legacy/alternative type name
         return await this.executeSendEmail(node, context)
       case "gmail_action_search_email":
         return await this.executeSearchEmail(node, context)
@@ -64,7 +63,7 @@ export class GmailIntegrationService {
       uploadedFiles: this.resolveValue(config.uploadedFiles, context),
       fileUrl: this.resolveValue(config.fileUrl, context),
       fileFromNode: this.resolveValue(config.fileFromNode, context),
-      // Legacy support
+      // Pre-resolved attachment-id list — alternate input shape parallel to sourceType/uploadedFiles/fileUrl/fileFromNode
       attachments: this.resolveValue(config.attachments, context),
       // Additional fields that might be needed
       isHtml: config.isHtml,

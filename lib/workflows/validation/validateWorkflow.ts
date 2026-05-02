@@ -41,7 +41,9 @@ export function validateWorkflow(workflow: any): WorkflowValidation {
     // Check persisted flags first
     if (node.data?.isTrigger !== undefined) return node.data.isTrigger
     if (node.metadata?.isTrigger !== undefined) return node.metadata.isTrigger
-    // Legacy format: type string contains _trigger_
+    // Flow shape: top-level node.type IS the actual node type string (v2/system, agent planner output).
+    // ReactFlow shape uses node.type === 'custom' and stores the type in node.data.type, so this branch
+    // matches only the Flow-shaped path. Tested at __tests__/workflows/v2/system/validate-workflow.test.ts:219.
     if (node.type?.includes('_trigger_')) return true
     // Final fallback: look up the node type in the catalog
     const nodeType = node.data?.type || node.metadata?.type

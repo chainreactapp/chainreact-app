@@ -716,24 +716,6 @@ const outlookMappings: Record<string, FieldMapping> = {
   "microsoft-outlook_action_get_attachment": {
     emailId: "outlook_messages",
   },
-
-  // Legacy mappings (may be deprecated)
-  "microsoft-outlook_action_create_meeting": {
-    attendees: "outlook-enhanced-recipients",
-  },
-  "microsoft-outlook_action_add_folder": {
-    messageId: "outlook_messages",
-    folderId: "outlook_folders",
-  },
-  "microsoft-outlook_action_archive_email": {
-    messageId: "outlook_messages",
-  },
-  "microsoft-outlook_action_mark_as_read": {
-    messageId: "outlook_messages",
-  },
-  "microsoft-outlook_action_mark_as_unread": {
-    messageId: "outlook_messages",
-  },
 };
 
 // Microsoft Teams field mappings
@@ -1451,7 +1433,10 @@ const notionMappings: Record<string, FieldMapping> = {
   notion_action_search_pages: {
     filter: "notion_filter_types",
   },
-  // Simple create page action (for backwards compatibility with templates)
+  // Single-purpose create-page action used by predefined templates and the
+  // AI workflow generators. Parallel to notion_action_manage_page (unified
+  // create/update/delete) — both are live; templates default to this simpler
+  // shape because it has fewer required fields.
   notion_action_create_page: {
     workspace: "notion_workspaces",
     parentDatabase: "notion_databases",
@@ -1471,12 +1456,6 @@ const notionMappings: Record<string, FieldMapping> = {
     page: "notion_pages",
     destinationPage: "notion_pages",
   },
-  // Deprecated - replaced by notion_action_manage_database
-  // notion_action_create_database: {
-  //   workspace: "notion_workspaces",
-  //   template: "notion_database_templates",
-  // },
-
   // Unified Notion actions
   notion_action_manage_page: {
     workspace: "notion_workspaces",

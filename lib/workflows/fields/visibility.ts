@@ -215,7 +215,11 @@ export class FieldVisibilityEngine {
       }
     }
 
-    // Legacy patterns (will be removed in future)
+    // Pre-migration pattern shapes — `conditional`, `conditionalVisibility`,
+    // `visibleWhen`, `showWhen`. Migration to the canonical `visibilityCondition`
+    // shape is tracked in learning/docs/visibility-migration-progress.md
+    // (~130 occurrences across 25+ schema files; remove these branches once
+    // the migration completes).
 
     // Pattern: { conditional: { field: 'action', value: 'create' } }
     if (field.conditional) {

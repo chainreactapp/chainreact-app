@@ -35,12 +35,16 @@ export function getShopDomain(integration: ShopifyIntegration, selectedShop?: st
     return metadata.stores[0].shop
   }
 
-  // Legacy: Try single shop field
+  // metadata.shop — populated by test fixtures (see __tests__/helpers/actionTestHarness.ts).
+  // Production OAuth never writes this key; if you remove the test fixtures
+  // you can also remove this branch.
   if (metadata?.shop) {
     return metadata.shop
   }
 
-  // Legacy: Try top-level shop_domain
+  // integration.shop_domain — canonical write target from the OAuth callback
+  // (lib/integrations/provider-registry.ts:additionalIntegrationData for shopify).
+  // This is the path every production integration row reaches.
   if (integration.shop_domain) {
     return integration.shop_domain
   }

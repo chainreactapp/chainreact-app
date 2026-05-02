@@ -135,7 +135,7 @@ function resolveReferenceToNode(
   const idByTitle = nodeTitleMap.get(firstPart.toLowerCase())
   if (idByTitle) return idByTitle
 
-  // Node type match (e.g., "ai_agent", "gmail_send")
+  // Node type match (e.g., "ai_agent", "gmail_action_send_email")
   const idByType = nodeTypeMap.get(firstPart)
   if (idByType) return idByType
 

@@ -25,10 +25,6 @@ function isGoogleProvider(provider: string | undefined): boolean {
   return googleProviders.includes(provider.toLowerCase()) || provider.toLowerCase().startsWith('google');
 }
 
-interface DataFetcher {
-  [key: string]: (integration: any, options?: any) => Promise<any[] | { data: any[], error?: { message: string } }>
-}
-
 // Add comprehensive error handling and fix API calls
 export async function POST(req: NextRequest) {
   logger.info('🚀 [SERVER] fetch-user-data API route called')
@@ -1225,51 +1221,14 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Find the data fetcher for the requested data type (legacy path)
-    logger.info(`⚠️ [SERVER] Using legacy data fetcher path for ${dataType}`, {
-      integrationProvider: integration?.provider,
-      availableFetchers: Object.keys(dataFetchers)
+    // No dedicated provider API matched the dataType — return 400.
+    // (A legacy generic-fetcher map used to live here but was always empty;
+    // every provider routes through its own /data/[dataType] endpoint.)
+    logger.error(`❌ [SERVER] No data fetcher found for ${dataType}`, {
+      dataType,
+      integration: integration?.provider,
     });
-    const dataFetcher = dataFetchers[dataType];
-    if (!dataFetcher) {
-      logger.error(`❌ [SERVER] No data fetcher found for ${dataType}`, {
-        dataType,
-        integration: integration?.provider,
-        availableFetchers: Object.keys(dataFetchers)
-      });
-      return jsonResponse({ error: `Unsupported data type: ${dataType}` }, { status: 400 });
-    }
-
-    // Fetch the data
-    try {
-      logger.info(`🔍 [SERVER] Calling dataFetcher for ${dataType}...`);
-      const data = await dataFetcher(integration, options);
-      const resultLength = Array.isArray(data) ? data.length : (data as any)?.data?.length;
-      logger.info(`✅ [SERVER] Data fetch successful for ${dataType}, result length:`, resultLength ?? 'unknown');
-      return jsonResponse({ data });
-    } catch (error: any) {
-      logger.error(`❌ [SERVER] Error calling dataFetcher for ${dataType}:`, error);
-      
-      // Check if it's an authentication error
-      if (error.message?.includes('authentication') || error.message?.includes('expired') || 
-          error.message?.includes('401') || error.message?.includes('unauthorized')) {
-        return jsonResponse({ 
-          error: 'Authentication expired. Please reconnect your account.',
-          needsReconnection: true 
-        }, { status: 401 });
-      }
-      
-      // Check if it's a rate limit error
-      if (error.message?.includes('rate limit') || error.message?.includes('429') || 
-          error.message?.includes('too many requests')) {
-        return jsonResponse({ 
-          error: 'API rate limit exceeded. Please try again later.',
-          retryAfter: 60 
-        }, { status: 429 });
-      }
-      
-      return jsonResponse({ error: error.message || 'Internal server error' }, { status: 500 });
-    }
+    return jsonResponse({ error: `Unsupported data type: ${dataType}` }, { status: 400 });
   } catch (error: any) {
     logger.error('❌ [SERVER] Unexpected error in fetch-user-data:', {
       message: error.message,
@@ -1282,15 +1241,6 @@ export async function POST(req: NextRequest) {
     }, { status: 500 });
   }
 }
-
-function fallbackFetcher() {
-  return {
-    data: []
-  } as any
-}
-
-// Legacy data fetchers - should be empty as all requests are routed to dedicated APIs
-const dataFetchers: DataFetcher = {}
 
 // Helper functions
 function getPageTitle(page: any): string {

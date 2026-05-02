@@ -169,25 +169,44 @@ Higher-priority because billing correctness depends on the atomic path being the
 
 ## G. Legacy data formats / fallback paths
 
-These accept multiple input shapes "for backwards compatibility" with older data that may exist somewhere. Pre-launch there is no older data — pick one shape.
+These accept multiple input shapes "for backwards compatibility" with older data that may exist somewhere. Pre-launch there is no older data — pick one shape. Sweep performed 2026-05-02. Outcomes below.
 
-| Status | File:Line | What |
+### Deleted / inlined 2026-05-02 (truly-dead branches)
+
+| File | What | Why safe |
 |---|---|---|
-| OPEN | [`lib/workflows/validation/validateWorkflow.ts:44`](../../lib/workflows/validation/validateWorkflow.ts#L44) | `// Legacy format: type string contains _trigger_` |
-| OPEN | [`lib/services/nodeExecutionService.ts:121`](../../lib/services/nodeExecutionService.ts#L121) | `// Fallback to legacy test mode behavior for backwards compatibility` |
-| OPEN | [`lib/services/integrations/gmailIntegrationService.ts:67`](../../lib/services/integrations/gmailIntegrationService.ts#L67) | `// Legacy support` |
-| OPEN | [`app/api/integrations/fetch-user-data/route.ts:1292`](../../app/api/integrations/fetch-user-data/route.ts#L1292) | `// Legacy data fetchers - should be empty as all requests are routed to dedicated APIs` (the comment itself says this should be empty — confirm and delete) |
-| OPEN | [`lib/workflows/fields/visibility.ts:218`](../../lib/workflows/fields/visibility.ts#L218) | `// Legacy patterns (will be removed in future)` — promised removal; do it now |
-| OPEN | [`lib/workflows/aiFieldGeneration.ts:377`](../../lib/workflows/aiFieldGeneration.ts#L377) | `// Fallback to hardcoded templates for backwards compatibility` |
-| OPEN | [`components/workflows/configuration/config/fieldMappings.ts:720`](../../components/workflows/configuration/config/fieldMappings.ts#L720) | `// Legacy mappings (may be deprecated)` — confirm "may be" and resolve |
-| OPEN | [`components/workflows/configuration/config/fieldMappings.ts:1454`](../../components/workflows/configuration/config/fieldMappings.ts#L1454) | `// Simple create page action (for backwards compatibility with templates)` |
-| OPEN | [`components/workflows/configuration/config/fieldMappings.ts:1474`](../../components/workflows/configuration/config/fieldMappings.ts#L1474) | `// Deprecated - replaced by notion_action_manage_database` |
-| OPEN | [`app/api/integrations/shopify/data/utils.ts:38`](../../app/api/integrations/shopify/data/utils.ts#L38) | `// Legacy: Try single shop field` |
-| OPEN | [`app/api/integrations/shopify/data/utils.ts:43`](../../app/api/integrations/shopify/data/utils.ts#L43) | `// Legacy: Try top-level shop_domain` |
-| OPEN | [`app/api/integrations/shopify/data/types.ts:21`](../../app/api/integrations/shopify/data/types.ts#L21) | `shop?: string // Legacy: single shop domain (for backwards compatibility)` |
-| OPEN | [`app/api/integrations/route.ts:216`](../../app/api/integrations/route.ts#L216) | `// Prefer top-level fields, fallback to metadata for backwards compatibility` |
+| `lib/workflows/aiFieldGeneration.ts` (entire file) | `AIFieldGenerator` class + `AI_FIELD_TEMPLATES` registry + `supportsAIGeneration` / `getAIGenerateableFields` / `getFieldTemplate` helpers + singleton `aiFieldGenerator`. | Zero importers anywhere. Verified via grep on `aiFieldGeneration` and `aiFieldGenerator` — only matches were inside the file itself. The singleton, helpers, and template registry were never wired up. |
+| `lib/services/integrations/gmailIntegrationService.ts:17` (alt case) | `case "gmail_send"` (alt type name) → `executeSendEmail`. | Zero rows / nodes use `type: 'gmail_send'`. The 5 case labels for it (`gmailIntegrationService.ts:17`, `nodeExecutionService.ts:518/542`, `executeNode.ts:42/90`) all deleted. Stale comment example references at `validateDataFlow.ts:138` and `useWorkflowBuilder.ts:1632` updated to the canonical `gmail_action_send_email`. |
+| `app/api/integrations/fetch-user-data/route.ts:1228-1272 + 1286-1293` | Legacy `dataFetchers` lookup (always-empty `{}`) + `fallbackFetcher` (never called) + `DataFetcher` interface. | Every provider routes through its dedicated `/api/integrations/<provider>/data` endpoint. The legacy generic-fetcher map was always empty so the lookup always returned 400. Replaced with a direct 400 + comment explaining the history. |
+| `components/workflows/configuration/config/fieldMappings.ts:720-736` (5 outlook mappings) | Mappings for `microsoft-outlook_action_create_meeting` / `_add_folder` / `_archive_email` / `_mark_as_read` / `_mark_as_unread`. | None of these node types exist in the catalog (zero `type:` matches in `lib/workflows/nodes/providers/outlook/index.ts` for any of them). Mappings were orphan. Bonus: deleted 4 matching prompt lines from `lib/ai/workflowAI.ts:219-223` that listed these as available actions (would have caused planner hallucinations). |
+| `components/workflows/configuration/config/fieldMappings.ts:1456-1460` | Commented-out `notion_action_create_database` block + "Deprecated - replaced by notion_action_manage_database" comment. | Already commented out. The active mapping at `notion_action_manage_database` (line 1472) plus the **new** active `notion_action_create_database` mapping (line 1477) supersede this dead block. |
+| `app/api/integrations/route.ts:216-230` | `metadata.email` / `metadata.userEmail` / `metadata.username` / `metadata.name` / `metadata.account_name` / `metadata.accountName` fallbacks for top-level fields. | No OAuth callback in `lib/integrations/provider-registry.ts` writes any of these to metadata — every callback writes the canonical fields directly to the top-level integration row columns. The `||` fallbacks were unreachable. |
 
-**Pre-launch action:** for each, identify whether any actual data in the dev/staging databases is in the legacy shape. If not (the common case pre-launch), delete the legacy branch and pin tests to the canonical shape only. If yes, write a one-shot migration to normalize the data, then delete.
+### Comment-rewrites 2026-05-02 (load-bearing branches with misleading "legacy" labels)
+
+| File | Was labeled | Reality |
+|---|---|---|
+| `lib/workflows/validation/validateWorkflow.ts:44` | `// Legacy format: type string contains _trigger_` | Flow shape (top-level `node.type` IS the type string) is actively used by v2/system code and tested at `__tests__/workflows/v2/system/validate-workflow.test.ts:219`. Not legacy. |
+| `lib/services/nodeExecutionService.ts:121` | `// Fallback to legacy test mode behavior for backwards compatibility` | Live fallback for HITL / resume routes (`app/api/webhooks/discord/hitl`, `app/api/workflows/[id]/resume`, `app/api/workflows/events`) that pass `testMode: true` without reconstructing `testModeConfig`. Migration path: read `workflow_execution_sessions.test_mode_config` when resuming a test-mode session. |
+| `lib/services/integrations/gmailIntegrationService.ts:67` | `// Legacy support` for `attachments` | Active alternate input shape, parallel to `sourceType` / `uploadedFiles` / `fileUrl` / `fileFromNode`. The handler `lib/workflows/actions/gmail/sendEmail.ts:65` resolves `config.attachments` directly. Not legacy. |
+| `lib/workflows/fields/visibility.ts:218` | `// Legacy patterns (will be removed in future)` | ~130 occurrences of `conditional` / `conditionalVisibility` / `visibleWhen` / `showWhen` across 25+ schema files. Migration to the canonical `visibilityCondition` shape is tracked in `learning/docs/visibility-migration-progress.md`. Removal is gated on completing that migration, not "the future". |
+| `components/workflows/configuration/config/fieldMappings.ts:1436` | `// Simple create page action (for backwards compatibility with templates)` | `notion_action_create_page` is actively used by 8+ predefined templates (`lib/templates/predefinedTemplates.ts`) and 4 AI workflow generators. Parallel to (not superseded by) `notion_action_manage_page`. Not legacy. |
+| `app/api/integrations/shopify/data/utils.ts:38` | `// Legacy: Try single shop field` (`metadata.shop`) | Test-fixture key — populated by `__tests__/helpers/actionTestHarness.ts`. Production OAuth doesn't write it, but tests do. KEEP until tests migrate to top-level `shop_domain`. |
+| `app/api/integrations/shopify/data/utils.ts:43` | `// Legacy: Try top-level shop_domain` | The top-level `shop_domain` column **is** the canonical write target — populated by `lib/integrations/provider-registry.ts:1493` (`additionalIntegrationData` for shopify). Mislabeled as legacy; this is current production. |
+| `app/api/integrations/shopify/data/types.ts:17,21` | `shop_domain?: string // Legacy field` + `shop?: string // Legacy: single shop domain` | Same correction. Plus added comment that `metadata.stores` / `metadata.active_store` are forward-compat reads with no writers yet (multi-store is aspirational). |
+| `app/api/integrations/shopify/data/handlers/stores.ts:18-30` | `legacy single shop format` | Same — single-store domain via `shop_domain` is canonical, not legacy. Also reworded the log line. |
+
+### Pre-launch action remaining
+
+For the comment-rewrite items above, full removal lands when:
+- `nodeExecutionService.ts:121` — when HITL/resume routes thread `testModeConfig` through, drop the fallback.
+- `visibility.ts:218` — when the visibility-migration tracking doc reports zero remaining `conditional` / `conditionalVisibility` / `visibleWhen` / `showWhen` callers, drop the four pattern branches.
+- Shopify multi-store — when multi-store gets a real OAuth flow that writes `metadata.stores[]`, the read code becomes load-bearing for production (not aspirational).
+- Test fixture — migrate `__tests__/helpers/actionTestHarness.ts` and `__tests__/nodes/shopify-create-customer.test.ts` to use top-level `shop_domain` instead of `metadata.shop`, then drop the `metadata?.shop` branch.
+
+### Verification
+
+1785 / 1785 tests pass across 97 suites after the §G changes. No new tests added — all changes are deletions of dead branches or comment rewrites of misleading labels. The deleted dataFetchers/fallbackFetcher path was already unreachable (always-empty registry); its 400-on-unknown behavior is preserved.
 
 ---
 

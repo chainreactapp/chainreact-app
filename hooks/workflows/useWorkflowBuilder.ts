@@ -1629,7 +1629,7 @@ export function useWorkflowBuilder() {
                 if (type.includes('_trigger_')) {
                   return type.split('_')[0] // gmail_trigger_new_email -> gmail
                 } else if (type.includes('_')) {
-                  return type.split('_')[0] // gmail_send -> gmail
+                  return type.split('_')[0] // gmail_action_send_email -> gmail
                 } else if (type.includes(':')) {
                   return type.split(':')[0] // google-drive:upload -> google-drive
                 }

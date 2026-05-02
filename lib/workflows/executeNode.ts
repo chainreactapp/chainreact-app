@@ -39,7 +39,6 @@ export { getIntegrationById } from './integrationHelpers'
 function generateMockOutput(type: string, config: any): any {
   // Generate realistic mock data based on action type
   switch(type) {
-    case 'gmail_send':
     case 'gmail_action_send_email':
       return {
         id: `mock_email_${Date.now()}`,
@@ -87,7 +86,6 @@ function generateMockOutput(type: string, config: any): any {
 function getMockPreview(type: string, config: any): any {
   // Return a preview of what would have been sent to external services
   switch(type) {
-    case 'gmail_send':
     case 'gmail_action_send_email':
       return {
         to: config.to || 'recipient@example.com',
