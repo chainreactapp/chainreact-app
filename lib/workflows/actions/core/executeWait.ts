@@ -1,9 +1,24 @@
 import { createSupabaseServerClient } from "@/utils/supabase/server"
 
 import { logger } from '@/lib/utils/logger'
+import { resolveTimezone } from './resolveContextDefaults'
 
 /**
- * Interface for action results
+ * Interface for action results.
+ *
+ * `category` enumerates documented failure modes (Q1) so callers and the
+ * execution layer can branch on intent without parsing message strings:
+ *   - 'provider'    — the integration's API rejected the request
+ *   - 'config'      — required field missing or unresolved variable
+ *   - 'auth'        — token expired / revoked / insufficient scope
+ *   - 'validation'  — handler self-validation failed (amount < 0, etc.)
+ *   - 'idempotency' — replay attempted with mutated input (Q4 PAYLOAD_MISMATCH)
+ *   - 'billing'     — pre-execution cost check returned insufficient_balance
+ *   - 'internal'    — programmer / invariant error (engine catch-and-convert)
+ *
+ * Optional — handlers that pre-date the contract may omit it. Tests assert
+ * on `category` only when they're pinning the Q1 contract; legacy tests
+ * still use the message field.
  */
 export interface ActionResult {
   success: boolean
@@ -12,7 +27,25 @@ export interface ActionResult {
   metadata?: Record<string, any>
   selectedPaths?: string[]
   message?: string
+  // The runtime accepts both shapes:
+  //   - string (e.g. 'PAYLOAD_MISMATCH' from Q4, slack provider error codes)
+  //   - structured { code, path } (Q2 MISSING_VARIABLE, Q11 MISSING_REQUIRED_FIELD,
+  //     INVALID_TIME_FORMAT). The type stays `string` because widening it
+  //     would force every existing `result.error` consumer (logger, throw new
+  //     Error(), error concatenation) to handle the union. Helpers that
+  //     produce the structured form construct via the typed helper interfaces
+  //     (e.g. MissingRequiredFieldFailure in requireExplicitField.ts) and
+  //     return the value as ActionResult — same pattern as
+  //     nodeExecutionService.ts MissingVariableError conversion.
   error?: string
+  category?:
+    | 'provider'
+    | 'config'
+    | 'auth'
+    | 'validation'
+    | 'idempotency'
+    | 'billing'
+    | 'internal'
   pauseExecution?: boolean
 }
 
@@ -103,11 +136,34 @@ export async function executeWaitForTime(
   try {
     const waitType = config.waitType || "duration"
     const now = new Date()
-    
+
     let waitUntil: Date
     let waitDurationMinutes = 0
-    const targetTimezone = config.timezone || "UTC"
-    
+
+    // Q12 — resolve timezone via workspace → user → UTC. Replaces the prior
+    // direct `config.timezone || "UTC"` fallback. Wait scheduling is a
+    // user-visible time ("9 AM tomorrow") so author timezone matters more
+    // than UTC predictability — see audit createWait.ts:109.
+    let resolvedWorkspaceId: string | undefined
+    if (context?.workflowId) {
+      try {
+        const supabaseForLookup = await createSupabaseServerClient()
+        const { data: wf } = await supabaseForLookup
+          .from('workflows')
+          .select('workspace_id')
+          .eq('id', context.workflowId)
+          .maybeSingle()
+        resolvedWorkspaceId = wf?.workspace_id ?? undefined
+      } catch (err: any) {
+        logger.debug('[executeWait] workspace lookup failed', { error: err?.message })
+      }
+    }
+    const targetTimezone = config.timezone || (await resolveTimezone({
+      workspaceId: resolvedWorkspaceId,
+      userId,
+    }))
+
+
     if (waitType === "duration") {
       const duration = Number(config.duration) || 5
       const unit = config.unit || "minutes"

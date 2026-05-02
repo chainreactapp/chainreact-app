@@ -1,6 +1,8 @@
 import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
 import { resolveValue } from '../core/resolveValue'
 import { ActionResult } from '../core/executeWait'
+import type { HandlerExecutionMeta } from '../core/idempotencyKey'
+import { resolveTimezoneAndLocale } from '../core/resolveContextDefaults'
 import { google } from 'googleapis'
 
 import { logger } from '@/lib/utils/logger'
@@ -82,7 +84,8 @@ function getTemplateData(template: string): { headers: string[], sampleRows?: st
 export async function createGoogleSpreadsheet(
   config: any,
   userId: string,
-  input: Record<string, any>
+  input: Record<string, any>,
+  meta?: HandlerExecutionMeta,
 ): Promise<ActionResult> {
   try {
     const resolvedConfig = resolveValue(config, input)
@@ -94,9 +97,20 @@ export async function createGoogleSpreadsheet(
       template = 'blank',
       initialData,
       folder,
-      locale = 'en_US',
-      timeZone = 'America/New_York'
+      locale: configLocale,
+      timeZone: configTimeZone,
     } = resolvedConfig
+
+    // Q12 — resolve locale and timezone via workspace → user → en_US/UTC.
+    // Replaces the prior hardcoded 'en_US' / 'America/New_York' fallbacks
+    // (audit createSpreadsheet.ts:97-98). Explicit config values still
+    // win — only the fallback layer is replaced.
+    const resolved = await resolveTimezoneAndLocale({
+      workspaceId: meta?.workspaceId,
+      userId,
+    })
+    const locale = configLocale || resolved.locale
+    const timeZone = configTimeZone || resolved.timezone
 
     logger.info('[Create Spreadsheet] Config:', {
       title,

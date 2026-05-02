@@ -16,6 +16,36 @@ import { logger } from '@/lib/utils/logger'
 import type { ActionResult } from './core/executeWait'
 import type { ExecutionContext } from '../core/executeWorkflow'
 import { resolveValue } from './core/resolveValue'
+import { missingRequiredFieldAsResult } from './core/requireExplicitField'
+import { AI_MODELS } from '@/lib/ai/models'
+import {
+  getOpenAIClient,
+  getOpenAIClientWithKey,
+} from '@/lib/ai/openai-client'
+import {
+  getAnthropicClient,
+  getAnthropicClientWithKey,
+} from '@/lib/ai/anthropic-client'
+
+/**
+ * Default AI agent generation parameters.
+ *
+ * §A3 — these used to be hardcoded inline at the call site
+ * (`config.model || 'gpt-4o-mini'`, `config.temperature ?? 0.7`,
+ * `config.maxTokens || 1500`). The model literal violated the
+ * CLAUDE.md rule "never hardcode model strings — use AI_MODELS."
+ *
+ * Resolution: `model` routes through `AI_MODELS.fast` (centralized
+ * registry, single source of truth for model identifiers).
+ * `temperature` and `maxTokens` stay as named constants in this file
+ * because they're behavioral defaults specific to the AI agent action,
+ * not application-wide tuning knobs. The schema in `aiAgentNode.ts`
+ * declares the same defaults at the field level, and these constants
+ * are the engine-side fallback when a config row predates the schema's
+ * defaultValue (e.g., legacy workflow rows).
+ */
+const AI_AGENT_DEFAULT_TEMPERATURE = 0.7
+const AI_AGENT_DEFAULT_MAX_TOKENS = 1500
 
 // Helper to create supabase client for fetching user profile
 const getSupabase = () => createClient(
@@ -202,19 +232,35 @@ type TaskType = 'respond' | 'extract' | 'summarize' | 'classify' | 'translate' |
 
 /**
  * Build prompt from action type configuration (like Zapier's pre-built actions)
- * This converts the structured config into an effective prompt
+ * This converts the structured config into an effective prompt.
+ *
+ * Q11 — when `actionType === 'respond'`, `respondInstructions` is required.
+ * The prior silent fallback ('Respond helpfully to the incoming message')
+ * is removed: AI behavior is too central to workflow output to silently
+ * substitute. Returns `{ ok: false, missingField }` so the caller can
+ * surface MISSING_REQUIRED_FIELD without firing the LLM call.
  */
-function buildPromptFromActionType(config: any): { prompt: string; taskType: TaskType } {
+type BuildPromptResult =
+  | { ok: true; prompt: string; taskType: TaskType }
+  | { ok: false; missingField: string }
+
+function buildPromptFromActionType(config: any): BuildPromptResult {
   const actionType = config.actionType || 'custom'
 
   switch (actionType) {
-    case 'respond':
-      return {
-        prompt: config.respondInstructions || 'Respond helpfully to the incoming message',
-        taskType: 'respond'
+    case 'respond': {
+      const instructions = config.respondInstructions
+      if (instructions === undefined || instructions === null || instructions === '') {
+        return { ok: false, missingField: 'respondInstructions' }
       }
+      return {
+        ok: true,
+        prompt: instructions,
+        taskType: 'respond',
+      }
+    }
 
-    case 'extract':
+    case 'extract': {
       const fields = config.extractFields || ''
       // Parse fields - could be a list or a description
       const fieldLines = fields.split('\n').filter((l: string) => l.trim())
@@ -222,17 +268,19 @@ function buildPromptFromActionType(config: any): { prompt: string; taskType: Tas
 
       if (isFieldList && fieldLines.length > 0) {
         return {
+          ok: true,
           prompt: `Extract the following fields from the input:\n${fieldLines.map((f: string) => `- ${f.trim()}`).join('\n')}\n\nReturn ONLY a JSON object with these exact field names.`,
-          taskType: 'extract'
-        }
-      } else {
-        return {
-          prompt: `${fields}\n\nExtract the requested information and return it as structured data.`,
-          taskType: 'extract'
+          taskType: 'extract',
         }
       }
+      return {
+        ok: true,
+        prompt: `${fields}\n\nExtract the requested information and return it as structured data.`,
+        taskType: 'extract',
+      }
+    }
 
-    case 'summarize':
+    case 'summarize': {
       const format = config.summarizeFormat || 'bullets'
       const focus = config.summarizeFocus || ''
       const formatInstructions: Record<string, string> = {
@@ -242,11 +290,13 @@ function buildPromptFromActionType(config: any): { prompt: string; taskType: Tas
         detailed: 'Provide a detailed summary with clear sections'
       }
       return {
+        ok: true,
         prompt: `${formatInstructions[format]}${focus ? `. Focus on: ${focus}` : ''}`,
-        taskType: 'summarize'
+        taskType: 'summarize',
       }
+    }
 
-    case 'classify':
+    case 'classify': {
       const categories = config.classifyCategories || ''
       const allowMultiple = config.classifyMultiple === 'multiple'
 
@@ -265,11 +315,13 @@ function buildPromptFromActionType(config: any): { prompt: string; taskType: Tas
       }
 
       return {
+        ok: true,
         prompt: `Classify the input into ${allowMultiple ? 'one or more of' : 'exactly one of'} these categories:\n${categoryList.map(c => `- ${c}`).join('\n')}\n\nReturn JSON with "category"${allowMultiple ? ' (array)' : ''}, "confidence" (0-1), and "reasoning".`,
-        taskType: 'classify'
+        taskType: 'classify',
       }
+    }
 
-    case 'translate':
+    case 'translate': {
       const targetLang = config.translateTo === 'other' ? config.translateToCustom : config.translateTo
       const preserveFormatting = config.translatePreserve !== 'no'
       const langNames: Record<string, string> = {
@@ -280,11 +332,13 @@ function buildPromptFromActionType(config: any): { prompt: string; taskType: Tas
       const langName = langNames[targetLang] || targetLang || 'Spanish'
 
       return {
+        ok: true,
         prompt: `Translate the input to ${langName}.${preserveFormatting ? ' Preserve any formatting (markdown, HTML, etc.).' : ''} Return ONLY the translated text, nothing else.`,
-        taskType: 'translate'
+        taskType: 'translate',
       }
+    }
 
-    case 'generate':
+    case 'generate': {
       const genType = config.generateType || 'email'
       const instructions = config.generateInstructions || ''
       const typeContext: Record<string, string> = {
@@ -297,15 +351,18 @@ function buildPromptFromActionType(config: any): { prompt: string; taskType: Tas
       }
 
       return {
+        ok: true,
         prompt: `${typeContext[genType]}:\n${instructions}`,
-        taskType: 'generate'
+        taskType: 'generate',
       }
+    }
 
     case 'custom':
     default:
       return {
+        ok: true,
         prompt: config.prompt || '',
-        taskType: 'custom'
+        taskType: 'custom',
       }
   }
 }
@@ -559,29 +616,18 @@ function buildSmartContext(
   }
 }
 
-// Initialize AI clients (lazy loaded when needed)
-let openaiClient: OpenAI | null = null
-let anthropicClient: Anthropic | null = null
-
-function getOpenAIClient(apiKey?: string): OpenAI {
-  if (apiKey) {
-    return new OpenAI({ apiKey })
-  }
-  if (!openaiClient) {
-    openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  }
-  return openaiClient
-}
-
-function getAnthropicClient(apiKey?: string): Anthropic {
-  if (apiKey) {
-    return new Anthropic({ apiKey })
-  }
-  if (!anthropicClient) {
-    anthropicClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-  }
-  return anthropicClient
-}
+/**
+ * §A3 — the inline `getOpenAIClient` / `getAnthropicClient` and their
+ * module-level cached singletons used to live here. Removed in favor of
+ * the shared clients in `lib/ai/{openai,anthropic}-client.ts`, which
+ * already implement the same lazy-init + custom-key pattern. See
+ * CLAUDE.md "import { getOpenAIClient } from '@/lib/ai/openai-client'
+ * — never new OpenAI()" for the canonical rule.
+ *
+ * Call sites use `apiKey ? getOpenAIClientWithKey(apiKey) : getOpenAIClient()`
+ * (and the parallel Anthropic helpers) to choose between the user's
+ * custom key and the app-managed default.
+ */
 
 /**
  * Main Autonomous AI Agent Handler
@@ -622,9 +668,16 @@ export async function executeAIAgentAction(
       hasSignatureConfig: !!config.includeSignature
     })
 
-    // Step 2: Build prompt from action type OR use custom prompt
-    // This converts structured config (like Zapier's UI) into an effective prompt
-    const { prompt: builtPrompt, taskType: configuredTaskType } = buildPromptFromActionType(config)
+    // Step 2: Build prompt from action type OR use custom prompt.
+    // This converts structured config (like Zapier's UI) into an effective
+    // prompt. Q11 — when actionType='respond' lacks an explicit
+    // respondInstructions, the builder returns ok:false and the handler
+    // surfaces MISSING_REQUIRED_FIELD without firing the LLM call.
+    const promptResult = buildPromptFromActionType(config)
+    if (!promptResult.ok) {
+      return missingRequiredFieldAsResult(promptResult.missingField)
+    }
+    const { prompt: builtPrompt, taskType: configuredTaskType } = promptResult
     const userPrompt = await resolveValue(builtPrompt, input, context.userId, context)
 
     logger.info('[AI Agent] Action type processed', {
@@ -1109,9 +1162,13 @@ async function generateWithAI(
   userPrompt: string,
   workflowContext: WorkflowContext
 ): Promise<{ content: string; tokensUsed: number; costIncurred: number }> {
-  const model = config.model || 'gpt-4o-mini'
-  const temperature = config.temperature ?? 0.7
-  const maxTokens = config.maxTokens || 1500
+  // §A3 — model routes through `AI_MODELS.fast` (centralized registry).
+  // temperature / maxTokens fall back to named constants defined at the
+  // top of this file; the same values are also declared as schema-level
+  // defaults in `aiAgentNode.ts`.
+  const model = config.model || AI_MODELS.fast
+  const temperature = config.temperature ?? AI_AGENT_DEFAULT_TEMPERATURE
+  const maxTokens = config.maxTokens || AI_AGENT_DEFAULT_MAX_TOKENS
 
   // Determine API source
   const apiKey = config.apiSource === 'custom' ? config.customApiKey : undefined
@@ -1121,7 +1178,7 @@ async function generateWithAI(
 
   // Use OpenAI for GPT models
   if (model.startsWith('gpt-')) {
-    const client = getOpenAIClient(apiKey)
+    const client = apiKey ? getOpenAIClientWithKey(apiKey) : getOpenAIClient()
 
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = []
     messages.push({ role: 'system', content: systemPrompt })
@@ -1149,7 +1206,7 @@ async function generateWithAI(
 
   // Use Anthropic for Claude models
   if (model.startsWith('claude-')) {
-    const client = getAnthropicClient(apiKey)
+    const client = apiKey ? getAnthropicClientWithKey(apiKey) : getAnthropicClient()
 
     const response = await client.messages.create({
       model,
@@ -1335,7 +1392,9 @@ function parseAutonomousResponse(
       break
 
     case 'extract':
-      // For extract: parse JSON and set data field (primary) + extracted (backwards compat)
+      // For extract: parse JSON, store the full object on data.data, and also
+      // hoist each top-level key from the parsed JSON onto result.data for
+      // direct {{nodeId.fieldName}} access by downstream nodes.
       if (parsedContent && typeof parsedContent === 'object') {
         result.data.data = parsedContent  // Primary field
         // Also set individual fields at top level for easy access

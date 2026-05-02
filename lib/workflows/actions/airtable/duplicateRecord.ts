@@ -1,4 +1,5 @@
 import { getDecryptedAccessToken, resolveValue, ActionResult } from '@/lib/workflows/actions/core'
+import { refreshAndRetry } from '@/lib/workflows/actions/core/refreshAndRetry'
 import { logger } from '@/lib/utils/logger'
 
 /**
@@ -76,23 +77,32 @@ export async function duplicateAirtableRecord(
 
     logger.info(`📋 [Airtable] Source record fetched. Fields: ${Object.keys(sourceFields).join(', ')}`);
 
-    // Fetch table schema to get field types and date formats
+    // Fetch table schema to get field types and date formats. Auxiliary
+    // schema GET wrapped in `refreshAndRetry` (Q3, §A5).
     let tableSchema: any = null
     try {
-      const schemaUrl = `https://api.airtable.com/v0/meta/bases/${baseId}/tables`
-      const schemaResponse = await fetch(schemaUrl, {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
+      const schemaResult = await refreshAndRetry({
+        provider: 'airtable',
+        userId,
+        accessToken,
+        call: async (token) =>
+          fetch(`https://api.airtable.com/v0/meta/bases/${baseId}/tables`, {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+          }),
       })
 
-      if (schemaResponse.ok) {
-        const schemaResult = await schemaResponse.json()
-        tableSchema = schemaResult.tables?.find((t: any) => t.name === tableName)
-        if (tableSchema) {
-          logger.info(`📊 [Airtable] Retrieved table schema with ${tableSchema.fields?.length || 0} fields`)
+      if (schemaResult.success) {
+        const schemaResponse = schemaResult.data
+        if (schemaResponse.ok) {
+          const schemaJson = await schemaResponse.json()
+          tableSchema = schemaJson.tables?.find((t: any) => t.name === tableName)
+          if (tableSchema) {
+            logger.info(`📊 [Airtable] Retrieved table schema with ${tableSchema.fields?.length || 0} fields`)
+          }
         }
       }
     } catch (error) {

@@ -15,6 +15,10 @@ import {
 export interface ExecutionContext {
   userId: string
   workflowId: string
+  // PR-G1 — workspace tier of the Q12 timezone/locale resolution chain.
+  // `undefined` is valid (workflow not associated with a workspace) and
+  // means "fall through to user-level resolution."
+  workspaceId?: string
   testMode: boolean
   testModeConfig?: TestModeConfig // Enhanced test mode configuration
   data: any
@@ -301,11 +305,9 @@ export class WorkflowExecutionService {
       })
     }
 
-    // Tasks are deducted upfront by the calling route before execution starts.
-    // No post-execution deduction needed — v1 conservative upfront reservation model.
-    const deductTasksForExecutedNodes = async () => {
-      // No-op: kept for backward compatibility with callers that reference this function
-    }
+    // Tasks are deducted upfront by the calling route before execution starts
+    // (v1 conservative upfront reservation model). No post-execution deduction
+    // happens here.
 
     try {
     for (const startNode of startingNodes) {
@@ -379,9 +381,6 @@ export class WorkflowExecutionService {
           )
         }
 
-        // Deduct tasks for nodes that completed before the pause
-        await deductTasksForExecutedNodes()
-
         // Return immediately with pause status
         return {
           results: [result],
@@ -422,8 +421,6 @@ export class WorkflowExecutionService {
         error: executionError instanceof Error ? executionError.message : String(executionError)
       })
 
-      await deductTasksForExecutedNodes()
-
       // Update session to failed status
       await supabase
         .from("workflow_execution_sessions")
@@ -459,9 +456,6 @@ export class WorkflowExecutionService {
     // Complete progress tracking
     const hasErrors = failedNodeIds.length > 0
     await progressTracker.complete(!hasErrors, hasErrors ? 'Workflow execution completed with errors' : undefined)
-
-    // Deduct tasks for all executed nodes (completed + failed)
-    await deductTasksForExecutedNodes()
 
     // Update workflow_execution_sessions record to completed status
     const finalStatus = hasErrors ? "failed" : "completed"
@@ -535,6 +529,8 @@ export class WorkflowExecutionService {
       testModeConfig,
       userId,
       workflowId: workflow.id,
+      // PR-G1 (Q12) — workspace tier of timezone/locale resolution.
+      workspaceId: workflow.workspace_id ?? undefined,
       dataFlowManager
     }
 

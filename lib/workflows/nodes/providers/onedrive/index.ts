@@ -1228,12 +1228,11 @@ const onedriveActionCreateSharingLink: NodeComponent = {
       label: "Link Scope",
       type: "select",
       required: true,
-      defaultValue: "anonymous",
       options: [
         { value: "anonymous", label: "Anyone with the link" },
         { value: "organization", label: "People in my organization" }
       ],
-      description: "Who can access this link",
+      description: "Required (Q11). Recommended: Organization — anonymous links are accessible by anyone with the URL.",
       uiTab: "basic"
     },
     {

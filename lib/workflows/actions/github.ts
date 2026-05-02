@@ -209,6 +209,13 @@ export async function createGitHubRepository(
 
 /**
  * Create a new GitHub pull request
+ *
+ * Q12 / PR-G6 — when `base` is not supplied, the repo's `default_branch`
+ * is fetched via `repos.get`. The prior silent `'main'` fallback is
+ * removed: many repos use `master`, `develop`, `trunk`, etc. as their
+ * default. If the auto-detect call fails, the handler returns
+ * `success:false` rather than silently using `'main'` and producing a
+ * PR against the wrong branch.
  */
 export async function createGitHubPullRequest(
   config: any,
@@ -217,13 +224,13 @@ export async function createGitHubPullRequest(
 ): Promise<ActionResult> {
   try {
     const resolvedConfig = resolveValue(config, input)
-    
+
     const {
       repository,
       title,
       body,
       head,
-      base = "main",
+      base,
       draft = false
     } = resolvedConfig
 
@@ -234,7 +241,7 @@ export async function createGitHubPullRequest(
     // Get GitHub integration
     const { createSupabaseServerClient } = await import("@/utils/supabase/server")
     const supabase = await createSupabaseServerClient()
-    
+
     const { data: integration } = await supabase
       .from("integrations")
       .select("*")
@@ -255,12 +262,50 @@ export async function createGitHubPullRequest(
       throw new Error("Repository must be in format 'owner/repo'")
     }
 
+    // PR-G6 — auto-detect default branch when `base` is not supplied.
+    // Hits `GET /repos/{owner}/{repo}` and reads `default_branch`. On
+    // any failure, return `success:false` with category 'provider' rather
+    // than silently falling back to 'main' (which guesses wrong on repos
+    // that use master / develop / trunk).
+    let effectiveBase: string
+    if (typeof base === 'string' && base.length > 0) {
+      effectiveBase = base
+    } else {
+      const repoResponse = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
+        method: "GET",
+        headers: {
+          Authorization: `token ${accessToken}`,
+          "Accept": "application/vnd.github.v3+json",
+        },
+      })
+      if (!repoResponse.ok) {
+        const repoErr = await repoResponse.json().catch(() => ({}))
+        return {
+          success: false,
+          category: 'provider',
+          output: {},
+          message: `Could not auto-detect default branch for ${repository}: ${repoResponse.status} - ${repoErr.message || repoResponse.statusText}. Set "base" explicitly in the workflow node.`,
+        }
+      }
+      const repoData = await repoResponse.json()
+      const detectedDefault = repoData.default_branch
+      if (typeof detectedDefault !== 'string' || detectedDefault.length === 0) {
+        return {
+          success: false,
+          category: 'provider',
+          output: {},
+          message: `GitHub returned no default_branch for ${repository}. Set "base" explicitly in the workflow node.`,
+        }
+      }
+      effectiveBase = detectedDefault
+    }
+
     // Create pull request payload
     const payload: any = {
       title: title,
       body: body || "",
       head: head,
-      base: base,
+      base: effectiveBase,
       draft: draft
     }
 

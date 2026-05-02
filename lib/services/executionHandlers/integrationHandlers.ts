@@ -348,7 +348,16 @@ export class IntegrationNodeHandlers {
 
         case 'microsoft-outlook_action_send_email': {
           const { sendOutlookEmail } = await import('@/lib/workflows/actions/microsoft-outlook')
-          const result = await sendOutlookEmail(config, context.userId, context.data || {})
+          // PR-C4 — engine metadata for within-session idempotency.
+          const meta = {
+            executionSessionId: context.executionId,
+            nodeId: node.id,
+            actionType: node.data?.type ?? nodeType,
+            provider: 'microsoft-outlook',
+            testMode: context.testMode,
+            workspaceId: context.workspaceId,
+          }
+          const result = await sendOutlookEmail(config, context.userId, context.data || {}, meta)
           if (!result?.success) {
             throw new Error(result?.message || 'Failed to send Outlook email')
           }
@@ -758,10 +767,20 @@ export class IntegrationNodeHandlers {
         // Import and use the actual Airtable create record handler
         const { createAirtableRecord } = await import("@/lib/workflows/actions/airtable/createRecord")
 
+        // PR-C4 — engine metadata for within-session idempotency.
+        const airtableMeta = {
+          executionSessionId: context.executionId,
+          nodeId: node.id,
+          actionType: node.data?.type ?? nodeType,
+          provider: 'airtable',
+          testMode: context.testMode,
+          workspaceId: context.workspaceId,
+        }
         const createResult = await createAirtableRecord(
           config,
           context.userId,
-          context.data || {}
+          context.data || {},
+          airtableMeta
         )
 
         if (!createResult.success) {
@@ -788,9 +807,18 @@ export class IntegrationNodeHandlers {
         return updateResult.output
 
       case "airtable_delete_record":
-      case "airtable_action_delete_record": // Handle both naming conventions
-        // TODO: Implement when delete record handler is available
-        throw new Error("Airtable delete record is not yet implemented")
+      case "airtable_action_delete_record": { // Handle both naming conventions
+        const { deleteAirtableRecord } = await import("@/lib/workflows/actions/airtable/deleteRecord")
+        const deleteResult = await deleteAirtableRecord(
+          config,
+          context.userId,
+          context.data || {}
+        )
+        if (!deleteResult.success) {
+          throw new Error(deleteResult.error || deleteResult.message || "Failed to delete Airtable record")
+        }
+        return deleteResult.output
+      }
 
       case "airtable_list_records":
       case "airtable_action_list_records": // Handle both naming conventions

@@ -1,6 +1,11 @@
 import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
+import { parseRecipients } from '../core/parseRecipients'
+import { refreshAndRetry } from '../core/refreshAndRetry'
 import { resolveValue } from '../core/resolveValue'
 import { ActionResult } from '../core/executeWait'
+import { buildIdempotencyKey, type HandlerExecutionMeta } from '../core/idempotencyKey'
+import { hashPayload } from '../core/hashPayload'
+import { checkReplay, recordFired } from '../core/sessionSideEffects'
 import { FileStorageService } from "@/lib/storage/fileStorage"
 import { deleteWorkflowTempFiles } from '@/lib/utils/workflowFileCleanup'
 import { applyEmailMetaVariables } from './resolveEmailMetaVariables'
@@ -12,10 +17,26 @@ import { logger } from '@/lib/utils/logger'
  * Enhanced Gmail send email with all field support
  */
 export async function sendGmailEmail(
-  params: { config: any; userId: string; input: Record<string, any> }
+  params: {
+    config: any
+    userId: string
+    input: Record<string, any>
+    meta?: HandlerExecutionMeta
+  }
 ): Promise<ActionResult> {
-  const { config, userId, input } = params
+  const { config, userId, input, meta } = params
   const cleanupPaths = new Set<string>()
+
+  // Q8d — testMode interception. When the engine signals testMode, the
+  // handler must NOT contact the provider; return a deterministic
+  // simulated ActionResult so downstream nodes see a consistent shape.
+  if (meta?.testMode) {
+    return {
+      success: true,
+      output: { simulated: true, provider: 'gmail' },
+      message: 'Simulated in test mode — no provider call made',
+    }
+  }
 
   try {
     logger.debug('📧 [sendGmailEmail] Processing email', { fieldCount: Object.keys(config).length })
@@ -32,9 +53,12 @@ export async function sendGmailEmail(
 
     // Resolve each field individually (like createDraft does) to ensure all fields are properly resolved
     const from = resolveValue(config.from, input)
-    const to = resolveValue(config.to, input)
-    const cc = resolveValue(config.cc, input)
-    const bcc = resolveValue(config.bcc, input)
+    // Q7 — schema-declared multi-recipient fields are normalized through
+    // `parseRecipients` so CSV strings, arrays, and mixed shapes all produce
+    // a clean array of trimmed addresses. See learning/docs/handler-contracts.md.
+    const to = parseRecipients(resolveValue(config.to, input))
+    const cc = parseRecipients(resolveValue(config.cc, input))
+    const bcc = parseRecipients(resolveValue(config.bcc, input))
     const rawSubject = resolveValue(config.subject, input)
     const rawBody = resolveValue(config.body, input)
     const signature = resolveValue(config.signature, input)
@@ -52,7 +76,7 @@ export async function sendGmailEmail(
     const trackClicks = resolveValue(config.trackClicks, input) || false
     const isHtml = resolveValue(config.isHtml, input) || false
 
-    logger.debug('📧 [sendGmailEmail] Resolved recipients', { hasTo: !!to, hasCc: !!cc, hasBcc: !!bcc })
+    logger.debug('📧 [sendGmailEmail] Resolved recipients', { toCount: to.length, ccCount: cc.length, bccCount: bcc.length })
     logger.debug('📧 [sendGmailEmail] Body field', { hasBody: !!rawBody, length: rawBody?.length })
 
     // Apply meta-variable resolution to subject and body
@@ -79,30 +103,38 @@ export async function sendGmailEmail(
        body.includes('<span') || body.includes('<table')))
 
     const accessToken = await getDecryptedAccessToken(userId, "gmail")
-    
-    // Initialize Gmail API
-    const oauth2Client = new google.auth.OAuth2()
-    oauth2Client.setCredentials({ access_token: accessToken })
-    const gmail = google.gmail({ version: 'v1', auth: oauth2Client })
 
-    // Build email headers
-    logger.debug('📧 [sendGmailEmail] Building headers', { hasCc: !!cc, ccIsArray: Array.isArray(cc) })
+    // Build a Gmail SDK client for the given access token. Both the send
+    // call and the post-send labels.modify (§A5) are wrapped in
+    // `refreshAndRetry` (Q3) so a 401 triggers one refresh-and-retry attempt
+    // with the new token. Building the client inside the closure means the
+    // retry uses the refreshed token end-to-end (the OAuth2 client carries
+    // the credentials).
+    const buildGmailClient = (token: string) => {
+      const oauth2Client = new google.auth.OAuth2()
+      oauth2Client.setCredentials({ access_token: token })
+      return google.gmail({ version: 'v1', auth: oauth2Client })
+    }
+
+    // Build email headers. After Q7 normalization the recipient fields are
+    // always arrays, so header assembly is a single .join().
+    logger.debug('📧 [sendGmailEmail] Building headers', { ccCount: cc.length })
 
     const headers: Record<string, string> = {
-      'To': Array.isArray(to) ? to.join(', ') : to,
+      'To': to.join(', '),
       'Subject': subject,
       'From': from || 'me', // Use specified sender or default to authenticated user
     }
 
-    if (cc && (Array.isArray(cc) ? cc.length > 0 : cc.trim())) {
-      headers['Cc'] = Array.isArray(cc) ? cc.join(', ') : cc
+    if (cc.length > 0) {
+      headers['Cc'] = cc.join(', ')
       logger.debug('📧 [sendGmailEmail] CC header set')
     } else {
       logger.debug('📧 [sendGmailEmail] CC field empty, skipping header')
     }
 
-    if (bcc && (Array.isArray(bcc) ? bcc.length > 0 : bcc.trim())) {
-      headers['Bcc'] = Array.isArray(bcc) ? bcc.join(', ') : bcc
+    if (bcc.length > 0) {
+      headers['Bcc'] = bcc.join(', ')
     }
 
     if (replyTo) {
@@ -424,31 +456,97 @@ export async function sendGmailEmail(
       logger.warn('📧 [sendGmailEmail] Scheduled send requested but Gmail API does not support native scheduling — sending immediately', { scheduleSend })
     }
 
-    // Send the email
-    const result = await gmail.users.messages.send({
-      userId: 'me',
-      requestBody: {
-        raw: encodedMessage,
-        labelIds: labels.length > 0 ? labels : undefined
+    // Q4 — within-session idempotency. Build the key from engine-thread
+    // metadata; absent meta (test-only paths) → no-op. The canonical input
+    // for hashing is the resolved-and-normalized values that determine the
+    // side effect — the encoded MIME bytes — so a re-resolved template
+    // that produces the same recipients/subject/body still hashes equal.
+    const idempotencyKey = buildIdempotencyKey(meta)
+    const payloadHash = idempotencyKey
+      ? hashPayload({
+          to,
+          cc,
+          bcc,
+          from,
+          subject,
+          body: finalBody,
+          replyTo,
+          priority,
+          encodedMessageLength: encodedMessage.length,
+        })
+      : ''
+
+    if (idempotencyKey) {
+      const replay = await checkReplay(idempotencyKey, payloadHash)
+      if (replay.kind === 'cached') return replay.result
+      if (replay.kind === 'mismatch') {
+        return {
+          success: false,
+          output: {},
+          message: 'This action was already executed for this session with different input.',
+          error: 'PAYLOAD_MISMATCH',
+        }
       }
+    }
+
+    // Send the email — wrapped in `refreshAndRetry` (Q3). On a 401 from the
+    // googleapis SDK, the wrapper refreshes the token once and retries. A
+    // permanent 401 surfaces as a structured auth failure; everything else
+    // throws / returns normally.
+    const sendResult = await refreshAndRetry({
+      provider: 'gmail',
+      userId,
+      accessToken,
+      call: async (token) => {
+        const client = buildGmailClient(token)
+        return client.users.messages.send({
+          userId: 'me',
+          requestBody: {
+            raw: encodedMessage,
+            labelIds: labels.length > 0 ? labels : undefined,
+          },
+        })
+      },
     })
 
-    // Apply labels if specified
+    if (!sendResult.success) {
+      return {
+        success: false,
+        output: {},
+        message: sendResult.message,
+      }
+    }
+
+    const result = sendResult.data
+
+    // Apply labels if specified. Best-effort; wrapped in `refreshAndRetry`
+    // (Q3, §A5) so a stale-after-send token produces a structured auth
+    // signal + refresh attempt rather than a silent miss. Non-401 errors
+    // are still logged-and-swallowed so the email-sent success isn't
+    // overridden by a label-application failure.
     if (labels.length > 0 && result.data.id) {
       try {
-        await gmail.users.messages.modify({
-          userId: 'me',
-          id: result.data.id,
-          requestBody: {
-            addLabelIds: labels
-          }
+        await refreshAndRetry({
+          provider: 'gmail',
+          userId,
+          accessToken,
+          call: async (token) => {
+            const client = buildGmailClient(token)
+            return client.users.messages.modify({
+              userId: 'me',
+              id: result.data.id,
+              requestBody: {
+                addLabelIds: labels
+              }
+            })
+          },
         })
       } catch (labelError) {
         logger.error('Failed to apply labels:', labelError)
       }
     }
 
-    return {
+    const actionResult: ActionResult = {
       success: true,
       output: {
         messageId: result.data.id,
@@ -457,8 +555,20 @@ export async function sendGmailEmail(
         subject,
         labelIds: result.data.labelIds
       },
-      message: `Email sent successfully to ${Array.isArray(to) ? to.join(', ') : to}`
+      message: `Email sent successfully to ${to.join(', ')}`
     }
+
+    // Q4 — record the marker so a retry within this session short-circuits
+    // to the cached result. Best-effort: failures here are logged but
+    // don't fail the handler (the email already sent).
+    if (idempotencyKey) {
+      await recordFired(idempotencyKey, actionResult, payloadHash, {
+        provider: 'gmail',
+        externalId: result.data.id ?? null,
+      })
+    }
+
+    return actionResult
 
   } catch (error: any) {
     logger.error('Send Gmail error:', error)

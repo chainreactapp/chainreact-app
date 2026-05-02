@@ -2,6 +2,7 @@ import { ActionResult } from '../index'
 import { makeShopifyGraphQLRequest, validateShopifyIntegration } from '@/app/api/integrations/shopify/data/utils'
 import { getIntegrationById } from '../../executeNode'
 import { resolveValue } from '../core/resolveValue'
+import { requireExplicitField } from '../core/requireExplicitField'
 import { logger } from '@/lib/utils/logger'
 import { extractNumericId, toOrderGid } from './graphqlHelpers'
 
@@ -15,6 +16,15 @@ export async function updateShopifyOrderStatus(
   input: Record<string, any>
 ): Promise<ActionResult> {
   try {
+    // Q11 — notify_customer triggers a customer-facing email (fulfilled,
+    // cancelled, etc.). Customer-notification expectations depend on the
+    // status transition, so the previous silent default `false` was both
+    // hidden behavior AND a guess. Workflow author must explicitly choose
+    // true / false. Runs before integration lookup so a misconfigured
+    // workflow fails fast.
+    const missingRequired = requireExplicitField(config, 'notify_customer')
+    if (missingRequired) return missingRequired as unknown as ActionResult
+
     // 1. Get and validate integration
     const integrationId = await resolveValue(config.integration_id || config.integrationId, input)
     const integration = await getIntegrationById(integrationId, { userId })
@@ -26,7 +36,7 @@ export async function updateShopifyOrderStatus(
     const action = await resolveValue(config.action, input)
     const tags = (action === 'add_tags' && config.tags) ? await resolveValue(config.tags, input) : undefined
     const note = (action === 'add_note' && config.note) ? await resolveValue(config.note, input) : undefined
-    const notifyCustomer = config.notify_customer ?? false
+    const notifyCustomer = config.notify_customer
 
     // 3. Convert to GID format
     const orderGid = toOrderGid(orderId)

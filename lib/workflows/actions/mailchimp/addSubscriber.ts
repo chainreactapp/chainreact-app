@@ -1,5 +1,6 @@
 import { ActionResult } from '../index'
 import { ExecutionContext } from '../../execution/types'
+import { requireExplicitField } from '../core/requireExplicitField'
 import { getMailchimpAuth } from './utils'
 import crypto from 'crypto'
 
@@ -13,13 +14,22 @@ export async function mailchimpAddSubscriber(
   context: ExecutionContext
 ): Promise<ActionResult> {
   try {
+    // Q11 — `status` has CAN-SPAM / GDPR implications. 'subscribed' implies
+    // explicit prior consent, 'pending' triggers a confirmation email,
+    // 'unsubscribed' / 'cleaned' are administrative. Previous silent default
+    // 'subscribed' removed; workflow author must explicitly choose based on
+    // their opt-in process. UI recommends 'pending' unless explicit consent
+    // already captured.
+    const missingRequired = requireExplicitField(config, 'status')
+    if (missingRequired) return missingRequired as unknown as ActionResult
+
     // Get Mailchimp auth with proper data center
     const { accessToken, dc } = await getMailchimpAuth(context.userId)
 
     // Resolve dynamic values
     const audienceId = context.dataFlowManager.resolveVariable(config.audience_id)
     const email = context.dataFlowManager.resolveVariable(config.email)
-    const status = context.dataFlowManager.resolveVariable(config.status) || 'subscribed'
+    const status = context.dataFlowManager.resolveVariable(config.status)
 
     // Get subscriber details
     const firstName = context.dataFlowManager.resolveVariable(config.first_name)

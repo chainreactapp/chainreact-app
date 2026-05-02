@@ -1,6 +1,11 @@
 import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
+import { refreshAndRetry } from '../core/refreshAndRetry'
 import { resolveValue } from '../core/resolveValue'
 import { ActionResult } from '../core/executeWait'
+import { buildIdempotencyKey, type HandlerExecutionMeta } from '../core/idempotencyKey'
+import { hashPayload } from '../core/hashPayload'
+import { checkReplay, recordFired } from '../core/sessionSideEffects'
+import { requireExplicitField } from '../core/requireExplicitField'
 import { FileStorageService } from "@/lib/storage/fileStorage"
 import { deleteWorkflowTempFiles } from '@/lib/utils/workflowFileCleanup'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -16,13 +21,25 @@ import { logger } from '@/lib/utils/logger'
 export async function uploadGoogleDriveFile(
   config: any,
   userId: string,
-  input: Record<string, any>
+  input: Record<string, any>,
+  meta?: HandlerExecutionMeta,
 ): Promise<ActionResult> {
-  logger.info('🚀 [uploadGoogleDriveFile] Starting with config:', {
+  // Q8b — config may contain customer PII (shareWith emails, etc.), so
+  // this dump is debug-only.
+  logger.debug('🚀 [uploadGoogleDriveFile] Starting with config:', {
     config,
     userId,
     hasInput: !!input
   });
+
+  // Q8d — testMode interception.
+  if (meta?.testMode) {
+    return {
+      success: true,
+      output: { simulated: true, provider: 'google-drive' },
+      message: 'Simulated in test mode — no provider call made',
+    }
+  }
 
   const cleanupPaths = new Set<string>()
 
@@ -49,11 +66,23 @@ export async function uploadGoogleDriveFile(
       ocrLanguage = 'en',
       shareWith = [],
       sharePermission = 'reader',
+      shareNotification,
       starred = false,
       keepRevisionForever = false,
       properties = {},
       appProperties = {}
     } = resolvedConfig
+
+    // Q11 — when shareWith is non-empty, the upload also performs a share
+    // step. The previous silent inline `sendNotificationEmail: true` is
+    // removed; workflow author must explicitly choose `shareNotification`
+    // when sharing. Existing workflows that supplied shareWith are
+    // backfilled to `true` (matches prior behavior) via the backfill
+    // registry's applyWhen predicate.
+    if (Array.isArray(shareWith) && shareWith.length > 0) {
+      const missingRequired = requireExplicitField(resolvedConfig, 'shareNotification')
+      if (missingRequired) return missingRequired as unknown as ActionResult
+    }
     
     const uploadedFiles = processedUploadedFiles || [];
     
@@ -79,10 +108,15 @@ export async function uploadGoogleDriveFile(
       throw new Error(`Failed to get Google Drive access token: ${error.message}`);
     }
     
-    // Initialize Drive API
-    const oauth2Client = new google.auth.OAuth2()
-    oauth2Client.setCredentials({ access_token: accessToken })
-    const drive = google.drive({ version: 'v3', auth: oauth2Client })
+    // Build a Drive SDK client for the given access token. The principal
+    // upload call (`drive.files.create`) AND the auxiliary calls
+    // (`drive.revisions.list/update`, `drive.permissions.create`) are
+    // wrapped in `refreshAndRetry` (Q3, §A5).
+    const buildDriveClient = (token: string) => {
+      const oauth2Client = new google.auth.OAuth2()
+      oauth2Client.setCredentials({ access_token: token })
+      return google.drive({ version: 'v3', auth: oauth2Client })
+    }
 
     const uploadedFileResults = []
 
@@ -332,6 +366,46 @@ export async function uploadGoogleDriveFile(
       }
     }
 
+    // Q4 — within-session idempotency. Hash the upload set (file names +
+    // byte sizes + folder/share config) so a re-resolved template
+    // producing the same upload set hashes equal. File bytes themselves
+    // are excluded — they can be very large; (name, size) is the standard
+    // dedup signal across cloud-storage idempotency systems.
+    const idempotencyKey = buildIdempotencyKey(meta)
+    const payloadHash = idempotencyKey
+      ? hashPayload({
+          files: filesToUpload.map((f) => ({
+            name: f.name,
+            mimeType: f.mimeType,
+            size: typeof f.data === 'string' ? f.data.length : f.data?.length ?? 0,
+          })),
+          folderId: folderId ?? null,
+          description: description ?? null,
+          convertToGoogleDocs,
+          ocr,
+          ocrLanguage,
+          shareWith,
+          sharePermission,
+          starred,
+          keepRevisionForever,
+          properties,
+          appProperties,
+        })
+      : ''
+
+    if (idempotencyKey) {
+      const replay = await checkReplay(idempotencyKey, payloadHash)
+      if (replay.kind === 'cached') return replay.result
+      if (replay.kind === 'mismatch') {
+        return {
+          success: false,
+          output: {},
+          message: 'This action was already executed for this session with different input.',
+          error: 'PAYLOAD_MISMATCH',
+        }
+      }
+    }
+
     // Upload each file
     logger.info('🚀 [uploadGoogleDriveFile] Starting file uploads to Google Drive...');
     for (const file of filesToUpload) {
@@ -381,19 +455,38 @@ export async function uploadGoogleDriveFile(
         // Convert Buffer to Stream for Google Drive API
         const fileStream = Readable.from(file.data);
         
+        // Upload the file. Wrapped in `refreshAndRetry` (Q3) — a 401 from
+        // googleapis triggers one refresh+retry; permanent failure throws an
+        // error carrying the structured auth-failure message so the outer
+        // catch surfaces it as the handler's failure path.
         let uploadResponse;
         try {
-          uploadResponse = await drive.files.create({
-            requestBody: fileMetadata,
-            media: {
-              mimeType: uploadMimeType,
-              body: fileStream
+          const uploadResult = await refreshAndRetry({
+            provider: 'google-drive',
+            userId,
+            accessToken,
+            call: async (token) => {
+              const client = buildDriveClient(token)
+              return client.files.create({
+                requestBody: fileMetadata,
+                media: {
+                  mimeType: uploadMimeType,
+                  body: fileStream,
+                },
+                fields:
+                  'id, name, mimeType, webViewLink, webContentLink, parents, size',
+                // OCR options
+                ocrLanguage: ocr ? ocrLanguage : undefined,
+                useContentAsIndexableText: ocr,
+              })
             },
-            fields: 'id, name, mimeType, webViewLink, webContentLink, parents, size',
-            // OCR options
-            ocrLanguage: ocr ? ocrLanguage : undefined,
-            useContentAsIndexableText: ocr
           })
+
+          if (!uploadResult.success) {
+            throw new Error(uploadResult.message)
+          }
+
+          uploadResponse = uploadResult.data
         } catch (uploadError: any) {
           logger.error('❌ [uploadGoogleDriveFile] Google Drive API error:', {
             message: uploadError.message,
@@ -411,23 +504,41 @@ export async function uploadGoogleDriveFile(
           webViewLink: uploadedFile.webViewLink
         });
 
-        // Keep revision forever if requested
+        // Keep revision forever if requested. Wrapped in `refreshAndRetry`
+        // (Q3, §A5) so a 401 on these auxiliary calls produces a structured
+        // auth signal + refresh attempt. Best-effort: non-401 errors are
+        // logged-and-swallowed so the upload-success isn't overridden.
         if (keepRevisionForever && uploadedFile.id) {
           try {
-            const revisions = await drive.revisions.list({
-              fileId: uploadedFile.id
-            })
-            
-            if (revisions.data.revisions && revisions.data.revisions.length > 0) {
-              const latestRevision = revisions.data.revisions[revisions.data.revisions.length - 1]
-              if (latestRevision.id) {
-                await drive.revisions.update({
+            const revisionsResult = await refreshAndRetry({
+              provider: 'google-drive',
+              userId,
+              accessToken,
+              call: async (token) =>
+                buildDriveClient(token).revisions.list({
                   fileId: uploadedFile.id,
-                  revisionId: latestRevision.id,
-                  requestBody: {
-                    keepForever: true
-                  }
-                })
+                }),
+            })
+
+            if (revisionsResult.success) {
+              const revisions = revisionsResult.data
+              if (revisions.data.revisions && revisions.data.revisions.length > 0) {
+                const latestRevision = revisions.data.revisions[revisions.data.revisions.length - 1]
+                if (latestRevision.id) {
+                  await refreshAndRetry({
+                    provider: 'google-drive',
+                    userId,
+                    accessToken,
+                    call: async (token) =>
+                      buildDriveClient(token).revisions.update({
+                        fileId: uploadedFile.id,
+                        revisionId: latestRevision.id,
+                        requestBody: {
+                          keepForever: true
+                        }
+                      }),
+                  })
+                }
               }
             }
           } catch (error) {
@@ -435,18 +546,26 @@ export async function uploadGoogleDriveFile(
           }
         }
 
-        // Share file if requested
+        // Share file if requested. Q11 — `shareNotification` is required
+        // and validated above when shareWith is non-empty. Each per-share
+        // call is wrapped in `refreshAndRetry` (Q3, §A5).
         if (shareWith.length > 0 && uploadedFile.id) {
           for (const email of shareWith) {
             try {
-              await drive.permissions.create({
-                fileId: uploadedFile.id,
-                requestBody: {
-                  type: 'user',
-                  role: sharePermission,
-                  emailAddress: email
-                },
-                sendNotificationEmail: true
+              await refreshAndRetry({
+                provider: 'google-drive',
+                userId,
+                accessToken,
+                call: async (token) =>
+                  buildDriveClient(token).permissions.create({
+                    fileId: uploadedFile.id,
+                    requestBody: {
+                      type: 'user',
+                      role: sharePermission,
+                      emailAddress: email
+                    },
+                    sendNotificationEmail: shareNotification
+                  }),
               })
             } catch (error) {
               logger.warn(`Failed to share with ${email}:`, error)
@@ -476,7 +595,7 @@ export async function uploadGoogleDriveFile(
 
     const successCount = uploadedFileResults.filter(r => r.success).length
 
-    return {
+    const actionResult: ActionResult = {
       success: successCount > 0,
       output: {
         uploadedFiles: uploadedFileResults,
@@ -486,6 +605,19 @@ export async function uploadGoogleDriveFile(
       },
       message: `Successfully uploaded ${successCount} of ${filesToUpload.length} files to Google Drive`
     }
+
+    // Q4 — record only on a fully-successful aggregate. A partial success
+    // (some uploads failed) leaves the marker absent so a retry can
+    // re-attempt the failed uploads.
+    if (idempotencyKey && actionResult.success && successCount === filesToUpload.length) {
+      const firstFileId = uploadedFileResults.find(r => r.success && r.fileId)?.fileId ?? null
+      await recordFired(idempotencyKey, actionResult, payloadHash, {
+        provider: 'google-drive',
+        externalId: firstFileId,
+      })
+    }
+
+    return actionResult
 
   } catch (error: any) {
     logger.error('❌ [uploadGoogleDriveFile] Upload failed with error:', {

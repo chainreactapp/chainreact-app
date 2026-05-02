@@ -4,6 +4,7 @@
  */
 
 import { ActionResult } from '../core/executeWait'
+import { requireExplicitField } from '../core/requireExplicitField'
 import { logger } from '@/lib/utils/logger'
 import { getSlackToken } from './utils'
 
@@ -15,11 +16,17 @@ export async function inviteUsersToChannel(params: {
   const { config, userId } = params
 
   try {
+    // Q11 — sendInviteNotification is required (audit decision: notification
+    // intent must be explicit even though Slack's `conversations.invite`
+    // currently always notifies). Workflow author must acknowledge intent.
+    const missingRequired = requireExplicitField(config, 'sendInviteNotification')
+    if (missingRequired) return missingRequired as unknown as ActionResult
+
     const {
       workspace,
       channel,
       users,
-      sendInviteNotification = true,
+      sendInviteNotification,
       customWelcomeMessage,
       asUser = false
     } = config

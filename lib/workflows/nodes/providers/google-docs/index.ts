@@ -375,9 +375,8 @@ const googleDocsActionShareDocument: NodeComponent = {
       name: "sendNotification",
       label: "Send Email Notification",
       type: "boolean",
-      required: false,
-      defaultValue: true,
-      description: "Notify users via email when sharing"
+      required: true,
+      description: "Required (Q11). Recommended: false — emails real people on every workflow run. Notify users via email when sharing."
     },
     {
       name: "message",

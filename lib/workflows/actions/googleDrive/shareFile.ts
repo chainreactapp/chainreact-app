@@ -1,6 +1,8 @@
 import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
+import { refreshAndRetry } from '../core/refreshAndRetry'
 import { resolveValue } from '../core/resolveValue'
 import { ActionResult } from '../core/executeWait'
+import { requireExplicitField } from '../core/requireExplicitField'
 import { google } from 'googleapis'
 
 import { logger } from '@/lib/utils/logger'
@@ -16,12 +18,19 @@ export async function shareGoogleDriveFile(
   try {
     const resolvedConfig = resolveValue(config, input)
 
+    // Q11 — sendNotification has user-facing side effects (auto-emails the
+    // shared-with user). Previous silent default `true` removed; workflow
+    // author must explicitly choose. Existing workflows are backfilled to
+    // `true` (matches prior behavior) via the backfill registry.
+    const missingRequired = requireExplicitField(resolvedConfig, 'sendNotification')
+    if (missingRequired) return missingRequired as unknown as ActionResult
+
     const {
       fileId,
       shareType = 'user',
       emailAddress,
       role = 'reader',
-      sendNotification = true,
+      sendNotification,
       emailMessage
     } = resolvedConfig
 
@@ -42,9 +51,11 @@ export async function shareGoogleDriveFile(
     }
 
     const accessToken = await getDecryptedAccessToken(userId, "google-drive")
-    const oauth2Client = new google.auth.OAuth2()
-    oauth2Client.setCredentials({ access_token: accessToken })
-    const drive = google.drive({ version: 'v3', auth: oauth2Client })
+    const buildDriveClient = (token: string) => {
+      const oauth2Client = new google.auth.OAuth2()
+      oauth2Client.setCredentials({ access_token: token })
+      return google.drive({ version: 'v3', auth: oauth2Client })
+    }
 
     // Build permission request
     const permission: any = {
@@ -55,30 +66,62 @@ export async function shareGoogleDriveFile(
     if (shareType === 'user') {
       permission.emailAddress = emailAddress
     } else if (shareType === 'domain') {
-      // Get user's domain
-      const aboutResponse = await drive.about.get({ fields: 'user' })
-      const userEmail = aboutResponse.data.user?.emailAddress || ''
+      // Get user's domain. Auxiliary call wrapped in `refreshAndRetry`
+      // (Q3, §A5).
+      const aboutResult = await refreshAndRetry({
+        provider: 'google-drive',
+        userId,
+        accessToken,
+        call: async (token) =>
+          buildDriveClient(token).about.get({ fields: 'user' }),
+      })
+      if (!aboutResult.success) {
+        return { success: false, output: {}, message: aboutResult.message }
+      }
+      const userEmail = aboutResult.data.data.user?.emailAddress || ''
       const domain = userEmail.split('@')[1]
       if (domain) {
         permission.domain = domain
       }
     }
 
-    // Create the permission
-    const permResponse = await drive.permissions.create({
-      fileId,
-      requestBody: permission,
-      sendNotificationEmail: sendNotification,
-      emailMessage: emailMessage || undefined,
-      transferOwnership: role === 'owner' ? true : undefined,
-      fields: 'id, role, type, emailAddress'
+    // Create the permission. Principal call wrapped in `refreshAndRetry`
+    // (Q3, §A5).
+    const permResult = await refreshAndRetry({
+      provider: 'google-drive',
+      userId,
+      accessToken,
+      call: async (token) =>
+        buildDriveClient(token).permissions.create({
+          fileId,
+          requestBody: permission,
+          sendNotificationEmail: sendNotification,
+          emailMessage: emailMessage || undefined,
+          transferOwnership: role === 'owner' ? true : undefined,
+          fields: 'id, role, type, emailAddress'
+        }),
     })
+    if (!permResult.success) {
+      return { success: false, output: {}, message: permResult.message }
+    }
+    const permResponse = permResult.data
 
-    // Get the file's webViewLink for the share link
-    const fileResponse = await drive.files.get({
-      fileId,
-      fields: 'webViewLink, name'
+    // Get the file's webViewLink for the share link. Auxiliary call wrapped
+    // in `refreshAndRetry` (Q3, §A5).
+    const fileResult = await refreshAndRetry({
+      provider: 'google-drive',
+      userId,
+      accessToken,
+      call: async (token) =>
+        buildDriveClient(token).files.get({
+          fileId,
+          fields: 'webViewLink, name'
+        }),
     })
+    if (!fileResult.success) {
+      return { success: false, output: {}, message: fileResult.message }
+    }
+    const fileResponse = fileResult.data
 
     const sharedWith = shareType === 'user'
       ? emailAddress

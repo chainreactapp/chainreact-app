@@ -1,6 +1,7 @@
 import { createAdminClient } from '@/lib/supabase/admin'
 import { decrypt } from '@/lib/security/encryption'
 import { ActionResult } from '../index'
+import { requireExplicitField } from '../core/requireExplicitField'
 import { logger } from '@/lib/utils/logger'
 
 /**
@@ -92,12 +93,27 @@ export async function createTeamsGroupChat(
   input: Record<string, any>
 ): Promise<ActionResult> {
   try {
+    // Q11 — sendInvitationEmail emails real people on group-chat creation.
+    // Previous silent default `true` removed; workflow author must
+    // explicitly choose. The check considers both `config` and `input`
+    // (handler accepts either) so a user-supplied value at either layer
+    // satisfies the requirement.
+    const sendInvitationFromInput = input.sendInvitationEmail
+    const sendInvitationFromConfig = config?.sendInvitationEmail
+    const hasExplicitSendInvitation =
+      sendInvitationFromInput !== undefined && sendInvitationFromInput !== null && sendInvitationFromInput !== '' ||
+      sendInvitationFromConfig !== undefined && sendInvitationFromConfig !== null && sendInvitationFromConfig !== ''
+    if (!hasExplicitSendInvitation) {
+      const missingRequired = requireExplicitField(config, 'sendInvitationEmail')
+      if (missingRequired) return missingRequired as unknown as ActionResult
+    }
+
     // Support both config and input for field values
     const topic = input.topic || config.topic
     const members = input.members || config.members
     const initialMessage = input.initialMessage || config.initialMessage
     const inviteExternalUsers = input.inviteExternalUsers ?? config.inviteExternalUsers ?? false
-    const sendInvitationEmail = input.sendInvitationEmail ?? config.sendInvitationEmail ?? true
+    const sendInvitationEmail = input.sendInvitationEmail ?? config.sendInvitationEmail
 
     if (!members || members.length === 0) {
       return {

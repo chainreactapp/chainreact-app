@@ -1,6 +1,14 @@
 import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
 import { resolveValue } from '../core/resolveValue'
+import { parseRecipients } from '../core/parseRecipients'
+import { refreshAndRetry } from '../core/refreshAndRetry'
 import { ActionResult } from '../core/executeWait'
+import { buildIdempotencyKey, type HandlerExecutionMeta } from '../core/idempotencyKey'
+import { hashPayload } from '../core/hashPayload'
+import { checkReplay, recordFired } from '../core/sessionSideEffects'
+import { resolveTimezone } from '../core/resolveContextDefaults'
+import { addMinutesToTime, parseTimeOrFail } from '../core/parseTimeOrFail'
+import { requireExplicitFields } from '../core/requireExplicitField'
 import { google } from 'googleapis'
 
 import { logger } from '@/lib/utils/logger'
@@ -11,8 +19,18 @@ import { logger } from '@/lib/utils/logger'
 export async function createGoogleCalendarEvent(
   config: any,
   userId: string,
-  input: Record<string, any>
+  input: Record<string, any>,
+  meta?: HandlerExecutionMeta,
 ): Promise<ActionResult> {
+  // Q8d — testMode interception.
+  if (meta?.testMode) {
+    return {
+      success: true,
+      output: { simulated: true, provider: 'google-calendar' },
+      message: 'Simulated in test mode — no provider call made',
+    }
+  }
+
   try {
     // Resolve config values if they contain template variables
     const needsResolution = typeof config === 'object' &&
@@ -21,6 +39,20 @@ export async function createGoogleCalendarEvent(
       )
 
     const resolvedConfig = needsResolution ? resolveValue(config, input) : config
+
+    // Q11 — high-risk fields that have user-facing side effects MUST be
+    // explicitly set on workflow config. The previous silent defaults were:
+    //   sendNotifications=all       → auto-emails attendees on event creation
+    //   guestsCanInviteOthers=true  → invite list expands beyond config author
+    //   guestsCanSeeOtherGuests=true → exposes attendee email PII to attendees
+    // Existing workflows have these backfilled to the legacy values via
+    // lib/workflows/migrations/handlerDefaultsBackfillRegistry.ts (PR-G2).
+    const missingRequired = requireExplicitFields(resolvedConfig, [
+      'sendNotifications',
+      'guestsCanInviteOthers',
+      'guestsCanSeeOtherGuests',
+    ])
+    if (missingRequired) return missingRequired as unknown as ActionResult
 
     // Extract all config fields with new structure
     const {
@@ -39,9 +71,9 @@ export async function createGoogleCalendarEvent(
       attendees,
       notifications = [],
       googleMeet = null,
-      sendNotifications = 'all',
-      guestsCanInviteOthers = true,
-      guestsCanSeeOtherGuests = true,
+      sendNotifications,
+      guestsCanInviteOthers,
+      guestsCanSeeOtherGuests,
       guestsCanModify = false,
       visibility = 'default',
       transparency = 'opaque',
@@ -52,55 +84,52 @@ export async function createGoogleCalendarEvent(
     // Get the decrypted access token for Google
     const accessToken = await getDecryptedAccessToken(userId, "google-calendar")
 
-    // Handle timezone - auto-detect if not specified
-    const getUserTimezone = () => {
-      try {
-        return Intl.DateTimeFormat().resolvedOptions().timeZone
-      } catch {
-        return 'America/New_York' // fallback
+    // Q12 — resolve timezone via workspace → user → UTC, lazily. Only
+    // queries the DB when explicit `startTimeZone` (and `endTimeZone` for
+    // separate-tz events) is unset / 'auto'. Replaces the prior
+    // `Intl.DateTimeFormat().resolvedOptions().timeZone` (server tz) +
+    // 'America/New_York' fallback. The server's timezone is not a meaningful
+    // proxy for the workflow author's intent.
+    let cachedFallbackTz: string | null = null
+    const getFallbackTz = async (): Promise<string> => {
+      if (cachedFallbackTz === null) {
+        cachedFallbackTz = await resolveTimezone({
+          workspaceId: meta?.workspaceId,
+          userId,
+        })
       }
+      return cachedFallbackTz
     }
 
-    // Use startTimeZone for both start and end unless separateTimezones is enabled
-    let eventStartTimeZone = startTimeZone || getUserTimezone()
-    let eventEndTimeZone = separateTimezones && endTimeZone ? endTimeZone : eventStartTimeZone
-
-    // Auto-detect timezone if not set or set to 'auto'
-    if (!eventStartTimeZone || eventStartTimeZone === 'auto') {
-      eventStartTimeZone = getUserTimezone()
-      logger.info(`🌍 [Google Calendar] Auto-detected start timezone: ${eventStartTimeZone}`)
+    const explicitStartTz = startTimeZone && startTimeZone !== 'auto' ? startTimeZone : null
+    let eventStartTimeZone = explicitStartTz ?? (await getFallbackTz())
+    let eventEndTimeZone: string
+    if (separateTimezones) {
+      const explicitEndTz = endTimeZone && endTimeZone !== 'auto' ? endTimeZone : null
+      eventEndTimeZone = explicitEndTz ?? (await getFallbackTz())
+    } else {
+      eventEndTimeZone = eventStartTimeZone
     }
 
-    if (separateTimezones && (!eventEndTimeZone || eventEndTimeZone === 'auto')) {
-      eventEndTimeZone = getUserTimezone()
-      logger.info(`🌍 [Google Calendar] Auto-detected end timezone: ${eventEndTimeZone}`)
+    // Build a Calendar SDK client for the given access token. The insert
+    // call below is wrapped in `refreshAndRetry` (Q3) so a 401 from the SDK
+    // triggers a single refresh-and-retry attempt.
+    const buildCalendarClient = (token: string) => {
+      const oauth2Client = new google.auth.OAuth2()
+      oauth2Client.setCredentials({ access_token: token })
+      return google.calendar({ version: 'v3', auth: oauth2Client })
     }
+    const calendar = buildCalendarClient(accessToken)
 
-    // Create OAuth2 client
-    const oauth2Client = new google.auth.OAuth2()
-    oauth2Client.setCredentials({ access_token: accessToken })
-
-    // Create calendar API client
-    const calendar = google.calendar({ version: 'v3', auth: oauth2Client })
-
-    // Parse dates and times with proper validation
+    // Parse dates and times. Validation of the time component is handled
+    // separately below (Q11) — `parseDateTime` is now a pure formatter.
     const parseDateTime = (date: string, time: string) => {
-      // Handle special date values or use defaults
       if (!date || date === 'today') {
         date = new Date().toISOString().split('T')[0]
       }
-
-      // Handle special time values or use defaults
       if (!time || time === 'current') {
         time = new Date().toTimeString().slice(0, 5)
       }
-
-      // Validate time format (HH:MM)
-      if (!/^\d{2}:\d{2}$/.test(time)) {
-        time = '09:00' // Default to 9 AM if invalid format
-      }
-
-      // Combine date and time
       return `${date}T${time}:00`
     }
 
@@ -147,30 +176,55 @@ export async function createGoogleCalendarEvent(
         date: parseDate(endDate || startDate)
       }
     } else {
-      // Regular timed event
+      // Regular timed event.
+      //
+      // Q11 — strict HH:MM validation, NO silent substitution of '09:00' /
+      // '10:00'. The 'current' sentinel resolves to "now" deterministically
+      // (preserved); empty / null / undefined reuses 'current' semantics.
+      // Anything else must match HH:MM 24-hour or the handler fails.
+      let resolvedStartTime: string
+      if (!startTime || startTime === 'current') {
+        resolvedStartTime = new Date().toTimeString().slice(0, 5)
+      } else {
+        const parsed = parseTimeOrFail(startTime, 'startTime')
+        if (!parsed.ok) return parsed.failure as unknown as ActionResult
+        resolvedStartTime = parsed.raw
+      }
+
+      // Q11 — end-time defaults to start + 60 minutes (NOT a hardcoded
+      // '10:00'). Explicit end-time is validated strictly. 'current'
+      // sentinel resolves to "now" (preserved).
+      let resolvedEndTime: string
+      if (!endTime) {
+        resolvedEndTime = addMinutesToTime(resolvedStartTime, 60)
+      } else if (endTime === 'current') {
+        resolvedEndTime = new Date().toTimeString().slice(0, 5)
+      } else {
+        const parsed = parseTimeOrFail(endTime, 'endTime')
+        if (!parsed.ok) return parsed.failure as unknown as ActionResult
+        resolvedEndTime = parsed.raw
+      }
+
       eventData.start = {
-        dateTime: parseDateTime(startDate, startTime),
+        dateTime: parseDateTime(startDate, resolvedStartTime),
         timeZone: eventStartTimeZone
       }
       eventData.end = {
-        dateTime: parseDateTime(endDate || startDate, endTime || '10:00'),
+        dateTime: parseDateTime(endDate || startDate, resolvedEndTime),
         timeZone: eventEndTimeZone
       }
     }
 
-    // Process attendees if provided
-    if (attendees && attendees.length > 0) {
-      const attendeeList = typeof attendees === 'string'
-        ? attendees.split(',').map((email: string) => email.trim())
-        : Array.isArray(attendees) ? attendees : [attendees]
-
-      const validAttendees = attendeeList
-        .filter(email => email && email.includes('@'))
-        .map(email => ({ email: email.trim() }))
-
-      if (validAttendees.length > 0) {
-        eventData.attendees = validAttendees
-      }
+    // Process attendees via the shared Q7 normalizer. Calendar already split
+    // CSVs inline; routing through `parseRecipients` keeps behavior identical
+    // and consolidates the splitting logic with Gmail/Outlook. See
+    // learning/docs/handler-contracts.md Q7.
+    const parsedAttendees = parseRecipients(attendees)
+    const validAttendees = parsedAttendees
+      .filter(email => email.includes('@'))
+      .map(email => ({ email }))
+    if (validAttendees.length > 0) {
+      eventData.attendees = validAttendees
     }
 
     // Add reminders from notifications array
@@ -255,8 +309,8 @@ export async function createGoogleCalendarEvent(
       eventData.recurrence = [recurrence]
     }
 
-    // Guest permissions
-    if (attendees && attendees.length > 0) {
+    // Guest permissions — only set when there are valid attendees on the event.
+    if (validAttendees.length > 0) {
       eventData.guestsCanInviteOthers = guestsCanInviteOthers
       eventData.guestsCanSeeOtherGuests = guestsCanSeeOtherGuests
       eventData.guestsCanModify = guestsCanModify
@@ -270,20 +324,82 @@ export async function createGoogleCalendarEvent(
       sendUpdates = 'externalOnly'
     }
 
-    // Log the event data being sent for debugging
-    logger.info('📤 [Google Calendar] Event data being sent:', {
+    // Q8b — eventData contains attendee emails (customer PII), so this
+    // log line is debug-only. Use debug for diagnostic-rich output;
+    // info / warn / error must NOT carry PII.
+    logger.debug('📤 [Google Calendar] Event data being sent:', {
       allDay,
       eventData: JSON.stringify(eventData, null, 2)
     })
 
-    // Always create a new event (each workflow execution creates a fresh event)
-    const response = await calendar.events.insert({
-      calendarId: calendarId,
-      requestBody: eventData,
-      sendUpdates: sendUpdates,
-      conferenceDataVersion: createMeetLink ? 1 : 0
+    // Q4 — within-session idempotency. Hash the semantic event content
+    // (start/end/attendees/summary/location/description/visibility/etc.) —
+    // the conferenceData.requestId carries Date.now() and is excluded so a
+    // re-resolved template hashes equal across replays.
+    const idempotencyKey = buildIdempotencyKey(meta)
+    const payloadHash = idempotencyKey
+      ? hashPayload({
+          calendarId,
+          summary: eventData.summary,
+          location: eventData.location ?? null,
+          description: eventData.description ?? null,
+          start: eventData.start,
+          end: eventData.end,
+          attendees: eventData.attendees ?? [],
+          visibility: eventData.visibility ?? 'default',
+          transparency: eventData.transparency,
+          colorId: eventData.colorId ?? null,
+          recurrence: eventData.recurrence ?? null,
+          reminders: eventData.reminders ?? null,
+          guestsCanInviteOthers: eventData.guestsCanInviteOthers ?? null,
+          guestsCanSeeOtherGuests: eventData.guestsCanSeeOtherGuests ?? null,
+          guestsCanModify: eventData.guestsCanModify ?? null,
+          createMeetLink,
+          sendUpdates,
+        })
+      : ''
+
+    if (idempotencyKey) {
+      const replay = await checkReplay(idempotencyKey, payloadHash)
+      if (replay.kind === 'cached') return replay.result
+      if (replay.kind === 'mismatch') {
+        return {
+          success: false,
+          output: {},
+          message: 'This action was already executed for this session with different input.',
+          error: 'PAYLOAD_MISMATCH',
+        }
+      }
+    }
+
+    // Always create a new event (each workflow execution creates a fresh event).
+    // Wrapped in `refreshAndRetry` per Q3 — a 401 from googleapis triggers
+    // one refresh+retry attempt; permanent failure returns a structured auth
+    // failure that the outer mapping converts to ActionResult.
+    const insertResult = await refreshAndRetry({
+      provider: 'google-calendar',
+      userId,
+      accessToken,
+      call: async (token) => {
+        const client = buildCalendarClient(token)
+        return client.events.insert({
+          calendarId: calendarId,
+          requestBody: eventData,
+          sendUpdates: sendUpdates,
+          conferenceDataVersion: createMeetLink ? 1 : 0,
+        })
+      },
     })
 
+    if (!insertResult.success) {
+      return {
+        success: false,
+        output: {},
+        message: insertResult.message,
+      }
+    }
+
+    const response = insertResult.data
     const createdEvent = response.data
 
     // Extract Google Meet link from conference data
@@ -297,7 +413,7 @@ export async function createGoogleCalendarEvent(
       conferenceData: createdEvent.conferenceData ? 'present' : 'absent'
     })
 
-    return {
+    const actionResult: ActionResult = {
       success: true,
       output: {
         eventId: createdEvent.id,
@@ -314,6 +430,15 @@ export async function createGoogleCalendarEvent(
         endTimezone: eventEndTimeZone
       }
     }
+
+    if (idempotencyKey) {
+      await recordFired(idempotencyKey, actionResult, payloadHash, {
+        provider: 'google-calendar',
+        externalId: createdEvent.id ?? null,
+      })
+    }
+
+    return actionResult
   } catch (error: any) {
     logger.error('❌ [Google Calendar] Error creating event:', {
       message: error.message,
@@ -324,16 +449,39 @@ export async function createGoogleCalendarEvent(
       statusText: error.response?.statusText
     })
 
-    // Check if it's a token error
+    // PR-C5 (Q1) — expected provider failures return ActionResult instead of
+    // throwing. The execution layer's outer catch is for *unexpected*
+    // throws only (programmer errors, invariants); a rejected create-event
+    // request is a documented failure path and should be a typed failure.
+
+    // Auth failure path. `refreshAndRetry` already converts SDK 401s into a
+    // structured auth failure ActionResult earlier in the function, so this
+    // branch fires only for 401-shaped errors that bubble up from outside
+    // the principal call (e.g., the `getDecryptedAccessToken` call).
     if (error.message?.includes('401') || error.message?.includes('Unauthorized') || error.code === 401) {
-      throw new Error('Google Calendar authentication failed. Please reconnect your account.')
+      return {
+        success: false,
+        output: {},
+        category: 'auth',
+        message: 'Google Calendar authentication failed. Please reconnect your account.',
+      }
     }
 
-    // Provide more helpful error message
+    // Provider-side error message — surface the underlying API error verbatim.
     if (error.response?.data?.error?.message) {
-      throw new Error(`Google Calendar API Error: ${error.response.data.error.message}`)
+      return {
+        success: false,
+        output: {},
+        category: 'provider',
+        message: `Google Calendar API Error: ${error.response.data.error.message}`,
+      }
     }
 
-    throw error
+    return {
+      success: false,
+      output: {},
+      category: 'provider',
+      message: error.message || 'Google Calendar create event failed',
+    }
   }
 }

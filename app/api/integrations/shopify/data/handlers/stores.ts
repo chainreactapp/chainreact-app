@@ -15,17 +15,18 @@ export const getShopifyStores: ShopifyDataHandler<ShopifyStore[]> = async (
     // Get stores from metadata
     const stores = metadata?.stores || []
 
-    // If no stores in new format, check legacy single shop format
+    // No multi-store metadata yet — fall back to the single-store domain
+    // written by the OAuth callback (or the test-fixture metadata.shop key).
     if (stores.length === 0) {
-      const legacyShop = metadata?.shop || integration.shop_domain
-      if (legacyShop) {
-        logger.info('[Shopify] Using legacy single shop format')
+      const singleShop = metadata?.shop || integration.shop_domain
+      if (singleShop) {
+        logger.info('[Shopify] Using single-store domain (no multi-store metadata)')
         return [{
-          shop: legacyShop,
-          name: legacyShop,
-          id: legacyShop,
-          value: legacyShop, // Use shop domain as value for select fields
-          label: legacyShop
+          shop: singleShop,
+          name: singleShop,
+          id: singleShop,
+          value: singleShop,
+          label: singleShop
         }]
       }
     }

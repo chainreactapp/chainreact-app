@@ -2,6 +2,7 @@ import { ExecutionContext } from '@/types/workflow';
 import { ActionResult } from '@/lib/workflows/actions';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { decrypt } from '@/lib/security/encryption';
+import { refreshAndRetry } from '@/lib/workflows/actions/core/refreshAndRetry';
 
 import { logger } from '@/lib/utils/logger'
 
@@ -41,19 +42,32 @@ async function executeNotionManageUsersInternal(
   const encryptionKey = process.env.ENCRYPTION_KEY!;
   const accessToken = decrypt(workspace.access_token, encryptionKey);
 
-  const baseHeaders = {
-    'Authorization': `Bearer ${accessToken}`,
+  // Q3 — every raw `fetch` call below is wrapped in `refreshAndRetry`.
+  // The helper takes a token and returns headers built with that token, so
+  // the refreshed token after a 401 propagates into the retry attempt.
+  const buildHeaders = (token: string) => ({
+    'Authorization': `Bearer ${token}`,
     'Notion-Version': '2022-06-28',
     'Content-Type': 'application/json'
-  };
+  });
 
   switch (operation) {
     case 'list':
-      // List all users in the workspace
-      const listResponse = await fetch('https://api.notion.com/v1/users', {
-        method: 'GET',
-        headers: baseHeaders
+      // List all users in the workspace (Q3 wrap).
+      const listResult = await refreshAndRetry({
+        provider: 'notion',
+        userId: context.userId,
+        accessToken,
+        call: async (token) =>
+          fetch('https://api.notion.com/v1/users', {
+            method: 'GET',
+            headers: buildHeaders(token)
+          }),
       });
+      if (!listResult.success) {
+        throw new Error(listResult.message);
+      }
+      const listResponse = listResult.data;
 
       if (!listResponse.ok) {
         const error = await listResponse.json();
@@ -101,10 +115,21 @@ async function executeNotionManageUsersInternal(
         throw new Error('User ID is required for get operation');
       }
 
-      const getResponse = await fetch(`https://api.notion.com/v1/users/${userId}`, {
-        method: 'GET',
-        headers: baseHeaders
+      // Q3 wrap.
+      const getResult = await refreshAndRetry({
+        provider: 'notion',
+        userId: context.userId,
+        accessToken,
+        call: async (token) =>
+          fetch(`https://api.notion.com/v1/users/${userId}`, {
+            method: 'GET',
+            headers: buildHeaders(token)
+          }),
       });
+      if (!getResult.success) {
+        throw new Error(getResult.message);
+      }
+      const getResponse = getResult.data;
 
       if (!getResponse.ok) {
         const error = await getResponse.json();
@@ -146,25 +171,32 @@ async function executeNotionManageUsersInternal(
       };
 
       // Also fetch recent activity if possible (pages created/edited by this user)
+      // Auxiliary Q3 wrap — best-effort: non-401 errors are logged-and-swallowed.
       try {
-        // Search for pages last edited by this user
-        const activityResponse = await fetch('https://api.notion.com/v1/search', {
-          method: 'POST',
-          headers: baseHeaders,
-          body: JSON.stringify({
-            filter: {
-              property: 'object',
-              value: 'page'
-            },
-            sort: {
-              direction: 'descending',
-              timestamp: 'last_edited_time'
-            },
-            page_size: 5
-          })
+        const activityResult = await refreshAndRetry({
+          provider: 'notion',
+          userId: context.userId,
+          accessToken,
+          call: async (token) =>
+            fetch('https://api.notion.com/v1/search', {
+              method: 'POST',
+              headers: buildHeaders(token),
+              body: JSON.stringify({
+                filter: {
+                  property: 'object',
+                  value: 'page'
+                },
+                sort: {
+                  direction: 'descending',
+                  timestamp: 'last_edited_time'
+                },
+                page_size: 5
+              })
+            }),
         });
 
-        if (activityResponse.ok) {
+        if (activityResult.success && activityResult.data.ok) {
+          const activityResponse = activityResult.data;
           const activityData = await activityResponse.json();
 
           // Filter pages edited by this user

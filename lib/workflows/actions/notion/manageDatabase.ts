@@ -1,5 +1,6 @@
 import { ExecutionContext } from '@/types/workflow';
 import { ActionResult } from '@/lib/workflows/actions';
+import { refreshAndRetry } from '@/lib/workflows/actions/core/refreshAndRetry';
 
 import { logger } from '@/lib/utils/logger'
 
@@ -107,11 +108,15 @@ async function executeNotionManageDatabaseInternal(
     throw new Error('Notion integration not found or not connected');
   }
 
-  const baseHeaders = {
-    'Authorization': `Bearer ${credentials.accessToken}`,
+  // Q3 — every raw `fetch` call below is wrapped in `refreshAndRetry`. The
+  // helper takes a token and returns the headers built with that token, so
+  // a refreshed token after a 401 propagates into the retry attempt.
+  const accessToken = credentials.accessToken;
+  const buildHeaders = (token: string) => ({
+    'Authorization': `Bearer ${token}`,
     'Notion-Version': '2022-06-28',
     'Content-Type': 'application/json'
-  };
+  });
 
   switch (operation) {
     case 'create':
@@ -188,11 +193,21 @@ async function executeNotionManageDatabaseInternal(
         createBody.is_inline = true;
       }
 
-      const createResponse = await fetch('https://api.notion.com/v1/databases', {
-        method: 'POST',
-        headers: baseHeaders,
-        body: JSON.stringify(createBody)
+      const createResult = await refreshAndRetry({
+        provider: 'notion',
+        userId: context.userId,
+        accessToken,
+        call: async (token) =>
+          fetch('https://api.notion.com/v1/databases', {
+            method: 'POST',
+            headers: buildHeaders(token),
+            body: JSON.stringify(createBody)
+          }),
       });
+      if (!createResult.success) {
+        throw new Error(createResult.message);
+      }
+      const createResponse = createResult.data;
 
       if (!createResponse.ok) {
         const error = await createResponse.json();
@@ -216,18 +231,28 @@ async function executeNotionManageDatabaseInternal(
         for (const row of rowUpdates) {
           try {
             if (row._action === 'delete' && row.id) {
-              // Archive/delete the page
-              const deleteResponse = await fetch(`https://api.notion.com/v1/pages/${row.id}`, {
-                method: 'PATCH',
-                headers: baseHeaders,
-                body: JSON.stringify({ archived: true })
+              // Archive/delete the page (Q3 wrap).
+              const deleteResult = await refreshAndRetry({
+                provider: 'notion',
+                userId: context.userId,
+                accessToken,
+                call: async (token) =>
+                  fetch(`https://api.notion.com/v1/pages/${row.id}`, {
+                    method: 'PATCH',
+                    headers: buildHeaders(token),
+                    body: JSON.stringify({ archived: true })
+                  }),
               });
-
-              if (deleteResponse.ok) {
-                results.deleted++;
+              if (!deleteResult.success) {
+                results.errors.push(`Failed to delete row ${row.id}: ${deleteResult.message}`);
               } else {
-                const error = await deleteResponse.json();
-                results.errors.push(`Failed to delete row ${row.id}: ${error.message}`);
+                const deleteResponse = deleteResult.data;
+                if (deleteResponse.ok) {
+                  results.deleted++;
+                } else {
+                  const error = await deleteResponse.json();
+                  results.errors.push(`Failed to delete row ${row.id}: ${error.message}`);
+                }
               }
             } else if (row._action === 'add' || !row.id) {
               // Create new page in the database
@@ -248,17 +273,28 @@ async function executeNotionManageDatabaseInternal(
                 properties
               };
 
-              const createResponse = await fetch('https://api.notion.com/v1/pages', {
-                method: 'POST',
-                headers: baseHeaders,
-                body: JSON.stringify(createPageBody)
+              // Q3 wrap.
+              const createPageResult = await refreshAndRetry({
+                provider: 'notion',
+                userId: context.userId,
+                accessToken,
+                call: async (token) =>
+                  fetch('https://api.notion.com/v1/pages', {
+                    method: 'POST',
+                    headers: buildHeaders(token),
+                    body: JSON.stringify(createPageBody)
+                  }),
               });
-
-              if (createResponse.ok) {
-                results.added++;
+              if (!createPageResult.success) {
+                results.errors.push(`Failed to add row: ${createPageResult.message}`);
               } else {
-                const error = await createResponse.json();
-                results.errors.push(`Failed to add row: ${error.message}`);
+                const createResponse = createPageResult.data;
+                if (createResponse.ok) {
+                  results.added++;
+                } else {
+                  const error = await createResponse.json();
+                  results.errors.push(`Failed to add row: ${error.message}`);
+                }
               }
             } else if (row.id) {
               // Update existing page
@@ -280,17 +316,28 @@ async function executeNotionManageDatabaseInternal(
                   properties
                 };
 
-                const updatePageResponse = await fetch(`https://api.notion.com/v1/pages/${row.id}`, {
-                  method: 'PATCH',
-                  headers: baseHeaders,
-                  body: JSON.stringify(updatePageBody)
+                // Q3 wrap.
+                const updatePageResult = await refreshAndRetry({
+                  provider: 'notion',
+                  userId: context.userId,
+                  accessToken,
+                  call: async (token) =>
+                    fetch(`https://api.notion.com/v1/pages/${row.id}`, {
+                      method: 'PATCH',
+                      headers: buildHeaders(token),
+                      body: JSON.stringify(updatePageBody)
+                    }),
                 });
-
-                if (updatePageResponse.ok) {
-                  results.updated++;
+                if (!updatePageResult.success) {
+                  results.errors.push(`Failed to update row ${row.id}: ${updatePageResult.message}`);
                 } else {
-                  const error = await updatePageResponse.json();
-                  results.errors.push(`Failed to update row ${row.id}: ${error.message}`);
+                  const updatePageResponse = updatePageResult.data;
+                  if (updatePageResponse.ok) {
+                    results.updated++;
+                  } else {
+                    const error = await updatePageResponse.json();
+                    results.errors.push(`Failed to update row ${row.id}: ${error.message}`);
+                  }
                 }
               }
             }
@@ -326,11 +373,22 @@ async function executeNotionManageDatabaseInternal(
           ];
         }
 
-        const updateResponse = await fetch(`https://api.notion.com/v1/databases/${config.database}`, {
-          method: 'PATCH',
-          headers: baseHeaders,
-          body: JSON.stringify(updateBody)
+        // Q3 wrap.
+        const updateResult = await refreshAndRetry({
+          provider: 'notion',
+          userId: context.userId,
+          accessToken,
+          call: async (token) =>
+            fetch(`https://api.notion.com/v1/databases/${config.database}`, {
+              method: 'PATCH',
+              headers: buildHeaders(token),
+              body: JSON.stringify(updateBody)
+            }),
         });
+        if (!updateResult.success) {
+          throw new Error(updateResult.message);
+        }
+        const updateResponse = updateResult.data;
 
         if (!updateResponse.ok) {
           const error = await updateResponse.json();

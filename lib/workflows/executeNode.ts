@@ -39,7 +39,6 @@ export { getIntegrationById } from './integrationHelpers'
 function generateMockOutput(type: string, config: any): any {
   // Generate realistic mock data based on action type
   switch(type) {
-    case 'gmail_send':
     case 'gmail_action_send_email':
       return {
         id: `mock_email_${Date.now()}`,
@@ -87,7 +86,6 @@ function generateMockOutput(type: string, config: any): any {
 function getMockPreview(type: string, config: any): any {
   // Return a preview of what would have been sent to external services
   switch(type) {
-    case 'gmail_send':
     case 'gmail_action_send_email':
       return {
         to: config.to || 'recipient@example.com',
@@ -693,8 +691,25 @@ export async function executeAction({ node, input, userId, workflowId, testMode,
     userId
   }
 
+  // PR-C4 — engine-thread metadata for within-session idempotency. Handlers
+  // that opt in (those updated under PR-C4) read `params.meta` to build
+  // their `(executionSessionId, nodeId, actionType)` idempotency key. Older
+  // handlers that don't read `meta` ignore this field.
+  const handlerMeta = {
+    executionSessionId: input?.executionId,
+    nodeId: node.id,
+    actionType: type,
+    testMode,
+  }
+
   try {
-    const result = await handler({ config: processedConfig, userId, input, context: executionContext })
+    const result = await handler({
+      config: processedConfig,
+      userId,
+      input,
+      context: executionContext,
+      meta: handlerMeta,
+    })
     const executionTime = Date.now() - startTime
 
     // CRITICAL: Check if the action actually succeeded

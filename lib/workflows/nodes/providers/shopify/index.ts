@@ -815,9 +815,8 @@ export const shopifyNodes: NodeComponent[] = [
         },
         label: "Notify Customer",
         type: "boolean",
-        required: false,
-        defaultValue: false,
-        description: "Send notification email to customer",
+        required: true,
+        description: "Required (Q11) — customer-notification expectation depends on the status transition (fulfilled, cancelled, etc.). Workflow author must explicitly choose true / false.",
         connectButton: true
       },
     ],

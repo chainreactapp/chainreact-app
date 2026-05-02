@@ -29,6 +29,17 @@ export function getAnthropicClient(): Anthropic {
 }
 
 /**
+ * Returns an Anthropic client with a custom API key.
+ * Used for user-provided keys (e.g., in AI agent actions).
+ * Does NOT cache — each call creates a new instance.
+ *
+ * Mirrors `getOpenAIClientWithKey` from openai-client.ts.
+ */
+export function getAnthropicClientWithKey(apiKey: string): Anthropic {
+  return new Anthropic({ apiKey })
+}
+
+/**
  * Reset the cached client (for testing).
  */
 export function resetAnthropicClient(): void {

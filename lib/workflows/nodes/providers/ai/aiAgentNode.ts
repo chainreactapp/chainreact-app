@@ -76,6 +76,7 @@ export const aiAgentNode: NodeComponent = {
       type: "textarea",
       multiline: true,
       rows: 6,
+      required: true,
       dependsOn: "actionType",
       visibilityCondition: { field: "actionType", operator: "equals", value: "respond" },
       hasVariablePicker: true,
@@ -83,7 +84,7 @@ export const aiAgentNode: NodeComponent = {
 • "Be helpful and address their question directly"
 • "Acknowledge their concern and offer a solution"
 • "Thank them for their inquiry and provide next steps"`,
-      description: "Guide how the AI should respond to the incoming message"
+      description: "Required (Q11). Guide how the AI should respond — the prior silent fallback (\"Respond helpfully to the incoming message\") is removed because AI behavior is too central to workflow output to silently substitute."
     },
 
     // EXTRACT - Data extraction

@@ -246,6 +246,44 @@ useEffect(() => {
 
 # SECTION 6 — INTEGRATIONS
 
+## Handler Contracts (source of truth)
+Every workflow action handler must follow the documented behavioral contracts in [`/learning/docs/handler-contracts.md`](./learning/docs/handler-contracts.md) — failure modes, variable resolution, 401 handling, idempotency, multi-recipient parsing, safety floors, and more. Tests cite contracts by Q-number. Contract first, then tests, then source — never reverse.
+
+## Multi-Recipient Fields
+Schema-declared multi-recipient / multi-value fields (Gmail / Outlook `to`/`cc`/`bcc`, Calendar `attendees`, future provider mentions) MUST route through `parseRecipients` from [`lib/workflows/actions/core/parseRecipients.ts`](./lib/workflows/actions/core/parseRecipients.ts) — splits CSV on `,`, trims, drops empties, flattens mixed array-of-CSV inputs. Single-value schema-typed fields are passed through unchanged. RFC 5322 display-name parsing is out of scope per Q7.
+
+## OAuth 401 Handling — Provider-Aware Refresh+Retry
+- Every action handler's **principal outbound write call** must be wrapped in `refreshAndRetry` from [`lib/workflows/actions/core/refreshAndRetry.ts`](./lib/workflows/actions/core/refreshAndRetry.ts).
+- Auth scheme is decided by the registry at [`lib/integrations/authSchemes.ts`](./lib/integrations/authSchemes.ts). Add a new provider there before adding a handler that uses it.
+- OAuth-with-refresh providers (Google / Microsoft / Notion / HubSpot / Airtable / Mailchimp / etc.): on 401 → `tokenRefreshService.refresh(provider, userId)` → retry once → permanent failure → `token_revoked` health signal. Non-refreshable (Slack / Discord / GitHub / Stripe / Shopify offline tokens): on 401 → `action_required` health signal immediately, no refresh attempt.
+- Auxiliary calls (header GETs, metadata fetches, post-send lookups, per-share permissions, schema reads) are wrapped too — Sheets / Drive / Outlook sentitems / Gmail labels.modify / Airtable schema GETs / all Notion `notionApiRequest` call sites in `handlers.ts`. The Notion helper itself takes an optional `userId` and wraps the underlying fetch in `refreshAndRetry` when provided. See [`/learning/docs/pre-launch-cleanup.md`](./learning/docs/pre-launch-cleanup.md) §A5 (DONE).
+- See [`/learning/docs/handler-contracts.md`](./learning/docs/handler-contracts.md) Q3.
+
+## Within-Session Idempotency — session_side_effects (Q4)
+- Every action handler's **principal outbound write call** must bracket itself with `checkReplay`/`recordFired` from [`lib/workflows/actions/core/sessionSideEffects.ts`](./lib/workflows/actions/core/sessionSideEffects.ts), keyed on `(executionSessionId, nodeId, actionType)` via `buildIdempotencyKey(meta)`.
+- The engine threads `HandlerExecutionMeta` (`executionSessionId` / `nodeId` / `actionType` / `provider` / `testMode`) alongside `(config, userId, input)`. Positional handlers take `(config, userId, input, meta?)`; object-style handlers (Gmail) take `({ config, userId, input, meta })`. Absent meta → idempotency is a no-op (test / non-engine paths).
+- `checkReplay` outcomes: **cached** → return stored `ActionResult` verbatim, NO provider call. **mismatch** → return standardized `PAYLOAD_MISMATCH` failure (`error: 'PAYLOAD_MISMATCH'`), NO provider call. **fresh** → fire normally, then `recordFired(key, result, payloadHash, { provider, externalId })`.
+- Hashing uses [`hashPayload`](./lib/workflows/actions/core/hashPayload.ts) — SHA-256 of canonical-form (sorted-keys) JSON. Hash the resolved input that determines the side effect; exclude non-deterministic fields (e.g. Calendar `conferenceData.requestId` carries `Date.now()`).
+- Stripe additionally sets `Idempotency-Key: ${executionSessionId}:${nodeId}:${actionType}` on the outbound POST as defense in depth (via `formatProviderIdempotencyKey`).
+- Retention: daily cron at [`/api/cron/clean-session-side-effects`](./app/api/cron/clean-session-side-effects/route.ts) (env var `SESSION_SIDE_EFFECTS_RETENTION_DAYS`, default 30). FK `ON DELETE CASCADE` on `workflow_execution_sessions(id)` cleans up parent-deleted sessions automatically.
+- See [`/learning/docs/handler-contracts.md`](./learning/docs/handler-contracts.md) Q4 and [`/learning/docs/session-side-effects-design.md`](./learning/docs/session-side-effects-design.md).
+
+## Variable Resolution — Strict at Runtime, Soft at Design-Time
+- Runtime workflow execution uses **strict pre-resolution** at the engine layer (`nodeExecutionService.executeNodeByType`) via `DataFlowManager.resolveObjectStrict`. Missing `{{...}}` references become the standardized **config-failure shape** (`{success:false, category:'config', error:{code:'MISSING_VARIABLE', path}, message}`) **before** action / integration handler dispatch — handlers never see unresolved templates at runtime.
+- Design-time / preview / planner / AI-agent suggestion flows continue to use the **soft** `resolveValue` / `resolveValueWithTracking` (returns `undefined` or preserves the literal `{{...}}`, optionally populating an `unresolvedCollector`).
+- Handlers do NOT catch `MissingVariableError` themselves — the engine layer owns the catch-and-convert.
+- Direct handler tests (`__tests__/nodes/*`) do not need to assert missing-variable engine wrapping; engine-level tests in `__tests__/workflows/engine-missing-variable.test.ts` own that contract.
+- See [`/learning/docs/handler-contracts.md`](./learning/docs/handler-contracts.md) (Q2) and [`/learning/docs/resolver-consolidation-design.md`](./learning/docs/resolver-consolidation-design.md).
+
+## Handler Defaults — No Hidden High-Risk Defaults (Q11) + TZ/Locale Resolution (Q12)
+- High-risk defaults (auto-notify, visibility/sharing, consent/compliance, AI behavior) MUST NOT be silently supplied by handlers. The audit at [`learning/docs/handler-defaults-audit.md`](./learning/docs/handler-defaults-audit.md) is the source-of-truth list. PR-G0 lands the helpers + contracts; PR-G1..G6 apply the row-by-row decisions.
+- Missing high-risk field → standardized config failure shape from [`requireExplicitField`](./lib/workflows/actions/core/requireExplicitField.ts): `{success:false, category:'config', error:{code:'MISSING_REQUIRED_FIELD', path}, message}`. Mirrors the Q2 MISSING_VARIABLE pattern.
+- Per-PR rule: handler change + Zod schema marking the field required ship in the same PR-Gn. Visual UI polish (recommended-value labels) is a separate follow-up.
+- **Existing-data migration** is mandatory before each PR-Gn removes a handler default. Append entries to [`lib/workflows/migrations/handlerDefaultsBackfillRegistry.ts`](./lib/workflows/migrations/handlerDefaultsBackfillRegistry.ts), then run `tsx scripts/migrate-handler-defaults.ts --pr=PR-Gn`. Idempotent: only writes when `config[fieldName]` is `undefined` / `null`. `0` / `false` are valid explicit choices and are preserved (Q5).
+- **Timezone / locale resolution** uses [`resolveTimezone`](./lib/workflows/actions/core/resolveContextDefaults.ts) / `resolveLocale`: workspace setting → user setting → `'UTC'` / `'en_US'`. Reads from `workspaces.{timezone,locale}` and `user_profiles.{timezone,locale}` (added in migration `20260501000000`). Invalid IANA / empty values fall through, never hard-fail.
+- Time-string validation uses [`parseTimeOrFail`](./lib/workflows/actions/core/parseTimeOrFail.ts) — strict 24h `HH:MM`. Replaces silent `'09:00'` / `'10:00'` substitutions in Calendar / Outlook handlers (audit Change rows). End-time-from-start uses `addMinutesToTime`.
+- Contracts: [`/learning/docs/handler-contracts.md`](./learning/docs/handler-contracts.md) Q11 (no hidden defaults) + Q12 (tz/locale resolution).
+
 ## Webhook-First Rule
 **Always use webhooks over polling when available.** Only use polling if no webhook exists or webhook requires enterprise plan.
 
@@ -407,7 +445,8 @@ All AI/LLM infrastructure is centralized here. Do NOT create inline clients or h
 
 | File | Purpose |
 |------|---------|
-| `openai-client.ts` | Single shared client — use `getOpenAIClient()` |
+| `openai-client.ts` | Single shared client — use `getOpenAIClient()` (or `getOpenAIClientWithKey(apiKey)` for user-supplied keys) |
+| `anthropic-client.ts` | Single shared client — use `getAnthropicClient()` (or `getAnthropicClientWithKey(apiKey)` for user-supplied keys) |
 | `models.ts` | Centralized config — use `AI_MODELS.planning`, `.fast`, `.utility`, `.configuration` |
 | `llm-retry.ts` | `callLLMWithRetry()` — retry, timeout, model fallback |
 | `token-utils.ts` | Token-aware conversation history truncation |
@@ -417,13 +456,15 @@ All AI/LLM infrastructure is centralized here. Do NOT create inline clients or h
 
 **Rules:**
 - `import { getOpenAIClient } from '@/lib/ai/openai-client'` — never `new OpenAI()`
-- `import { AI_MODELS } from '@/lib/ai/models'` — never hardcode `'gpt-4o'` or `'gpt-4o-mini'`
+- `import { getAnthropicClient } from '@/lib/ai/anthropic-client'` — never `new Anthropic()`
+- `import { AI_MODELS } from '@/lib/ai/models'` — never hardcode `'gpt-4o'` or `'gpt-4o-mini'` at runtime selection points (price-book lookups and UI dropdown options are exempt — see `aiAgentAction.ts:calculateCost` and `aiAgentNode.ts:options`)
 - `import { callLLMWithRetry } from '@/lib/ai/llm-retry'` — never raw `openai.chat.completions.create()`
 
 ## Lazy Client Initialization — MANDATORY
-**NEVER initialize API clients at module level.** Module-level `new Stripe(...)`, `new OpenAI(...)`, `new Resend(...)` execute during `next build` and fail when env vars are missing (CI).
+**NEVER initialize API clients at module level.** Module-level `new Stripe(...)`, `new OpenAI(...)`, `new Anthropic(...)`, `new Resend(...)` execute during `next build` and fail when env vars are missing (CI).
 
 - **OpenAI:** `getOpenAIClient()` from `lib/ai/openai-client.ts`
+- **Anthropic:** `getAnthropicClient()` from `lib/ai/anthropic-client.ts`
 - **Stripe:** `getStripeClient()` from `lib/stripe/client.ts`
 - **Resend:** `getResendClient()` in `lib/notifications/email.ts`
 

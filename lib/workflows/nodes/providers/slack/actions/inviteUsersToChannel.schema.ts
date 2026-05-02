@@ -80,7 +80,8 @@ export const inviteUsersToChannelActionSchema: NodeComponent = {
       name: "sendInviteNotification",
       label: "Send Invite Notification",
       type: "boolean",
-      defaultValue: true,
+      required: true,
+      description: "Required (Q11). Recommended: false — invitations contact real users on every workflow run.",
       tooltip: "When enabled, invited users will receive a notification about being added to the channel. Disable for silent additions.",
       dependsOn: "channel",
       hidden: {

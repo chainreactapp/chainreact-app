@@ -77,12 +77,22 @@ export class GoogleIntegrationService {
       }
     }
 
+    // PR-C4 — engine metadata for within-session idempotency.
+    const meta = {
+      executionSessionId: context.executionId,
+      nodeId: node.id,
+      actionType: node.data?.type ?? nodeType,
+      provider: 'google-sheets',
+      testMode: context.testMode,
+      workspaceId: context.workspaceId,
+    }
+
     // Import actual implementations
     switch (nodeType) {
       case "sheets_append":
       case "google_sheets_action_append":
         const { createGoogleSheetsRow } = await import('@/lib/workflows/actions/googleSheets')
-        return await createGoogleSheetsRow(config, context.userId, context.data || {})
+        return await createGoogleSheetsRow(config, context.userId, context.data || {}, meta)
         
       case "sheets_read":
       case "google_sheets_action_read":
@@ -106,7 +116,7 @@ export class GoogleIntegrationService {
         
       case "google_sheets_action_create_spreadsheet":
         const { createGoogleSpreadsheet } = await import('@/lib/workflows/actions/googleSheets')
-        return await createGoogleSpreadsheet(config, context.userId, context.data || {})
+        return await createGoogleSpreadsheet(config, context.userId, context.data || {}, meta)
         
       default:
         throw new Error(`Google Sheets action '${nodeType}' is not yet implemented`)
@@ -185,11 +195,21 @@ export class GoogleIntegrationService {
       }
     }
 
+    // PR-C4 — engine metadata for within-session idempotency.
+    const meta = {
+      executionSessionId: context.executionId,
+      nodeId: node.id,
+      actionType: node.data?.type ?? nodeType,
+      provider: 'google-calendar',
+      testMode: context.testMode,
+      workspaceId: context.workspaceId,
+    }
+
     switch (nodeType) {
       case "calendar_create_event":
       case "google_calendar_action_create_event":
         const { createGoogleCalendarEvent } = await import('@/lib/workflows/actions/google-calendar/createEvent')
-        return await createGoogleCalendarEvent(config, context.userId, context.data || {})
+        return await createGoogleCalendarEvent(config, context.userId, context.data || {}, meta)
         
       case "calendar_update_event":
       case "google_calendar_action_update_event":
@@ -242,7 +262,15 @@ export class GoogleIntegrationService {
     try {
       // Use the uploadGoogleDriveFile function we already have
       const { uploadGoogleDriveFile } = await import('@/lib/workflows/actions/googleDrive/uploadFile')
-      return await uploadGoogleDriveFile(enrichedConfig, context.userId, context.data || {})
+      const meta = {
+        executionSessionId: context.executionId,
+        nodeId: node.id,
+        actionType: node.data?.type,
+        provider: 'google-drive',
+        testMode: context.testMode,
+        workspaceId: context.workspaceId,
+      }
+      return await uploadGoogleDriveFile(enrichedConfig, context.userId, context.data || {}, meta)
     } catch (error: any) {
       logger.error("❌ [GoogleIntegrationService] Error executing Google Drive upload:", error)
       throw new Error(`Google Drive upload failed: ${error.message}`)
@@ -264,7 +292,15 @@ export class GoogleIntegrationService {
 
     // Import and use actual implementation
     const { uploadGoogleDriveFile } = await import('@/lib/workflows/actions/googleDrive/uploadFile')
-    return await uploadGoogleDriveFile(config, context.userId, context.data || {})
+    const meta = {
+      executionSessionId: context.executionId,
+      nodeId: node.id,
+      actionType: node.data?.type,
+      provider: 'google-drive',
+      testMode: context.testMode,
+      workspaceId: context.workspaceId,
+    }
+    return await uploadGoogleDriveFile(config, context.userId, context.data || {}, meta)
   }
 
   private async executeCreateFolder(node: any, context: ExecutionContext) {
@@ -288,8 +324,8 @@ export class GoogleIntegrationService {
       }
     }
 
-    // TODO: Implement actual Google Drive create folder
-    throw new Error("Google Drive create folder is not yet implemented")
+    const { createGoogleDriveFolder } = await import('@/lib/workflows/actions/googleDrive/createFolder')
+    return await createGoogleDriveFolder(config, context.userId, context.data || {})
   }
 
   private async executeDeleteFile(node: any, context: ExecutionContext) {
@@ -310,8 +346,8 @@ export class GoogleIntegrationService {
       }
     }
 
-    // TODO: Implement actual Google Drive delete file
-    throw new Error("Google Drive delete file is not yet implemented")
+    const { deleteGoogleDriveFile } = await import('@/lib/workflows/actions/googleDrive/deleteFile')
+    return await deleteGoogleDriveFile(config, context.userId, context.data || {})
   }
 
   private async executeShareFile(node: any, context: ExecutionContext) {
@@ -336,8 +372,8 @@ export class GoogleIntegrationService {
       }
     }
 
-    // TODO: Implement actual Google Drive share file
-    throw new Error("Google Drive share file is not yet implemented")
+    const { shareGoogleDriveFile } = await import('@/lib/workflows/actions/googleDrive/shareFile')
+    return await shareGoogleDriveFile(config, context.userId, context.data || {})
   }
 
   private async executeGetFile(node: any, context: ExecutionContext) {

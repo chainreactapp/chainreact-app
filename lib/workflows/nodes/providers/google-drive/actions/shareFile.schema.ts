@@ -63,9 +63,8 @@ export const shareFileActionSchema: NodeComponent = {
       name: "sendNotification",
       label: "Send Email Notification",
       type: "boolean",
-      required: false,
-      defaultValue: true,
-      description: "Notify the person via email about this shared file"
+      required: true,
+      description: "Required (Q11). Recommended: false — sending shared-with users an email contacts a real person on every workflow run. Notify the person via email about this shared file."
     },
     {
       name: "emailMessage",

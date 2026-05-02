@@ -213,20 +213,17 @@ export async function GET(request: NextRequest) {
         }
       }
 
-      // Prefer top-level fields, fallback to metadata for backwards compatibility
-      const metadata = integration.metadata || {}
-      const email = integration.email || metadata.email || metadata.userEmail || null
-      const username = integration.username || metadata.username || metadata.name || null
-      const accountName = integration.account_name || metadata.account_name || metadata.accountName || metadata.name || null
-
+      // Top-level columns are the canonical write target — every OAuth
+      // callback in lib/integrations/provider-registry.ts populates email /
+      // username / account_name here directly. Re-emit them so downstream
+      // consumers see them at the top level even after a partial select.
       return {
         ...integration,
         status: expiredIntegrationIds.includes(integration.id) ? "expired" : integration.status,
-        user_permission: userPermission, // Add permission level to response
-        // Ensure top-level fields are always present (for backwards compatibility)
-        email,
-        username,
-        account_name: accountName
+        user_permission: userPermission,
+        email: integration.email ?? null,
+        username: integration.username ?? null,
+        account_name: integration.account_name ?? null
       }
     })
 

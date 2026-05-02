@@ -1,6 +1,7 @@
 import { ExecutionContext } from '@/types/workflows';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { decrypt } from '@/lib/security/encryption';
+import { refreshAndRetry } from '@/lib/workflows/actions/core/refreshAndRetry';
 
 import { logger } from '@/lib/utils/logger'
 
@@ -79,22 +80,35 @@ export async function notionGetPageDetails(
     // Decrypt the access token
     const encryptionKey = process.env.ENCRYPTION_KEY!;
     const accessToken = decrypt(workspace.access_token, encryptionKey);
-    
-    // Fetch page details from Notion API
-    const pageResponse = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Notion-Version': '2022-06-28',
-        'Content-Type': 'application/json'
-      }
+
+    // Q3 — every raw `fetch` call below is wrapped in `refreshAndRetry`.
+    const buildHeaders = (token: string) => ({
+      'Authorization': `Bearer ${token}`,
+      'Notion-Version': '2022-06-28',
+      'Content-Type': 'application/json'
     });
-    
+
+    // Fetch page details from Notion API (Q3 wrap, principal call).
+    const pageResult = await refreshAndRetry({
+      provider: 'notion',
+      userId: context.userId,
+      accessToken,
+      call: async (token) =>
+        fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+          method: 'GET',
+          headers: buildHeaders(token)
+        }),
+    });
+    if (!pageResult.success) {
+      throw new Error(pageResult.message);
+    }
+    const pageResponse = pageResult.data;
+
     if (!pageResponse.ok) {
       const error = await pageResponse.text();
       throw new Error(`Failed to fetch page details: ${error}`);
     }
-    
+
     const pageData = await pageResponse.json();
     
     // Prepare the result based on output format
@@ -121,68 +135,65 @@ export async function notionGetPageDetails(
     }
     
     if (includeContent) {
-      // Fetch page content blocks
-      const blocksResponse = await fetch(
-        `https://api.notion.com/v1/blocks/${pageId}/children?page_size=100`,
-        {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Notion-Version': '2022-06-28',
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-      
-      if (blocksResponse.ok) {
-        const blocksData = await blocksResponse.json();
+      // Fetch page content blocks (Q3 wrap; auxiliary best-effort).
+      const blocksResult = await refreshAndRetry({
+        provider: 'notion',
+        userId: context.userId,
+        accessToken,
+        call: async (token) =>
+          fetch(`https://api.notion.com/v1/blocks/${pageId}/children?page_size=100`, {
+            method: 'GET',
+            headers: buildHeaders(token)
+          }),
+      });
+      if (blocksResult.success && blocksResult.data.ok) {
+        const blocksData = await blocksResult.data.json();
         result.content = blocksData.results;
       }
     }
-    
+
     if (includeChildren) {
-      // Search for child pages
-      const childrenResponse = await fetch('https://api.notion.com/v1/search', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Notion-Version': '2022-06-28',
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          filter: {
-            property: 'object',
-            value: 'page'
-          },
-          page_size: 100
-        })
+      // Search for child pages (Q3 wrap; auxiliary best-effort).
+      const childrenResult = await refreshAndRetry({
+        provider: 'notion',
+        userId: context.userId,
+        accessToken,
+        call: async (token) =>
+          fetch('https://api.notion.com/v1/search', {
+            method: 'POST',
+            headers: buildHeaders(token),
+            body: JSON.stringify({
+              filter: {
+                property: 'object',
+                value: 'page'
+              },
+              page_size: 100
+            })
+          }),
       });
-      
-      if (childrenResponse.ok) {
-        const searchData = await childrenResponse.json();
+      if (childrenResult.success && childrenResult.data.ok) {
+        const searchData = await childrenResult.data.json();
         // Filter for pages that have this page as parent
         result.children = searchData.results.filter(
           (page: any) => page.parent?.page_id === pageId
         );
       }
     }
-    
+
     if (includeComments) {
-      // Fetch comments
-      const commentsResponse = await fetch(
-        `https://api.notion.com/v1/comments?block_id=${pageId}`,
-        {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Notion-Version': '2022-06-28',
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-      
-      if (commentsResponse.ok) {
-        const commentsData = await commentsResponse.json();
+      // Fetch comments (Q3 wrap; auxiliary best-effort).
+      const commentsResult = await refreshAndRetry({
+        provider: 'notion',
+        userId: context.userId,
+        accessToken,
+        call: async (token) =>
+          fetch(`https://api.notion.com/v1/comments?block_id=${pageId}`, {
+            method: 'GET',
+            headers: buildHeaders(token)
+          }),
+      });
+      if (commentsResult.success && commentsResult.data.ok) {
+        const commentsData = await commentsResult.data.json();
         result.comments = commentsData.results;
       }
     }

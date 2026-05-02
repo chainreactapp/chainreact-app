@@ -1,6 +1,11 @@
 import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
 import { resolveValue } from '../core/resolveValue'
+import { parseRecipients } from '../core/parseRecipients'
+import { refreshAndRetry } from '../core/refreshAndRetry'
 import { ActionResult } from '../core/executeWait'
+import { buildIdempotencyKey, type HandlerExecutionMeta } from '../core/idempotencyKey'
+import { hashPayload } from '../core/hashPayload'
+import { checkReplay, recordFired } from '../core/sessionSideEffects'
 import { FileStorageService } from "@/lib/storage/fileStorage"
 import { deleteWorkflowTempFiles } from '@/lib/utils/workflowFileCleanup'
 import { applyEmailMetaVariables } from '../gmail/resolveEmailMetaVariables'
@@ -13,9 +18,19 @@ import { logger } from '@/lib/utils/logger'
 export async function sendOutlookEmail(
   config: any,
   userId: string,
-  input: Record<string, any>
+  input: Record<string, any>,
+  meta?: HandlerExecutionMeta,
 ): Promise<ActionResult> {
   const cleanupPaths = new Set<string>()
+
+  // Q8d — testMode interception (see learning/docs/handler-contracts.md).
+  if (meta?.testMode) {
+    return {
+      success: true,
+      output: { simulated: true, provider: 'microsoft-outlook' },
+      message: 'Simulated in test mode — no provider call made',
+    }
+  }
 
   try {
     // Resolve config values if they contain template variables
@@ -76,21 +91,17 @@ export async function sendOutlookEmail(
       }
     }
 
-    // Process recipients - handle both string and array formats
-    const processRecipients = (recipients: string | string[] | undefined) => {
-      if (!recipients) return []
-
-      const recipientList = Array.isArray(recipients) ? recipients : [recipients]
-      return recipientList.filter(Boolean).map(email => ({
-        emailAddress: {
-          address: email.trim()
-        }
+    // Process recipients via the shared Q7 normalizer. CSV strings split into
+    // individual addresses (Outlook UX change per Q7 — pre-PR-C2 the entire
+    // CSV was sent as ONE address). See learning/docs/handler-contracts.md.
+    const toGraphAddress = (recipients: string | string[] | undefined) =>
+      parseRecipients(recipients).map(address => ({
+        emailAddress: { address },
       }))
-    }
 
-    emailData.message.toRecipients = processRecipients(to)
-    emailData.message.ccRecipients = processRecipients(cc)
-    emailData.message.bccRecipients = processRecipients(bcc)
+    emailData.message.toRecipients = toGraphAddress(to)
+    emailData.message.ccRecipients = toGraphAddress(cc)
+    emailData.message.bccRecipients = toGraphAddress(bcc)
 
     // Validate that we have at least one recipient
     if (emailData.message.toRecipients.length === 0 &&
@@ -301,15 +312,75 @@ export async function sendOutlookEmail(
       emailData.message.attachments = outlookAttachments
     }
 
-    // Send the email using Microsoft Graph API
-    const response = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(emailData)
+    // Q4 — within-session idempotency. Hash the resolved Graph payload
+    // (recipients + subject + body + attachment names/sizes) so that a
+    // re-resolved template producing the same effective send hashes equal.
+    const idempotencyKey = buildIdempotencyKey(meta)
+    const payloadHash = idempotencyKey
+      ? hashPayload({
+          to: emailData.message.toRecipients.map((r: any) => r.emailAddress.address),
+          cc: emailData.message.ccRecipients.map((r: any) => r.emailAddress.address),
+          bcc: emailData.message.bccRecipients.map((r: any) => r.emailAddress.address),
+          subject: subject ?? '',
+          body: body ?? '',
+          isHtml: !!isHtml,
+          importance,
+          attachments: outlookAttachments.map((a: any) => ({
+            name: a.name,
+            size: typeof a.contentBytes === 'string' ? a.contentBytes.length : 0,
+            contentType: a.contentType,
+          })),
+        })
+      : ''
+
+    if (idempotencyKey) {
+      const replay = await checkReplay(idempotencyKey, payloadHash)
+      if (replay.kind === 'cached') return replay.result
+      if (replay.kind === 'mismatch') {
+        if (cleanupPaths.size > 0) {
+          await deleteWorkflowTempFiles(Array.from(cleanupPaths))
+        }
+        return {
+          success: false,
+          output: {},
+          message: 'This action was already executed for this session with different input.',
+          error: 'PAYLOAD_MISMATCH',
+        }
+      }
+    }
+
+    // Send the email using Microsoft Graph API. Wrapped in `refreshAndRetry`
+    // (Q3) — a 401 from Graph triggers one refresh+retry attempt.
+    const sendResult = await refreshAndRetry({
+      provider: 'microsoft-outlook',
+      userId,
+      accessToken,
+      call: async (token) =>
+        fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(emailData),
+        }),
     })
+
+    if (!sendResult.success) {
+      // PR-C5 (Q1) — Q3 standardized auth failure becomes a typed
+      // ActionResult; the outer catch is now reserved for unexpected throws.
+      if (cleanupPaths.size > 0) {
+        await deleteWorkflowTempFiles(Array.from(cleanupPaths))
+      }
+      return {
+        success: false,
+        output: {},
+        category: 'auth',
+        message: sendResult.message,
+      }
+    }
+
+    const response = sendResult.data
 
     if (!response.ok) {
       const errorText = await response.text()
@@ -324,7 +395,15 @@ export async function sendOutlookEmail(
         // If error text is not JSON, use the default message
       }
 
-      throw new Error(errorMessage)
+      if (cleanupPaths.size > 0) {
+        await deleteWorkflowTempFiles(Array.from(cleanupPaths))
+      }
+      return {
+        success: false,
+        output: {},
+        category: 'provider',
+        message: errorMessage,
+      }
     }
 
     // Clean up temporary files
@@ -332,17 +411,30 @@ export async function sendOutlookEmail(
       await deleteWorkflowTempFiles(Array.from(cleanupPaths))
     }
 
-    // Try to retrieve the sent message ID from Sent Items
+    // Try to retrieve the sent message ID from Sent Items. Wrapped in
+    // `refreshAndRetry` (Q3, §A5) so a stale-after-send token still produces
+    // a structured auth signal and a refresh attempt rather than a silent
+    // miss. Best-effort: we still swallow non-401 errors and continue, since
+    // messageId is optional output.
     let messageId: string | undefined
     try {
-      const sentRes = await fetch(
-        'https://graph.microsoft.com/v1.0/me/mailFolders/sentitems/messages?$top=1&$orderby=sentDateTime desc&$select=id,subject',
-        { headers: { 'Authorization': `Bearer ${accessToken}` } }
-      )
-      if (sentRes.ok) {
-        const sentData = await sentRes.json()
-        if (sentData.value?.length > 0) {
-          messageId = sentData.value[0].id
+      const sentResult = await refreshAndRetry({
+        provider: 'microsoft-outlook',
+        userId,
+        accessToken,
+        call: async (token) =>
+          fetch(
+            'https://graph.microsoft.com/v1.0/me/mailFolders/sentitems/messages?$top=1&$orderby=sentDateTime desc&$select=id,subject',
+            { headers: { 'Authorization': `Bearer ${token}` } }
+          ),
+      })
+      if (sentResult.success) {
+        const sentRes = sentResult.data
+        if (sentRes.ok) {
+          const sentData = await sentRes.json()
+          if (sentData.value?.length > 0) {
+            messageId = sentData.value[0].id
+          }
         }
       }
     } catch (e) {
@@ -350,7 +442,7 @@ export async function sendOutlookEmail(
       logger.debug('[Outlook] Could not retrieve sent message ID:', e)
     }
 
-    return {
+    const actionResult: ActionResult = {
       success: true,
       output: {
         sent: true,
@@ -365,6 +457,16 @@ export async function sendOutlookEmail(
         attachmentCount: outlookAttachments.length
       }
     }
+
+    // Q4 — record the marker on first successful fire.
+    if (idempotencyKey) {
+      await recordFired(idempotencyKey, actionResult, payloadHash, {
+        provider: 'microsoft-outlook',
+        externalId: messageId ?? null,
+      })
+    }
+
+    return actionResult
   } catch (error: any) {
     logger.error('❌ [Outlook] Error sending email:', error)
 
@@ -373,11 +475,23 @@ export async function sendOutlookEmail(
       await deleteWorkflowTempFiles(Array.from(cleanupPaths))
     }
 
-    // Check if it's a token error
+    // PR-C5 (Q1) — return ActionResult instead of throwing. The
+    // execution-layer catch is reserved for unexpected programmer / system
+    // throws; expected provider / config / auth failures are typed.
     if (error.message?.includes('401') || error.message?.includes('Unauthorized')) {
-      throw new Error('Microsoft Outlook authentication failed. Please reconnect your account.')
+      return {
+        success: false,
+        output: {},
+        category: 'auth',
+        message: 'Microsoft Outlook authentication failed. Please reconnect your account.',
+      }
     }
 
-    throw error
+    return {
+      success: false,
+      output: {},
+      category: 'provider',
+      message: error.message || 'Microsoft Outlook send email failed',
+    }
   }
 }

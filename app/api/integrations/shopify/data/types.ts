@@ -14,11 +14,15 @@ export interface ShopifyIntegration {
   provider: string
   status: 'connected' | 'disconnected' | 'error'
   access_token: string
-  shop_domain?: string // Legacy field
+  shop_domain?: string // Canonical single-store domain — written by the OAuth callback
   metadata?: {
-    stores?: ShopifyStore[] // All connected stores
-    active_store?: string // Currently active/selected store domain
-    shop?: string // Legacy: single shop domain (for backwards compatibility)
+    // Forward-compat multi-store fields. No writer populates these yet;
+    // adding multi-store support requires the OAuth callback to fan out
+    // shop list + active selection here.
+    stores?: ShopifyStore[]
+    active_store?: string
+    // Test-fixture single-store key — see __tests__/helpers/actionTestHarness.ts.
+    shop?: string
   }
   created_at: string
   updated_at: string

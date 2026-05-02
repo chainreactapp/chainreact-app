@@ -3,6 +3,12 @@ import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
 import { ExecutionContext } from '../../execution/types'
 import { logger } from '@/lib/utils/logger'
 import { flattenForStripe } from './utils'
+import {
+  buildIdempotencyKey,
+  formatProviderIdempotencyKey,
+} from '../core/idempotencyKey'
+import { hashPayload } from '../core/hashPayload'
+import { checkReplay, recordFired } from '../core/sessionSideEffects'
 
 /**
  * Create a new subscription in Stripe
@@ -13,6 +19,16 @@ export async function stripeCreateSubscription(
   config: any,
   context: ExecutionContext
 ): Promise<ActionResult> {
+  // Q8d — testMode interception (defense in depth — a Stripe charge that
+  // bypasses upstream test gates would charge real customers).
+  if ((context as any).testMode) {
+    return {
+      success: true,
+      output: { simulated: true, provider: 'stripe' },
+      message: 'Simulated in test mode — no provider call made',
+    }
+  }
+
   try {
     const accessToken = await getDecryptedAccessToken(context.userId, "stripe")
 
@@ -69,13 +85,40 @@ export async function stripeCreateSubscription(
       }
     }
 
+    // Q4 — within-session idempotency (see learning/docs/handler-contracts.md).
+    const idempotencyKey = buildIdempotencyKey({
+      executionSessionId: (context as any).executionSessionId ?? (context as any).executionId,
+      nodeId: (context as any).nodeId,
+      actionType: (context as any).actionType ?? 'stripe_action_create_subscription',
+      provider: 'stripe',
+    })
+    const payloadHash = idempotencyKey ? hashPayload(body) : ''
+
+    if (idempotencyKey) {
+      const replay = await checkReplay(idempotencyKey, payloadHash)
+      if (replay.kind === 'cached') return replay.result
+      if (replay.kind === 'mismatch') {
+        return {
+          success: false,
+          output: {},
+          message: 'This action was already executed for this session with different input.',
+          error: 'PAYLOAD_MISMATCH',
+        }
+      }
+    }
+
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    }
+    if (idempotencyKey) {
+      headers['Idempotency-Key'] = formatProviderIdempotencyKey(idempotencyKey)
+    }
+
     // Make API call to create subscription
     const response = await fetch('https://api.stripe.com/v1/subscriptions', {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
+      headers,
       body: new URLSearchParams(flattenForStripe(body)).toString()
     })
 
@@ -86,7 +129,7 @@ export async function stripeCreateSubscription(
 
     const subscription = await response.json()
 
-    return {
+    const actionResult: ActionResult = {
       success: true,
       output: {
         subscriptionId: subscription.id,
@@ -112,6 +155,15 @@ export async function stripeCreateSubscription(
       },
       message: `Successfully created subscription ${subscription.id}`
     }
+
+    if (idempotencyKey) {
+      await recordFired(idempotencyKey, actionResult, payloadHash, {
+        provider: 'stripe',
+        externalId: subscription.id ?? null,
+      })
+    }
+
+    return actionResult
   } catch (error: any) {
     logger.error('[Stripe Create Subscription] Error:', error)
     return {

@@ -1,5 +1,9 @@
 import { Buffer } from 'buffer'
 import { getDecryptedAccessToken, resolveValue, ActionResult } from '@/lib/workflows/actions/core'
+import { refreshAndRetry } from '@/lib/workflows/actions/core/refreshAndRetry'
+import { buildIdempotencyKey, type HandlerExecutionMeta } from '@/lib/workflows/actions/core/idempotencyKey'
+import { hashPayload } from '@/lib/workflows/actions/core/hashPayload'
+import { checkReplay, recordFired } from '@/lib/workflows/actions/core/sessionSideEffects'
 import {
   deleteTempAttachments,
   scheduleTempAttachmentCleanup,
@@ -27,7 +31,8 @@ export type AirtableAttachment = Record<string, any>
 async function getAirtableTableFieldNames(
   accessToken: string,
   baseId: string,
-  tableName: string
+  tableName: string,
+  userId: string
 ): Promise<Set<string> | null> {
   const normalizedTableName = (tableName || '').trim()
   const cacheKey = `${baseId}:${normalizedTableName}`.toLowerCase()
@@ -37,13 +42,26 @@ async function getAirtableTableFieldNames(
   }
 
   try {
-    const res = await fetch(`https://api.airtable.com/v0/meta/bases/${baseId}/tables`, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      cache: 'no-store',
+    // Auxiliary schema GET wrapped in `refreshAndRetry` (Q3, §A5).
+    const result = await refreshAndRetry({
+      provider: 'airtable',
+      userId,
+      accessToken,
+      call: async (token) =>
+        fetch(`https://api.airtable.com/v0/meta/bases/${baseId}/tables`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          cache: 'no-store',
+        }),
     })
+
+    if (!result.success) {
+      logger.info(`⚠️ [Airtable] Schema GET auth-failed: ${result.message}`)
+      return null
+    }
+    const res = result.data
 
     if (!res.ok) {
       const errText = await res.text().catch(() => res.statusText)
@@ -243,7 +261,8 @@ export async function resolveTableId(
   baseId: string,
   tableName: string,
   explicitTableId: string | undefined,
-  accessToken: string
+  accessToken: string,
+  userId: string
 ): Promise<string | null> {
   if (explicitTableId) {
     return explicitTableId
@@ -257,12 +276,25 @@ export async function resolveTableId(
   const isLikelyId = normalized.toLowerCase().startsWith('tbl')
 
   try {
-    const response = await fetch(`https://api.airtable.com/v0/meta/bases/${baseId}/tables`, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json'
-      }
+    // Auxiliary schema GET wrapped in `refreshAndRetry` (Q3, §A5).
+    const result = await refreshAndRetry({
+      provider: 'airtable',
+      userId,
+      accessToken,
+      call: async (token) =>
+        fetch(`https://api.airtable.com/v0/meta/bases/${baseId}/tables`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
+        }),
     })
+
+    if (!result.success) {
+      logger.warn(`⚠️ [Airtable] Schema GET auth-failed for ${tableName}: ${result.message}`)
+      return null
+    }
+    const response = result.data
 
     if (!response.ok) {
       const errorPayload = await response.json().catch(() => ({}))
@@ -430,8 +462,18 @@ export async function resolveAttachmentEntry(
 export async function createAirtableRecord(
   config: any,
   userId: string,
-  input: Record<string, any>
+  input: Record<string, any>,
+  meta?: HandlerExecutionMeta,
 ): Promise<ActionResult> {
+  // Q8d — testMode interception.
+  if (meta?.testMode) {
+    return {
+      success: true,
+      output: { simulated: true, provider: 'airtable' },
+      message: 'Simulated in test mode — no provider call made',
+    }
+  }
+
   const cleanupPaths: string[] = []
   let recordCreated = false
 
@@ -492,7 +534,7 @@ export async function createAirtableRecord(
       return { success: false, message }
     }
 
-    const resolvedTableId = await resolveTableId(baseId, tableName, tableId, accessToken)
+    const resolvedTableId = await resolveTableId(baseId, tableName, tableId, accessToken, userId)
 
     if (resolvedTableId) {
       logger.info(
@@ -502,23 +544,32 @@ export async function createAirtableRecord(
       logger.info('📎 [Airtable] Proceeding without resolved tableId for attachment upload context')
     }
 
-    // Fetch table schema to get field types and date formats
+    // Fetch table schema to get field types and date formats. Auxiliary
+    // schema GET wrapped in `refreshAndRetry` (Q3, §A5).
     let tableSchema: any = null
     try {
-      const schemaUrl = `https://api.airtable.com/v0/meta/bases/${baseId}/tables`
-      const schemaResponse = await fetch(schemaUrl, {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
+      const schemaResult = await refreshAndRetry({
+        provider: 'airtable',
+        userId,
+        accessToken,
+        call: async (token) =>
+          fetch(`https://api.airtable.com/v0/meta/bases/${baseId}/tables`, {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+          }),
       })
 
-      if (schemaResponse.ok) {
-        const schemaResult = await schemaResponse.json()
-        tableSchema = schemaResult.tables?.find((t: any) => t.name === tableName)
-        if (tableSchema) {
-          logger.info(`📊 [Airtable] Retrieved table schema with ${tableSchema.fields?.length || 0} fields`)
+      if (schemaResult.success) {
+        const schemaResponse = schemaResult.data
+        if (schemaResponse.ok) {
+          const schemaJson = await schemaResponse.json()
+          tableSchema = schemaJson.tables?.find((t: any) => t.name === tableName)
+          if (tableSchema) {
+            logger.info(`📊 [Airtable] Retrieved table schema with ${tableSchema.fields?.length || 0} fields`)
+          }
         }
       }
     } catch (error) {
@@ -726,7 +777,7 @@ export async function createAirtableRecord(
     }
 
     // Remove any fields that do not exist in the Airtable schema to avoid 422 errors
-    const validFieldNames = await getAirtableTableFieldNames(accessToken, baseId, tableName)
+    const validFieldNames = await getAirtableTableFieldNames(accessToken, baseId, tableName, userId)
     if (validFieldNames) {
       for (const fieldName of Object.keys(resolvedFields)) {
         if (!validFieldNames.has(fieldName)) {
@@ -750,17 +801,56 @@ export async function createAirtableRecord(
 
     logger.info(`📊 [Airtable] Sending request to table: ${tableName}`)
 
-    const response = await fetch(
-      `https://api.airtable.com/v0/${baseId}/${encodeURIComponent(tableName)}`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
+    // Q4 — within-session idempotency. Hash the resolved record body +
+    // table identifiers. Done AFTER attachment uploads complete so the
+    // hash reflects the final attachment-resolved field values.
+    const idempotencyKey = buildIdempotencyKey(meta)
+    const payloadHash = idempotencyKey
+      ? hashPayload({
+          baseId,
+          tableName,
+          tableId: resolvedTableId ?? null,
+          fields: resolvedFields,
+        })
+      : ''
+
+    if (idempotencyKey) {
+      const replay = await checkReplay(idempotencyKey, payloadHash)
+      if (replay.kind === 'cached') return replay.result
+      if (replay.kind === 'mismatch') {
+        return {
+          success: false,
+          message: 'This action was already executed for this session with different input.',
+          error: 'PAYLOAD_MISMATCH',
+        }
       }
-    )
+    }
+
+    // Q3 — wrap the create-record POST in refreshAndRetry. Airtable is
+    // OAuth-with-refresh; on 401 the wrapper refreshes once and retries.
+    const writeResult = await refreshAndRetry({
+      provider: 'airtable',
+      userId,
+      accessToken,
+      call: async (token) =>
+        fetch(
+          `https://api.airtable.com/v0/${baseId}/${encodeURIComponent(tableName)}`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(requestBody),
+          }
+        ),
+    })
+
+    if (!writeResult.success) {
+      throw new Error(writeResult.message)
+    }
+
+    const response = writeResult.data
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}))
@@ -785,7 +875,7 @@ export async function createAirtableRecord(
     logger.info(`📊 [Airtable] Record created successfully with ID: ${result.id}`)
     recordCreated = true
 
-    return {
+    const actionResult: ActionResult = {
       success: true,
       output: {
         recordId: result.id,
@@ -796,6 +886,15 @@ export async function createAirtableRecord(
       },
       message: `Successfully created record in ${tableName}`
     }
+
+    if (idempotencyKey) {
+      await recordFired(idempotencyKey, actionResult, payloadHash, {
+        provider: 'airtable',
+        externalId: result.id ?? null,
+      })
+    }
+
+    return actionResult
 
   } catch (error: any) {
     logger.error("Airtable create record error:", error)

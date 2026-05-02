@@ -1,6 +1,10 @@
 import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
 import { resolveValue } from '../core/resolveValue'
 import { ActionResult } from '../core/executeWait'
+import type { HandlerExecutionMeta } from '../core/idempotencyKey'
+import { resolveTimezone } from '../core/resolveContextDefaults'
+import { addMinutesToTime, parseTimeOrFail } from '../core/parseTimeOrFail'
+import { requireExplicitField } from '../core/requireExplicitField'
 import { google } from 'googleapis'
 
 import { logger } from '@/lib/utils/logger'
@@ -11,7 +15,8 @@ import { logger } from '@/lib/utils/logger'
 export async function updateGoogleCalendarEvent(
   config: any,
   userId: string,
-  input: Record<string, any>
+  input: Record<string, any>,
+  meta?: HandlerExecutionMeta,
 ): Promise<ActionResult> {
   try {
     // Resolve config values if they contain template variables
@@ -21,6 +26,13 @@ export async function updateGoogleCalendarEvent(
       )
 
     const resolvedConfig = needsResolution ? resolveValue(config, input) : config
+
+    // Q11 — sendNotifications has user-facing side effects (auto-emails
+    // attendees on event update). Previous silent default 'all' removed;
+    // workflow author must explicitly choose. Existing workflows are
+    // backfilled via handlerDefaultsBackfillRegistry (PR-G2).
+    const missingRequired = requireExplicitField(resolvedConfig, 'sendNotifications')
+    if (missingRequired) return missingRequired as unknown as ActionResult
 
     // Extract all config fields
     const {
@@ -40,7 +52,7 @@ export async function updateGoogleCalendarEvent(
       attendees,
       notifications = [],
       googleMeet,
-      sendNotifications = 'all',
+      sendNotifications,
       guestsCanInviteOthers,
       guestsCanSeeOtherGuests,
       guestsCanModify,
@@ -64,17 +76,19 @@ export async function updateGoogleCalendarEvent(
     // Get the decrypted access token for Google
     const accessToken = await getDecryptedAccessToken(userId, "google-calendar")
 
-    // Handle timezone - auto-detect if not specified
-    const getUserTimezone = () => {
-      try {
-        return Intl.DateTimeFormat().resolvedOptions().timeZone
-      } catch {
-        return 'America/New_York' // fallback
-      }
-    }
-
-    let eventStartTimeZone = startTimeZone || getUserTimezone()
-    let eventEndTimeZone = separateTimezones && endTimeZone ? endTimeZone : eventStartTimeZone
+    // Q12 — resolve timezone via workspace → user → UTC. Replaces the prior
+    // `Intl.DateTimeFormat().resolvedOptions().timeZone` (server tz) +
+    // 'America/New_York' fallback.
+    const fallbackTimezone = await resolveTimezone({
+      workspaceId: meta?.workspaceId,
+      userId,
+    })
+    let eventStartTimeZone = startTimeZone && startTimeZone !== 'auto'
+      ? startTimeZone
+      : fallbackTimezone
+    let eventEndTimeZone = separateTimezones && endTimeZone && endTimeZone !== 'auto'
+      ? endTimeZone
+      : eventStartTimeZone
 
     // Create OAuth2 client
     const oauth2Client = new google.auth.OAuth2()
@@ -89,20 +103,15 @@ export async function updateGoogleCalendarEvent(
       eventId: eventId
     })
 
-    // Parse dates and times with proper validation
+    // Q11 — parseDateTime is a pure formatter. Time-format validation is
+    // performed before this is called (see timed-event branch below).
     const parseDateTime = (date: string, time: string) => {
       if (!date || date === 'today') {
         date = new Date().toISOString().split('T')[0]
       }
-
       if (!time || time === 'current') {
         time = new Date().toTimeString().slice(0, 5)
       }
-
-      if (!/^\d{2}:\d{2}$/.test(time)) {
-        time = '09:00'
-      }
-
       return `${date}T${time}:00`
     }
 
@@ -112,6 +121,19 @@ export async function updateGoogleCalendarEvent(
       }
       return date
     }
+
+    // Pull existing-event time components for the existing-event fallback
+    // path. If the existing provider event genuinely lacks start-time data
+    // (degenerate case) we substitute '09:00' as the synthesized value
+    // (audit Q12 line 146 — Keep with documentation: this fallback applies
+    // ONLY when the *existing* event lacks start-time, NOT when the user
+    // supplies an invalid `startTime` config. End-time falls through to
+    // start + 60 minutes so it is anchored to the actual start.
+    const existingStartTime = existingEvent.data.start?.dateTime?.split('T')[1]?.substring(0, 5)
+    const existingEndTime = existingEvent.data.end?.dateTime?.split('T')[1]?.substring(0, 5)
+    const synthesizedExistingStart = existingStartTime || '09:00'
+    const synthesizedExistingEnd =
+      existingEndTime || addMinutesToTime(synthesizedExistingStart, 60)
 
     // Prepare the update data - only include fields that are being changed
     const eventData: any = {}
@@ -140,17 +162,48 @@ export async function updateGoogleCalendarEvent(
           timeZone: eventEndTimeZone
         }
       } else {
+        // Q11 — strict HH:MM validation when the user supplies startTime /
+        // endTime. The 'current' sentinel resolves to "now"; an empty value
+        // falls through to the existing event's stored start/end (or the
+        // synthesized fallback above for the degenerate existing-event case).
+        let resolvedStartTime: string
+        if (startTime === 'current') {
+          resolvedStartTime = new Date().toTimeString().slice(0, 5)
+        } else if (startTime) {
+          const parsed = parseTimeOrFail(startTime, 'startTime')
+          if (!parsed.ok) return parsed.failure as unknown as ActionResult
+          resolvedStartTime = parsed.raw
+        } else {
+          resolvedStartTime = synthesizedExistingStart
+        }
+
+        let resolvedEndTime: string
+        if (endTime === 'current') {
+          resolvedEndTime = new Date().toTimeString().slice(0, 5)
+        } else if (endTime) {
+          const parsed = parseTimeOrFail(endTime, 'endTime')
+          if (!parsed.ok) return parsed.failure as unknown as ActionResult
+          resolvedEndTime = parsed.raw
+        } else if (startTime && startTime !== 'current') {
+          // User supplied a new start but no end → end = new start + 60.
+          resolvedEndTime = addMinutesToTime(resolvedStartTime, 60)
+        } else {
+          // No new times supplied → preserve existing end (or synthesized
+          // start + 60 if existing event genuinely lacks end-time data).
+          resolvedEndTime = synthesizedExistingEnd
+        }
+
         eventData.start = {
           dateTime: parseDateTime(
             startDate || existingEvent.data.start?.dateTime?.split('T')[0] || new Date().toISOString().split('T')[0],
-            startTime || existingEvent.data.start?.dateTime?.split('T')[1]?.substring(0, 5) || '09:00'
+            resolvedStartTime,
           ),
           timeZone: eventStartTimeZone
         }
         eventData.end = {
           dateTime: parseDateTime(
             endDate || startDate || existingEvent.data.end?.dateTime?.split('T')[0] || new Date().toISOString().split('T')[0],
-            endTime || existingEvent.data.end?.dateTime?.split('T')[1]?.substring(0, 5) || '10:00'
+            resolvedEndTime,
           ),
           timeZone: eventEndTimeZone
         }

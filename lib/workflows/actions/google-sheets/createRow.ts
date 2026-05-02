@@ -1,4 +1,8 @@
 import { getDecryptedAccessToken, resolveValue, ActionResult } from '@/lib/workflows/actions/core'
+import { refreshAndRetry } from '@/lib/workflows/actions/core/refreshAndRetry'
+import { buildIdempotencyKey, type HandlerExecutionMeta } from '@/lib/workflows/actions/core/idempotencyKey'
+import { hashPayload } from '@/lib/workflows/actions/core/hashPayload'
+import { checkReplay, recordFired } from '@/lib/workflows/actions/core/sessionSideEffects'
 
 import { logger } from '@/lib/utils/logger'
 import { parseSheetName } from './utils'
@@ -9,8 +13,18 @@ import { parseSheetName } from './utils'
 export async function createGoogleSheetsRow(
   config: any,
   userId: string,
-  input: Record<string, any>
+  input: Record<string, any>,
+  meta?: HandlerExecutionMeta,
 ): Promise<ActionResult> {
+  // Q8d — testMode interception.
+  if (meta?.testMode) {
+    return {
+      success: true,
+      output: { simulated: true, provider: 'google-sheets' },
+      message: 'Simulated in test mode — no provider call made',
+    }
+  }
+
   try {
     const accessToken = await getDecryptedAccessToken(userId, "google-sheets")
 
@@ -53,15 +67,28 @@ export async function createGoogleSheetsRow(
       return { success: false, message }
     }
 
-    // First, get the headers to understand column structure
-    const headerResponse = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetName)}!1:1`,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      }
-    )
+    // First, get the headers to understand column structure. Wrapped in
+    // `refreshAndRetry` (Q3, §A5) so a 401 from this auxiliary read produces
+    // a structured auth signal + refresh attempt.
+    const headerResult = await refreshAndRetry({
+      provider: 'google-sheets',
+      userId,
+      accessToken,
+      call: async (token) =>
+        fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetName)}!1:1`,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }
+        ),
+    })
+
+    if (!headerResult.success) {
+      return { success: false, message: headerResult.message }
+    }
+    const headerResponse = headerResult.data
 
     if (!headerResponse.ok) {
       throw new Error(`Failed to fetch headers: ${headerResponse.status}`)
@@ -82,7 +109,9 @@ export async function createGoogleSheetsRow(
         return value !== undefined && value !== null && value !== '' ? value : ''
       })
 
-      logger.info("📊 Using newRow_ fields from GoogleSheetsAddRowFields:", {
+      // Q8b — newRowFields and finalRowValues contain user-supplied data
+      // that may include customer PII; debug-only.
+      logger.debug("📊 Using newRow_ fields from GoogleSheetsAddRowFields:", {
         headers,
         newRowFields,
         finalRowValues
@@ -106,12 +135,14 @@ export async function createGoogleSheetsRow(
         finalRowValues.push('')
       }
 
-      logger.info("📊 Using simple values array:", finalRowValues)
+      // Q8b — finalRowValues may contain user PII; debug-only.
+      logger.debug("📊 Using simple values array:", finalRowValues)
     } else if (Object.keys(fieldMapping).length > 0) {
       // Use old fieldMapping approach for backward compatibility
       const rowValues: any[] = new Array(headers.length).fill(undefined)
 
-      logger.info("🔍 Processing fieldMapping entries:")
+      // Q8b — these per-field debug lines log resolved user values; debug-only.
+      logger.debug("🔍 Processing fieldMapping entries:")
       for (const [columnIdentifier, value] of Object.entries(fieldMapping)) {
         const resolvedValue = value !== undefined && value !== null && value !== '' ? resolveValue(value, input) : ''
 
@@ -119,22 +150,22 @@ export async function createGoogleSheetsRow(
         // and NOT a word like "Address" or "RSVP"
         if (/^[A-Z]$/i.test(columnIdentifier)) {
           const index = columnIdentifier.toUpperCase().charCodeAt(0) - 65
-          logger.info(`  Letter column "${columnIdentifier}" -> index ${index} -> value: "${resolvedValue}"`)
+          logger.debug(`  Letter column "${columnIdentifier}" -> index ${index} -> value: "${resolvedValue}"`)
           if (index < headers.length) {
             rowValues[index] = resolvedValue
           }
         } else {
           // Find by header name - exact match
           const headerIndex = headers.findIndex((h: string) => h === columnIdentifier)
-          logger.info(`  Named column "${columnIdentifier}" -> index ${headerIndex} -> value: "${resolvedValue}"`)
+          logger.debug(`  Named column "${columnIdentifier}" -> index ${headerIndex} -> value: "${resolvedValue}"`)
           if (headerIndex >= 0) {
             rowValues[headerIndex] = resolvedValue
           } else {
-            logger.info(`    ⚠️ Column "${columnIdentifier}" not found in headers!`)
+            logger.debug(`    ⚠️ Column "${columnIdentifier}" not found in headers!`)
             // Try trimmed match
             const trimmedIndex = headers.findIndex((h: string) => h.trim() === columnIdentifier.trim())
             if (trimmedIndex >= 0) {
-              logger.info(`    ✓ Found with trimmed match at index ${trimmedIndex}`)
+              logger.debug(`    ✓ Found with trimmed match at index ${trimmedIndex}`)
               rowValues[trimmedIndex] = resolvedValue
             }
           }
@@ -147,15 +178,17 @@ export async function createGoogleSheetsRow(
       throw new Error('Either row fields, values array, or field mapping is required')
     }
     
-    logger.info("📊 Final row values by position:")
+    // Q8b — finalRowValues + per-position values may carry PII; debug-only.
+    logger.debug("📊 Final row values by position:")
     finalRowValues.forEach((value, index) => {
       const header = headers[index] || `Column ${index}`
-      logger.info(`  [${index}] ${header}: "${value}"`);
+      logger.debug(`  [${index}] ${header}: "${value}"`);
     })
 
-    // Only log mapping details if using fieldMapping approach
+    // Only log mapping details if using fieldMapping approach. Sheet-header
+    // names are not PII per se, but resolved values are — keep at debug.
     if (Object.keys(fieldMapping).length > 0) {
-      logger.info("🔍 Google Sheets Create Row - Column Mapping Summary:", {
+      logger.debug("🔍 Google Sheets Create Row - Column Mapping Summary:", {
         headersLength: headers.length,
         fieldMappingKeys: Object.keys(fieldMapping),
         finalRowValuesLength: finalRowValues.length,
@@ -165,37 +198,76 @@ export async function createGoogleSheetsRow(
       // Log each mapping explicitly
       Object.entries(fieldMapping).forEach(([column, value]) => {
         const headerIndex = headers.findIndex((h: string) => h === column)
-        logger.info(`  Column "${column}" -> Index ${headerIndex} -> Value: "${value}"`)
+        logger.debug(`  Column "${column}" -> Index ${headerIndex} -> Value: "${value}"`)
         if (headerIndex === -1) {
-          logger.info(`    ⚠️ WARNING: Column "${column}" not found in headers!`)
+          logger.debug(`    ⚠️ WARNING: Column "${column}" not found in headers!`)
           // Try case-insensitive match
           const caseInsensitiveIndex = headers.findIndex((h: string) => h.toLowerCase() === column.toLowerCase())
           if (caseInsensitiveIndex >= 0) {
-            logger.info(`    ℹ️ Found case-insensitive match at index ${caseInsensitiveIndex}`)
+            logger.debug(`    ℹ️ Found case-insensitive match at index ${caseInsensitiveIndex}`)
           }
         }
       })
 
-      logger.info("📊 Headers from sheet:", headers)
-      logger.info("📊 Field names from UI:", Object.keys(fieldMapping))
+      logger.debug("📊 Headers from sheet:", headers)
+      logger.debug("📊 Field names from UI:", Object.keys(fieldMapping))
     }
 
-    // Get sheet metadata if we need to insert at beginning or specific row
+    // Q4 — within-session idempotency. Hash the resolved write target +
+    // values so a re-resolved template producing the same row hashes
+    // equal. Header read above is idempotent (read-only), so it stays
+    // outside the gate.
+    const idempotencyKey = buildIdempotencyKey(meta)
+    const payloadHash = idempotencyKey
+      ? hashPayload({
+          spreadsheetId,
+          sheetName,
+          insertPosition,
+          specificRow: specificRow ?? null,
+          finalRowValues,
+        })
+      : ''
+
+    if (idempotencyKey) {
+      const replay = await checkReplay(idempotencyKey, payloadHash)
+      if (replay.kind === 'cached') return replay.result
+      if (replay.kind === 'mismatch') {
+        return {
+          success: false,
+          message: 'This action was already executed for this session with different input.',
+          error: 'PAYLOAD_MISMATCH',
+        }
+      }
+    }
+
+    // Get sheet metadata if we need to insert at beginning or specific row.
+    // Wrapped in `refreshAndRetry` (Q3, §A5).
     let sheetId: number | undefined
     if (insertPosition === 'prepend' || insertPosition === 'specific_row') {
-      const metadataResponse = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`,
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        }
-      )
-      
+      const metadataResult = await refreshAndRetry({
+        provider: 'google-sheets',
+        userId,
+        accessToken,
+        call: async (token) =>
+          fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`,
+            {
+              headers: {
+                Authorization: `Bearer ${token}`,
+              },
+            }
+          ),
+      })
+
+      if (!metadataResult.success) {
+        return { success: false, message: metadataResult.message }
+      }
+      const metadataResponse = metadataResult.data
+
       if (!metadataResponse.ok) {
         throw new Error(`Failed to fetch spreadsheet metadata: ${metadataResponse.status}`)
       }
-      
+
       const spreadsheetData = await metadataResponse.json()
       const sheet = spreadsheetData.sheets?.find((s: any) => s.properties?.title === sheetName)
       
@@ -217,31 +289,43 @@ export async function createGoogleSheetsRow(
       apiMethod = 'append'
     } else if (insertPosition === 'prepend' && sheetId !== undefined) {
       // For prepend, we need to use batchUpdate to insert a row at position 2
-      // First, insert a blank row at position 2
-      const insertRowResponse = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            requests: [{
-              insertDimension: {
-                range: {
-                  sheetId: sheetId,
-                  dimension: "ROWS",
-                  startIndex: 1, // After header row (0-indexed)
-                  endIndex: 2 // Insert 1 row
-                },
-                inheritFromBefore: false
-              }
-            }]
-          }),
-        }
-      )
-      
+      // First, insert a blank row at position 2. Wrapped in `refreshAndRetry`
+      // (Q3, §A5).
+      const insertResult = await refreshAndRetry({
+        provider: 'google-sheets',
+        userId,
+        accessToken,
+        call: async (token) =>
+          fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                requests: [{
+                  insertDimension: {
+                    range: {
+                      sheetId: sheetId,
+                      dimension: "ROWS",
+                      startIndex: 1, // After header row (0-indexed)
+                      endIndex: 2 // Insert 1 row
+                    },
+                    inheritFromBefore: false
+                  }
+                }]
+              }),
+            }
+          ),
+      })
+
+      if (!insertResult.success) {
+        return { success: false, message: insertResult.message }
+      }
+      const insertRowResponse = insertResult.data
+
       if (!insertRowResponse.ok) {
         const errorData = await insertRowResponse.json().catch(() => ({}))
         throw new Error(`Failed to insert row: ${insertRowResponse.status} - ${errorData.error?.message || insertRowResponse.statusText}`)
@@ -252,31 +336,43 @@ export async function createGoogleSheetsRow(
       range = `${sheetName}!2:2`
       apiMethod = 'update'
     } else if (insertPosition === 'specific_row' && specificRow && sheetId !== undefined) {
-      // For specific row, insert a blank row at that position first
-      const insertRowResponse = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            requests: [{
-              insertDimension: {
-                range: {
-                  sheetId: sheetId,
-                  dimension: "ROWS",
-                  startIndex: Number(specificRow) - 1, // Convert to 0-indexed
-                  endIndex: Number(specificRow) // Insert 1 row
-                },
-                inheritFromBefore: false
-              }
-            }]
-          }),
-        }
-      )
-      
+      // For specific row, insert a blank row at that position first.
+      // Wrapped in `refreshAndRetry` (Q3, §A5).
+      const insertResult = await refreshAndRetry({
+        provider: 'google-sheets',
+        userId,
+        accessToken,
+        call: async (token) =>
+          fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                requests: [{
+                  insertDimension: {
+                    range: {
+                      sheetId: sheetId,
+                      dimension: "ROWS",
+                      startIndex: Number(specificRow) - 1, // Convert to 0-indexed
+                      endIndex: Number(specificRow) // Insert 1 row
+                    },
+                    inheritFromBefore: false
+                  }
+                }]
+              }),
+            }
+          ),
+      })
+
+      if (!insertResult.success) {
+        return { success: false, message: insertResult.message }
+      }
+      const insertRowResponse = insertResult.data
+
       if (!insertRowResponse.ok) {
         const errorData = await insertRowResponse.json().catch(() => ({}))
         throw new Error(`Failed to insert row: ${insertRowResponse.status} - ${errorData.error?.message || insertRowResponse.statusText}`)
@@ -287,21 +383,35 @@ export async function createGoogleSheetsRow(
       apiMethod = 'update'
     }
 
-    // Insert or update the row data
-    const endpoint = apiMethod === 'append' 
+    // Insert or update the row data. Wrapped in `refreshAndRetry` (Q3) —
+    // a 401 from the Sheets API triggers one refresh+retry attempt.
+    const endpoint = apiMethod === 'append'
       ? `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=${insertDataOption}`
       : `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`
-      
-    const response = await fetch(endpoint, {
-      method: apiMethod === 'append' ? "POST" : "PUT",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        values: [finalRowValues],
-      }),
+
+    const writeResult = await refreshAndRetry({
+      provider: 'google-sheets',
+      userId,
+      accessToken,
+      call: async (token) =>
+        fetch(endpoint, {
+          method: apiMethod === 'append' ? 'POST' : 'PUT',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ values: [finalRowValues] }),
+        }),
     })
+
+    if (!writeResult.success) {
+      return {
+        success: false,
+        message: writeResult.message,
+      }
+    }
+
+    const response = writeResult.data
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}))
@@ -318,7 +428,7 @@ export async function createGoogleSheetsRow(
       }
     })
 
-    return {
+    const actionResult: ActionResult = {
       success: true,
       output: {
         rowNumber: result.updates?.updatedRows || 1,
@@ -330,6 +440,15 @@ export async function createGoogleSheetsRow(
       },
       message: `Successfully added row to ${sheetName}`
     }
+
+    if (idempotencyKey) {
+      await recordFired(idempotencyKey, actionResult, payloadHash, {
+        provider: 'google-sheets',
+        externalId: result.updates?.updatedRange ?? null,
+      })
+    }
+
+    return actionResult
 
   } catch (error: any) {
     logger.error("Google Sheets create row error:", error)
