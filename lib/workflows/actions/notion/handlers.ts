@@ -2971,23 +2971,44 @@ export async function notionMakeApiCall(
 
     logger.info("[Notion Make API Call] Making request:", { method, url })
 
-    const headers: Record<string, string> = {
-      'Authorization': `Bearer ${accessToken}`,
+    // Q3 — wrap the principal call in `refreshAndRetry`. Since this is a
+    // generic "make any API call" handler, the user's custom headers may
+    // include their own Authorization (rare but possible); we still build
+    // the auth header from the (refreshed) token so 401-recovery works.
+    // User-supplied headers win for everything else via the spread.
+    const buildHeaders = (token: string): Record<string, string> => ({
+      'Authorization': `Bearer ${token}`,
       'Notion-Version': '2022-06-28',
       'Content-Type': 'application/json',
       ...customHeaders
+    })
+
+    const buildFetchOptions = (token: string): RequestInit => {
+      const opts: RequestInit = {
+        method,
+        headers: buildHeaders(token)
+      }
+      if (body && (method === 'POST' || method === 'PATCH' || method === 'PUT')) {
+        opts.body = JSON.stringify(body)
+      }
+      return opts
     }
 
-    const fetchOptions: RequestInit = {
-      method,
-      headers
+    const { refreshAndRetry: notionRefreshAndRetry } = await import('@/lib/workflows/actions/core/refreshAndRetry')
+    const apiCallResult = await notionRefreshAndRetry({
+      provider: 'notion',
+      userId,
+      accessToken,
+      call: async (token) => fetch(url, buildFetchOptions(token)),
+    })
+    if (!apiCallResult.success) {
+      return {
+        success: false,
+        output: {},
+        message: apiCallResult.message,
+      }
     }
-
-    if (body && (method === 'POST' || method === 'PATCH' || method === 'PUT')) {
-      fetchOptions.body = JSON.stringify(body)
-    }
-
-    const response = await fetch(url, fetchOptions)
+    const response = apiCallResult.data
     const data = await response.json()
 
     if (!response.ok) {

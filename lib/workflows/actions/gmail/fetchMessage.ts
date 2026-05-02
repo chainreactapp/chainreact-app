@@ -1,4 +1,5 @@
 import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
+import { refreshAndRetry } from '../core/refreshAndRetry'
 import { resolveValue } from '../core/resolveValue'
 import { ActionResult } from '../core/executeWait'
 import { google } from 'googleapis'
@@ -29,22 +30,36 @@ export async function fetchGmailMessage(
     } = resolvedConfig
 
     const accessToken = await getDecryptedAccessToken(userId, "gmail")
-    
-    // Initialize Gmail API
-    const oauth2Client = new google.auth.OAuth2()
-    oauth2Client.setCredentials({ access_token: accessToken })
-    const gmail = google.gmail({ version: 'v1', auth: oauth2Client })
+
+    // Build a Gmail SDK client for a given token. Every API call below is
+    // wrapped in `refreshAndRetry` (Q3, post-§A5 cleanup) so a 401 anywhere
+    // triggers one refresh+retry attempt with the new token.
+    const buildGmailClient = (token: string) => {
+      const oauth2Client = new google.auth.OAuth2()
+      oauth2Client.setCredentials({ access_token: token })
+      return google.gmail({ version: 'v1', auth: oauth2Client })
+    }
 
     let messages: any[] = []
 
     if (messageId) {
-      // Fetch specific message
+      // Fetch specific message (principal Q3 wrap).
       try {
-        const message = await gmail.users.messages.get({
-          userId: 'me',
-          id: messageId,
-          format: format as 'minimal' | 'full' | 'raw' | 'metadata'
+        const getResult = await refreshAndRetry({
+          provider: 'gmail',
+          userId,
+          accessToken,
+          call: async (token) =>
+            buildGmailClient(token).users.messages.get({
+              userId: 'me',
+              id: messageId,
+              format: format as 'minimal' | 'full' | 'raw' | 'metadata'
+            }),
         })
+        if (!getResult.success) {
+          return { success: false, output: {}, message: getResult.message }
+        }
+        const message = getResult.data
         messages = [message.data]
       } catch (error) {
         return {
@@ -69,18 +84,40 @@ export async function fetchGmailMessage(
         listParams.labelIds = labelIds
       }
 
-      const listResponse = await gmail.users.messages.list(listParams)
+      // Principal list call (Q3 wrap).
+      const listResult = await refreshAndRetry({
+        provider: 'gmail',
+        userId,
+        accessToken,
+        call: async (token) =>
+          buildGmailClient(token).users.messages.list(listParams),
+      })
+      if (!listResult.success) {
+        return { success: false, output: {}, message: listResult.message }
+      }
+      const listResponse = listResult.data
       const messageIds = listResponse.data.messages || []
 
-      // Fetch full details for each message
+      // Fetch full details for each message (Q3 wrap; non-401 errors still
+      // logged + skipped to preserve partial-success behavior).
       for (const msg of messageIds) {
         try {
-          const fullMessage = await gmail.users.messages.get({
-            userId: 'me',
-            id: msg.id!,
-            format: format as 'minimal' | 'full' | 'raw' | 'metadata'
+          const fullMessageResult = await refreshAndRetry({
+            provider: 'gmail',
+            userId,
+            accessToken,
+            call: async (token) =>
+              buildGmailClient(token).users.messages.get({
+                userId: 'me',
+                id: msg.id!,
+                format: format as 'minimal' | 'full' | 'raw' | 'metadata'
+              }),
           })
-          messages.push(fullMessage.data)
+          if (!fullMessageResult.success) {
+            logger.warn(`Failed to fetch message ${msg.id}: ${fullMessageResult.message}`)
+            continue
+          }
+          messages.push(fullMessageResult.data.data)
         } catch (error) {
           logger.warn(`Failed to fetch message ${msg.id}:`, error)
         }
@@ -161,16 +198,25 @@ export async function fetchGmailMessage(
       return processed
     })
 
-    // Mark messages as read if requested
+    // Mark messages as read if requested. Auxiliary post-fetch call wrapped
+    // in `refreshAndRetry` (Q3, post-§A5 cleanup). Best-effort: non-401
+    // errors are logged + swallowed so the read-success isn't overridden by
+    // a markAsRead failure on one message.
     if (markAsRead && messages.length > 0) {
       for (const msg of messages) {
         try {
-          await gmail.users.messages.modify({
-            userId: 'me',
-            id: msg.id,
-            requestBody: {
-              removeLabelIds: ['UNREAD']
-            }
+          await refreshAndRetry({
+            provider: 'gmail',
+            userId,
+            accessToken,
+            call: async (token) =>
+              buildGmailClient(token).users.messages.modify({
+                userId: 'me',
+                id: msg.id,
+                requestBody: {
+                  removeLabelIds: ['UNREAD']
+                }
+              }),
           })
         } catch (error) {
           logger.warn(`Failed to mark message ${msg.id} as read:`, error)

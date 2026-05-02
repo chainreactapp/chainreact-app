@@ -1,10 +1,31 @@
 import { ActionResult } from './core/executeWait'
+import { refreshAndRetry } from './core/refreshAndRetry'
 import { resolveValue } from './core/resolveValue'
 import { getDecryptedAccessToken } from './core/getDecryptedAccessToken'
 import { requireExplicitField } from './core/requireExplicitField'
 import { google } from 'googleapis'
 
 import { logger } from '@/lib/utils/logger'
+
+/**
+ * Per-token Drive / Docs SDK client builders. Each handler's principal
+ * call is wrapped in `refreshAndRetry` and rebuilds its client inside the
+ * closure so a refreshed access token after a 401 propagates into the
+ * retry attempt end-to-end. Auxiliary calls in this legacy file are still
+ * tracked for a follow-up sweep (see pre-launch-cleanup.md §A5
+ * out-of-scope follow-ups).
+ */
+function buildDriveClient(token: string) {
+  const oauth2 = new google.auth.OAuth2()
+  oauth2.setCredentials({ access_token: token })
+  return google.drive({ version: 'v3', auth: oauth2 })
+}
+
+function buildDocsClient(token: string) {
+  const oauth2 = new google.auth.OAuth2()
+  oauth2.setCredentials({ access_token: token })
+  return google.docs({ version: 'v1', auth: oauth2 })
+}
 
 /**
  * Create a new Google Docs document
@@ -84,30 +105,51 @@ export async function createGoogleDocument(
                            file.type === 'text/html' || // .html
                            file.type === 'application/rtf' // .rtf
 
-      const uploadResponse = await drive.files.create({
-        requestBody: {
-          name: title || file.name, // Use the user-specified title, or fallback to filename
-          mimeType: shouldConvert ? 'application/vnd.google-apps.document' : file.type,
-          parents: folderId ? [folderId] : undefined,
-        },
-        media: {
-          mimeType: file.type,
-          body: fileStream,
-        },
-        fields: 'id, name, mimeType, webViewLink',
+      // Q3 — principal upload call wrapped in `refreshAndRetry`.
+      const uploadResult = await refreshAndRetry({
+        provider: 'google-docs',
+        userId,
+        accessToken,
+        call: async (token) =>
+          buildDriveClient(token).files.create({
+            requestBody: {
+              name: title || file.name, // Use the user-specified title, or fallback to filename
+              mimeType: shouldConvert ? 'application/vnd.google-apps.document' : file.type,
+              parents: folderId ? [folderId] : undefined,
+            },
+            media: {
+              mimeType: file.type,
+              body: fileStream,
+            },
+            fields: 'id, name, mimeType, webViewLink',
+          }),
       })
+      if (!uploadResult.success) {
+        return { success: false, output: {}, message: uploadResult.message }
+      }
+      const uploadResponse = uploadResult.data
 
       documentId = uploadResponse.data.id!
       documentUrl = uploadResponse.data.webViewLink || `https://drive.google.com/file/d/${documentId}/view`
 
       logger.info(`[Google Docs] File uploaded successfully with ID: ${documentId}`)
     } else {
-      // Create a new Google Docs document with manual content
-      const createResponse = await docs.documents.create({
-        requestBody: {
-          title: title || 'Untitled Document'
-        }
+      // Create a new Google Docs document with manual content (Q3 wrap).
+      const createResult = await refreshAndRetry({
+        provider: 'google-docs',
+        userId,
+        accessToken,
+        call: async (token) =>
+          buildDocsClient(token).documents.create({
+            requestBody: {
+              title: title || 'Untitled Document'
+            }
+          }),
       })
+      if (!createResult.success) {
+        return { success: false, output: {}, message: createResult.message }
+      }
+      const createResponse = createResult.data
 
       documentId = createResponse.data.documentId!
       documentUrl = `https://docs.google.com/document/d/${documentId}/edit`
@@ -491,11 +533,20 @@ export async function updateGoogleDocument(
         throw new Error(`Unknown insert location: ${insertLocation}`)
     }
 
-    // Apply the updates
-    await docs.documents.batchUpdate({
-      documentId,
-      requestBody: { requests }
+    // Apply the updates (Q3 — principal write call wrapped).
+    const batchResult = await refreshAndRetry({
+      provider: 'google-docs',
+      userId,
+      accessToken,
+      call: async (token) =>
+        buildDocsClient(token).documents.batchUpdate({
+          documentId,
+          requestBody: { requests }
+        }),
     })
+    if (!batchResult.success) {
+      return { success: false, output: {}, message: batchResult.message }
+    }
 
     // Get updated document info
     const updatedDoc = await docs.documents.get({ documentId })
@@ -570,41 +621,61 @@ export async function shareGoogleDocument(
       
       for (const email of emails) {
         try {
-          // Handle ownership transfer specially
+          // Handle ownership transfer specially. Per-share Q3 wrap mirrors
+          // the §A5 pattern in `googleDrive/uploadFile.ts`.
           if (permission === 'owner' && transferOwnership) {
-            // Transfer ownership requires special handling
-            const permission = await drive.permissions.create({
-              fileId: documentId,
-              requestBody: {
-                type: 'user',
-                role: 'owner',
-                emailAddress: email
-              },
-              sendNotificationEmail: sendNotification,
-              emailMessage: message,
-              transferOwnership: true
+            const permResult = await refreshAndRetry({
+              provider: 'google-docs',
+              userId,
+              accessToken,
+              call: async (token) =>
+                buildDriveClient(token).permissions.create({
+                  fileId: documentId,
+                  requestBody: {
+                    type: 'user',
+                    role: 'owner',
+                    emailAddress: email
+                  },
+                  sendNotificationEmail: sendNotification,
+                  emailMessage: message,
+                  transferOwnership: true
+                }),
             })
-            
+            if (!permResult.success) {
+              errors.push(`${email}: ${permResult.message}`)
+              continue
+            }
+
             sharedEmails.push(email)
-            permissionIds.push(permission.data.id || '')
+            permissionIds.push(permResult.data.data.id || '')
             logger.info(`Ownership transferred to ${email}`)
           } else {
-            // Regular permission sharing
+            // Regular permission sharing (Q3 wrap).
             const actualRole = permission === 'owner' ? 'writer' : permission // Can't share as owner without transfer
-            
-            const permissionResult = await drive.permissions.create({
-              fileId: documentId,
-              requestBody: {
-                type: 'user',
-                role: actualRole,
-                emailAddress: email
-              },
-              sendNotificationEmail: sendNotification,
-              emailMessage: message
+
+            const permResult = await refreshAndRetry({
+              provider: 'google-docs',
+              userId,
+              accessToken,
+              call: async (token) =>
+                buildDriveClient(token).permissions.create({
+                  fileId: documentId,
+                  requestBody: {
+                    type: 'user',
+                    role: actualRole,
+                    emailAddress: email
+                  },
+                  sendNotificationEmail: sendNotification,
+                  emailMessage: message
+                }),
             })
-            
+            if (!permResult.success) {
+              errors.push(`${email}: ${permResult.message}`)
+              continue
+            }
+
             sharedEmails.push(email)
-            permissionIds.push(permissionResult.data.id || '')
+            permissionIds.push(permResult.data.data.id || '')
           }
         } catch (error: any) {
           logger.error(`Failed to share with ${email}:`, error)
@@ -699,14 +770,19 @@ export async function getGoogleDocument(
     const { documentId } = resolvedConfig
 
     const accessToken = await getDecryptedAccessToken(userId, 'google-docs')
-    
-    const oauth2Client = new google.auth.OAuth2()
-    oauth2Client.setCredentials({ access_token: accessToken })
-    
-    const docs = google.docs({ version: 'v1', auth: oauth2Client })
 
-    // Get document content
-    const doc = await docs.documents.get({ documentId })
+    // Get document content (Q3 — principal read wrapped).
+    const docResult = await refreshAndRetry({
+      provider: 'google-docs',
+      userId,
+      accessToken,
+      call: async (token) =>
+        buildDocsClient(token).documents.get({ documentId }),
+    })
+    if (!docResult.success) {
+      return { success: false, output: {}, message: docResult.message }
+    }
+    const doc = docResult.data
     
     // Extract text content
     let textContent = ""
@@ -796,11 +872,21 @@ export async function exportGoogleDocument(
     const exportMimeType = mimeTypeMap[exportFormat] || 'application/pdf'
     const fullFileName = `${baseFileName}.${exportFormat}`
 
-    // Export the document
-    const exportResponse = await drive.files.export({
-      fileId: documentId,
-      mimeType: exportMimeType
-    }, { responseType: 'arraybuffer' })
+    // Export the document (Q3 — principal export call wrapped).
+    const exportResult = await refreshAndRetry({
+      provider: 'google-docs',
+      userId,
+      accessToken,
+      call: async (token) =>
+        buildDriveClient(token).files.export({
+          fileId: documentId,
+          mimeType: exportMimeType
+        }, { responseType: 'arraybuffer' }),
+    })
+    if (!exportResult.success) {
+      return { success: false, output: {}, message: exportResult.message }
+    }
+    const exportResponse = exportResult.data
     
     const fileBuffer = Buffer.from(exportResponse.data as ArrayBuffer)
     const fileSize = fileBuffer.length
