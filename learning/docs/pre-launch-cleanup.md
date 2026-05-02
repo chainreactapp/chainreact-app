@@ -143,11 +143,11 @@ Higher-priority because billing correctness depends on the atomic path being the
 
 ## E. Other per-provider deprecations
 
-| Status | File:Line | What | Pre-launch action |
-|---|---|---|---|
-| OPEN | [`lib/workflows/actions/slack.ts:111`](../../lib/workflows/actions/slack.ts#L111) | `@deprecated Use the wrapper above which calls the new implementation` | Verify the new implementation is in use everywhere; delete the deprecated wrappee |
-| OPEN | [`app/api/integrations/shopify/data/utils.ts:133`](../../app/api/integrations/shopify/data/utils.ts#L133) | `@deprecated Use makeShopifyGraphQLRequest instead` | Migrate any REST callers to GraphQL; delete the deprecated function |
-| OPEN | [`components/workflows/configuration/hooks/useFieldChangeHandler.ts:191`](../../components/workflows/configuration/hooks/useFieldChangeHandler.ts#L191) | `@deprecated Use handleDiscordField from useDiscordFieldHandler instead` | Migrate Discord field-change paths to the new hook; delete the deprecated handler |
+| Status | Symbol | Resolution |
+|---|---|---|
+| DONE — 2026-05-02 | `slackActionSendMessageLegacy` in `lib/workflows/actions/slack.ts` | Deleted (319-line legacy implementation). Zero callers; the active `slackActionSendMessage` wrapper delegates to `sendSlackMessageNew`. |
+| KEEP — JUSTIFIED — 2026-05-02 | `makeShopifyRequest` (REST) in `app/api/integrations/shopify/data/utils.ts` | 8 active callers across `handlers/{collections,customers,inventory-items,locations,orders,products,variants}.ts`. REST→GraphQL migration is a separate per-handler PR (different query shapes, different response shapes); not a deletion sweep. The `@deprecated` notice stands as a TODO marker. |
+| DONE — 2026-05-02 | `handleDiscordFieldChange` in `components/workflows/configuration/hooks/useFieldChangeHandler.ts` | Deleted (159-line useCallback) plus its return-object export. Zero external callers; the active path uses `handleDiscordField` from `useDiscordFieldHandler` (declared at line 153, dispatched at the previous line 946). |
 
 ---
 
