@@ -1,6 +1,7 @@
 import { createSupabaseServerClient } from "@/utils/supabase/server"
 
 import { logger } from '@/lib/utils/logger'
+import { resolveTimezone } from './resolveContextDefaults'
 
 /**
  * Interface for action results.
@@ -26,6 +27,16 @@ export interface ActionResult {
   metadata?: Record<string, any>
   selectedPaths?: string[]
   message?: string
+  // The runtime accepts both shapes:
+  //   - string (e.g. 'PAYLOAD_MISMATCH' from Q4, slack provider error codes)
+  //   - structured { code, path } (Q2 MISSING_VARIABLE, Q11 MISSING_REQUIRED_FIELD,
+  //     INVALID_TIME_FORMAT). The type stays `string` because widening it
+  //     would force every existing `result.error` consumer (logger, throw new
+  //     Error(), error concatenation) to handle the union. Helpers that
+  //     produce the structured form construct via the typed helper interfaces
+  //     (e.g. MissingRequiredFieldFailure in requireExplicitField.ts) and
+  //     return the value as ActionResult — same pattern as
+  //     nodeExecutionService.ts MissingVariableError conversion.
   error?: string
   category?:
     | 'provider'
@@ -125,11 +136,34 @@ export async function executeWaitForTime(
   try {
     const waitType = config.waitType || "duration"
     const now = new Date()
-    
+
     let waitUntil: Date
     let waitDurationMinutes = 0
-    const targetTimezone = config.timezone || "UTC"
-    
+
+    // Q12 — resolve timezone via workspace → user → UTC. Replaces the prior
+    // direct `config.timezone || "UTC"` fallback. Wait scheduling is a
+    // user-visible time ("9 AM tomorrow") so author timezone matters more
+    // than UTC predictability — see audit createWait.ts:109.
+    let resolvedWorkspaceId: string | undefined
+    if (context?.workflowId) {
+      try {
+        const supabaseForLookup = await createSupabaseServerClient()
+        const { data: wf } = await supabaseForLookup
+          .from('workflows')
+          .select('workspace_id')
+          .eq('id', context.workflowId)
+          .maybeSingle()
+        resolvedWorkspaceId = wf?.workspace_id ?? undefined
+      } catch (err: any) {
+        logger.debug('[executeWait] workspace lookup failed', { error: err?.message })
+      }
+    }
+    const targetTimezone = config.timezone || (await resolveTimezone({
+      workspaceId: resolvedWorkspaceId,
+      userId,
+    }))
+
+
     if (waitType === "duration") {
       const duration = Number(config.duration) || 5
       const unit = config.unit || "minutes"

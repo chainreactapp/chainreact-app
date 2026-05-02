@@ -33,6 +33,11 @@ export interface HandlerExecutionMeta {
   actionType?: string
   provider?: string
   testMode?: boolean
+  // PR-G1 (Q12) — workspace tier of timezone / locale resolution. Engine
+  // populates this from `ExecutionContext.workspaceId`, which itself is
+  // populated from `workflows.workspace_id` at workflow load time. Helpers
+  // pass it to `resolveTimezone` / `resolveLocale`.
+  workspaceId?: string
 }
 
 export interface SideEffectKey {

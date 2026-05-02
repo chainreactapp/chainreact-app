@@ -503,7 +503,7 @@ export const teamsNodes: NodeComponent[] = [
       { name: "topic", label: "Chat Topic", type: "text", required: false, placeholder: "Enter chat topic (optional)", supportsAI: true },
       { name: "members", label: "Members", type: "textarea", required: true, placeholder: "Enter member email addresses (one per line or comma-separated)", supportsAI: true, info: "Enter email addresses of users to add to the chat. Internal users will be added directly. For external users, enable 'Invite External Users' below." },
       { name: "inviteExternalUsers", label: "Invite External Users", type: "boolean", required: false, defaultValue: false, info: "If enabled, users not found in your organization will be automatically invited as guest users to your Azure AD tenant." },
-      { name: "sendInvitationEmail", label: "Send Invitation Email", type: "boolean", required: false, defaultValue: true, visibilityCondition: { field: "inviteExternalUsers", operator: "equals", value: true }, info: "Send an email invitation to external users being invited to your organization." },
+      { name: "sendInvitationEmail", label: "Send Invitation Email", type: "boolean", required: true, description: "Required (Q11). Recommended: false — group-chat invitations contact real people on every workflow run.", visibilityCondition: { field: "inviteExternalUsers", operator: "equals", value: true }, info: "Send an email invitation to external users being invited to your organization." },
       { name: "initialMessage", label: "Initial Message", type: "email-rich-text", required: false, placeholder: "Send an initial message (optional)" }
     ],
     outputSchema: [

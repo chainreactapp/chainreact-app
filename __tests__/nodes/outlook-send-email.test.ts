@@ -418,6 +418,36 @@ describe("sendOutlookEmail — Q3 — 401 handling", () => {
     expect(getFetchCalls().filter((c) => c.method === "POST")).toHaveLength(1)
     expect(getHealthEngineCalls()).toHaveLength(1)
   })
+
+  // §A5 — auxiliary sentitems GET is also wrapped in `refreshAndRetry`. A
+  // 401 on this read triggers one refresh+retry; the message-send already
+  // succeeded so we still return success (messageId may be undefined if the
+  // retry also fails, but the auth signal still fires).
+  test("§A5 — sentitems aux GET 401 → refresh+retry → success populates messageId", async () => {
+    setMockTokenRefreshOutcome("success")
+    fetchMock
+      // sendMail succeeds
+      .mockResponseOnce("", { status: 202 })
+      // sentitems GET first attempt 401
+      .mockResponseOnce("", { status: 401 })
+      // sentitems GET retry succeeds
+      .mockResponseOnce(
+        JSON.stringify({ value: [{ id: "msg-aux", subject: "S" }] }),
+      )
+
+    const result = await sendOutlookEmail(
+      { to: "x@y.com", subject: "S", body: "B" },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(true)
+    expect(result.output.messageId).toBe("msg-aux")
+    // 1 POST (sendMail) + 2 GETs (sentitems retry)
+    expect(getFetchCalls()).toHaveLength(3)
+    // No health signal — refresh succeeded.
+    expect(getHealthEngineCalls()).toHaveLength(0)
+  })
 })
 
 // Q4 — within-session idempotency.

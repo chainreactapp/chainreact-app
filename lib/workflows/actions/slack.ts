@@ -5,6 +5,7 @@
 import { ActionResult } from './core/executeWait'
 import { getDecryptedAccessToken } from './core/getDecryptedAccessToken'
 import { resolveValue } from './core/resolveValue'
+import { requireExplicitField } from './core/requireExplicitField'
 import { sendSlackMessage as sendSlackMessageNew } from './slack/sendMessage'
 
 // Re-export actions so consumers of "./slack" continue working
@@ -443,9 +444,15 @@ export async function createSlackChannel(
 
     const resolvedConfig = resolveValue(config, input)
 
+    // Q11 — visibility is a workspace-wide channel-creation decision
+    // (public exposes the channel to the entire workspace). Previous silent
+    // default `'public'` removed; workflow author must explicitly choose.
+    const missingRequired = requireExplicitField(resolvedConfig, 'visibility')
+    if (missingRequired) return missingRequired as unknown as ActionResult
+
     // Extract configuration
     const channelName = resolvedConfig.channelName
-    const visibility = resolvedConfig.visibility || 'public'
+    const visibility = resolvedConfig.visibility
     const isPrivate = visibility === 'private'
     const workspace = resolvedConfig.workspace
     const addPeople = resolvedConfig.addPeople

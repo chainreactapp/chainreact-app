@@ -111,6 +111,7 @@ export class GmailIntegrationService {
       actionType: node.data?.type,
       provider: 'gmail',
       testMode: context.testMode,
+      workspaceId: context.workspaceId,
     }
 
     // Call the Gmail send function with proper params object structure

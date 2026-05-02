@@ -248,12 +248,11 @@ export const githubNodes: NodeComponent[] = [
         name: "base",
         label: "Target Branch",
         type: "combobox",
-        required: true,
+        required: false,
         dynamic: "github_branches",
         dependsOn: "repository",
-        defaultValue: "main",
-        placeholder: "Select target branch",
-        description: "The branch you want to merge into (e.g., main, develop)"
+        placeholder: "Leave empty to auto-detect repo's default branch",
+        description: "The branch you want to merge into (e.g., main, develop). If left empty, the handler queries the repo's default_branch via the GitHub API — works for repos using main, master, develop, trunk, etc. (PR-G6)"
       },
       {
         name: "title",

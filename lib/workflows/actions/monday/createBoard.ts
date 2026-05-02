@@ -1,4 +1,9 @@
-import { getDecryptedAccessToken, resolveValue, ActionResult } from '@/lib/workflows/actions/core'
+import {
+  getDecryptedAccessToken,
+  resolveValue,
+  ActionResult,
+} from '@/lib/workflows/actions/core'
+import { requireExplicitField } from '@/lib/workflows/actions/core/requireExplicitField'
 import { logger } from '@/lib/utils/logger'
 
 /**
@@ -10,9 +15,16 @@ export async function createMondayBoard(
   input: Record<string, any>
 ): Promise<ActionResult> {
   try {
+    // Q11 — boardKind controls workspace-wide board visibility (public
+    // exposes the board to the entire workspace). Previous silent default
+    // `'public'` removed; workflow author must explicitly choose
+    // `public` / `private` / `share`.
+    const missingRequired = requireExplicitField(config, 'boardKind')
+    if (missingRequired) return missingRequired as unknown as ActionResult
+
     // Resolve configuration values
     const boardName = await resolveValue(config.boardName, input)
-    const boardKind = await resolveValue(config.boardKind, input) || 'public'
+    const boardKind = await resolveValue(config.boardKind, input)
     const description = config.description
       ? await resolveValue(config.description, input)
       : undefined

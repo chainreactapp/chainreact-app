@@ -1,4 +1,5 @@
 import { ActionResult } from '../core'
+import { requireExplicitField } from '../core/requireExplicitField'
 import { getIntegrationCredentials } from "@/lib/integrations/getDecryptedAccessToken"
 import { resolveValue } from "@/lib/integrations/resolveValue"
 
@@ -13,20 +14,29 @@ export interface CreateChannelParams {
 export async function createSlackChannel(params: CreateChannelParams): Promise<ActionResult> {
   try {
     const { userId, config, input } = params
-    
-    // 1. Get Slack OAuth token
-    const credentials = await getIntegrationCredentials(userId, "slack")
-    
-    // 2. Resolve any templated values in the config
+
+    // Resolve any templated values in the config first so the require check
+    // sees the same shape that the rest of the handler uses.
     const resolvedConfig = resolveValue(config, {
       input,
     })
-    
-    // 3. Extract parameters
-    const { 
+
+    // Q11 — isPrivate is a workspace-wide channel-creation decision
+    // (public exposes the channel to the entire workspace). Previous silent
+    // default `false` removed; workflow author must explicitly choose.
+    // Runs BEFORE the OAuth credential fetch so a misconfigured workflow
+    // fails fast without consuming network.
+    const missingRequired = requireExplicitField(resolvedConfig, 'isPrivate')
+    if (missingRequired) return missingRequired as unknown as ActionResult
+
+    // Get Slack OAuth token
+    const credentials = await getIntegrationCredentials(userId, "slack")
+
+    // Extract parameters
+    const {
       workspace,
-      channelName, 
-      isPrivate = false,
+      channelName,
+      isPrivate,
       purpose,
       topic,
       initialMembers = [],

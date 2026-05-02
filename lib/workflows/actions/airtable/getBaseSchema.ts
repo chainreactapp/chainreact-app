@@ -1,4 +1,5 @@
 import { getDecryptedAccessToken, resolveValue, ActionResult } from '@/lib/workflows/actions/core'
+import { refreshAndRetry } from '@/lib/workflows/actions/core/refreshAndRetry'
 import { logger } from '@/lib/utils/logger'
 
 /**
@@ -21,16 +22,26 @@ export async function getAirtableBaseSchema(
       return { success: false, message }
     }
 
-    // Fetch the base schema from Airtable
-    const url = `https://api.airtable.com/v0/meta/bases/${baseId}/tables`
-
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
+    // Fetch the base schema from Airtable. Wrapped in `refreshAndRetry`
+    // (Q3, §A5).
+    const fetchResult = await refreshAndRetry({
+      provider: 'airtable',
+      userId,
+      accessToken,
+      call: async (token) =>
+        fetch(`https://api.airtable.com/v0/meta/bases/${baseId}/tables`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        }),
     })
+
+    if (!fetchResult.success) {
+      return { success: false, message: fetchResult.message }
+    }
+    const response = fetchResult.data
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}))

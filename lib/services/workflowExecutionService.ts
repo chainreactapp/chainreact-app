@@ -15,6 +15,10 @@ import {
 export interface ExecutionContext {
   userId: string
   workflowId: string
+  // PR-G1 — workspace tier of the Q12 timezone/locale resolution chain.
+  // `undefined` is valid (workflow not associated with a workspace) and
+  // means "fall through to user-level resolution."
+  workspaceId?: string
   testMode: boolean
   testModeConfig?: TestModeConfig // Enhanced test mode configuration
   data: any
@@ -535,6 +539,8 @@ export class WorkflowExecutionService {
       testModeConfig,
       userId,
       workflowId: workflow.id,
+      // PR-G1 (Q12) — workspace tier of timezone/locale resolution.
+      workspaceId: workflow.workspace_id ?? undefined,
       dataFlowManager
     }
 

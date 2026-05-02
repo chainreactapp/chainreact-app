@@ -1,4 +1,5 @@
 import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
+import { refreshAndRetry } from '../core/refreshAndRetry'
 import { resolveValue } from '../core/resolveValue'
 import { ActionResult } from '../core/executeWait'
 import { google } from 'googleapis'
@@ -27,9 +28,12 @@ export async function createGoogleDriveFolder(
     }
 
     const accessToken = await getDecryptedAccessToken(userId, "google-drive")
-    const oauth2Client = new google.auth.OAuth2()
-    oauth2Client.setCredentials({ access_token: accessToken })
-    const drive = google.drive({ version: 'v3', auth: oauth2Client })
+    const buildDriveClient = (token: string) => {
+      const oauth2Client = new google.auth.OAuth2()
+      oauth2Client.setCredentials({ access_token: token })
+      return google.drive({ version: 'v3', auth: oauth2Client })
+    }
+    const drive = buildDriveClient(accessToken)
 
     const fileMetadata: any = {
       name: folderName,
@@ -45,24 +49,40 @@ export async function createGoogleDriveFolder(
 
     const folder = response.data
 
-    // Share with domain if requested
+    // Share with domain if requested. Auxiliary calls (about.get +
+    // permissions.create) wrapped in `refreshAndRetry` (Q3, §A5).
     if (shareWithDomain && folder.id) {
       try {
         // Get user's domain from their profile
-        const aboutResponse = await drive.about.get({ fields: 'user' })
-        const userEmail = aboutResponse.data.user?.emailAddress || ''
-        const domain = userEmail.split('@')[1]
+        const aboutResult = await refreshAndRetry({
+          provider: 'google-drive',
+          userId,
+          accessToken,
+          call: async (token) =>
+            buildDriveClient(token).about.get({ fields: 'user' }),
+        })
 
-        if (domain) {
-          await drive.permissions.create({
-            fileId: folder.id,
-            requestBody: {
-              role: 'reader',
-              type: 'domain',
-              domain
-            }
-          })
-          logger.info('🔗 [Google Drive] Shared folder with domain', { folderId: folder.id, domain })
+        if (aboutResult.success) {
+          const userEmail = aboutResult.data.data.user?.emailAddress || ''
+          const domain = userEmail.split('@')[1]
+
+          if (domain) {
+            await refreshAndRetry({
+              provider: 'google-drive',
+              userId,
+              accessToken,
+              call: async (token) =>
+                buildDriveClient(token).permissions.create({
+                  fileId: folder.id,
+                  requestBody: {
+                    role: 'reader',
+                    type: 'domain',
+                    domain
+                  }
+                }),
+            })
+            logger.info('🔗 [Google Drive] Shared folder with domain', { folderId: folder.id, domain })
+          }
         }
       } catch (shareError: any) {
         logger.warn('⚠️ [Google Drive] Could not share folder with domain:', shareError.message)

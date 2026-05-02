@@ -223,7 +223,12 @@ Treating `0` or `false` as "missing" breaks legitimate user inputs — a "minimu
 
 **Decision:** Audit all currently-pinned defaults; user reviews each before any default change ships.
 
-The audit is in [`handler-defaults-audit.md`](handler-defaults-audit.md) (created in PR-B). Until the user fills in the `User decision` column for a row, no PR may change that default. Tests continue to pin **current** defaults until decisions land in PR-G (defaults migration).
+The audit is in [`handler-defaults-audit.md`](handler-defaults-audit.md) (created in PR-B). All rows now have user decisions captured. PR-G applies them across PR-G0..PR-G6:
+
+- **PR-G0** — shared helpers + schema migration. Adds Q11 (no hidden high-risk defaults) and Q12 (timezone / locale resolution order) below.
+- **PR-G1** — Calendar / Sheets / Wait `Change` rows (timing, timezone fallbacks, end-time computation, format validation).
+- **PR-G2..G5** — `Require` rows: handler default removed, schema marked required, existing-data backfilled via the framework in PR-G0.
+- **PR-G6** — GitHub `createPullRequest.base` auto-detection from `repos.get`.
 
 Highest-concern defaults (flagged by the user during contract review):
 - Calendar `sendNotifications = "all"` — auto-emails attendees on event creation. Real spam risk.
@@ -348,6 +353,92 @@ CI runs the Docker stack on every push. OAuth sandbox tests sequenced last (PR-F
 - Stack: [`docker-compose.test.yml`](../../docker-compose.test.yml)
 - Test harnesses: [`__tests__/helpers/dbHarness.ts`](../../__tests__/helpers/dbHarness.ts), [`mailHarness.ts`](../../__tests__/helpers/mailHarness.ts), [`stripeHarness.ts`](../../__tests__/helpers/stripeHarness.ts) (all PR-E)
 - Credential setup: [`learning/docs/test-infra-credentials.md`](test-infra-credentials.md) (created in PR-E)
+
+---
+
+## Q11 — No hidden high-risk defaults
+
+**Decision (PR-G0):** Handlers must not silently supply defaults for high-risk fields. A "high-risk" field is one whose default value can:
+
+- notify or contact people (`sendNotifications`, `sendNotificationEmail`, `sendInviteNotification`, etc.),
+- expose / share / scope data (`isPrivate`, `visibility`, `linkScope`, `boardKind`, `guestsCanInviteOthers`, `guestsCanSeeOtherGuests`, etc.),
+- carry consent / compliance implications (Mailchimp `status` — CAN-SPAM / GDPR opt-in),
+- materially alter AI output behavior (`respondInstructions`).
+
+These fields must be explicit workflow config. When missing, the handler returns the standardized config-failure shape:
+
+```ts
+{
+  success: false,
+  category: 'config',
+  error: { code: 'MISSING_REQUIRED_FIELD', path: '<fieldName>' },
+  message: 'Required field "<fieldName>" is missing.',
+}
+```
+
+Shape mirrors Q2 `MISSING_VARIABLE`. Helper: [`requireExplicitField`](../../lib/workflows/actions/core/requireExplicitField.ts).
+
+### Companion contracts
+
+- **Schema-side:** the field's Zod schema in `lib/workflows/availableNodes.ts` must mark it required (no schema default). Handler + schema travel together — see PR-G2..G5. The UI surfaces the field as required at workflow-config time so the runtime check is a defense-in-depth, not the primary surface.
+- **Existing-data migration:** removing a handler default would break workflows already in the database that rely on it. The framework at [`lib/workflows/migrations/handlerDefaultsBackfill.ts`](../../lib/workflows/migrations/handlerDefaultsBackfill.ts) backfills the previous default value into existing `workflow_nodes.config` rows before each PR-Gn ships. Idempotent, scoped per-PR. Runner: [`scripts/migrate-handler-defaults.ts`](../../scripts/migrate-handler-defaults.ts).
+
+### Q5 interaction
+
+`0`, `false`, and (for fields whose schema accepts blank) `''` are valid explicit choices and pass through. `requireExplicitField` defaults to treating `''` as missing (`treatEmptyStringAsMissing: true`) because every Require-tagged field in the audit is enum / boolean / scoped-value where blank is meaningless. Free-text required fields (none currently in the Require list) would pass `false`.
+
+### Source-of-truth list
+
+The full list of fields covered by Q11 is the `Require` rows in [`handler-defaults-audit.md`](handler-defaults-audit.md). New fields are added there first, then to PR-G2..G5.
+
+### Implementation files
+
+- Helper: [`lib/workflows/actions/core/requireExplicitField.ts`](../../lib/workflows/actions/core/requireExplicitField.ts) (created in PR-G0)
+- Migration framework: [`lib/workflows/migrations/handlerDefaultsBackfill.ts`](../../lib/workflows/migrations/handlerDefaultsBackfill.ts) (created in PR-G0)
+- CLI runner: [`scripts/migrate-handler-defaults.ts`](../../scripts/migrate-handler-defaults.ts) (created in PR-G0)
+
+---
+
+## Q12 — Timezone / locale resolution
+
+**Decision (PR-G0):** When timezone or locale must be inferred (not explicitly supplied by workflow config), resolve in fixed priority order:
+
+```
+workspace setting → user setting → technical fallback
+```
+
+Technical fallbacks: `'UTC'` for timezone, `'en_US'` for locale.
+
+### What's invalid → falls through
+
+- Timezone: anything `Intl.DateTimeFormat({ timeZone })` rejects.
+- Locale: empty / non-string. Malformed-but-non-empty BCP-47 strings pass through; downstream `Intl` callers degrade gracefully.
+
+A workspace value that is invalid IANA does NOT block resolution — the helper falls through to the user setting, then to UTC. Same behavior for invalid user-level values.
+
+### Where to read from
+
+- `workspaces.timezone` / `workspaces.locale` — added by migration `20260501000000`.
+- `user_profiles.timezone` / `user_profiles.locale` — added by same migration.
+
+Both columns nullable. NULL = unset → fall through to next layer.
+
+### Where this replaces
+
+Audit `Change` rows stop hardcoding regional bias and route through the helper:
+
+- `google-calendar/createEvent.ts:60`, `:100`, `:156`
+- `google-calendar/updateEvent.ts:73`, `:103`, `:153`
+- `microsoft-outlook/createCalendarEvent.ts:110`, `:190`
+- `core/executeWait.ts:109`
+- `googleSheets/createSpreadsheet.ts:97`, `:98`
+
+These are landed in PR-G1.
+
+### Implementation files
+
+- Helper: [`lib/workflows/actions/core/resolveContextDefaults.ts`](../../lib/workflows/actions/core/resolveContextDefaults.ts) (created in PR-G0) — exports `resolveTimezone`, `resolveLocale`, `resolveTimezoneAndLocale`.
+- Schema migration: [`supabase/migrations/20260501000000_add_timezone_locale_to_workspaces_and_user_profiles.sql`](../../supabase/migrations/20260501000000_add_timezone_locale_to_workspaces_and_user_profiles.sql) (created in PR-G0).
 
 ---
 

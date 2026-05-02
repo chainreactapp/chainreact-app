@@ -1,6 +1,7 @@
 import { ActionResult } from './core/executeWait'
 import { resolveValue } from './core/resolveValue'
 import { getDecryptedAccessToken } from './core/getDecryptedAccessToken'
+import { requireExplicitField } from './core/requireExplicitField'
 import { google } from 'googleapis'
 
 import { logger } from '@/lib/utils/logger'
@@ -533,11 +534,17 @@ export async function shareGoogleDocument(
 ): Promise<ActionResult> {
   try {
     const resolvedConfig = resolveValue(config, input)
-    const { 
-      documentId, 
-      shareWith, 
-      permission = 'reader', 
-      sendNotification = true,
+
+    // Q11 — sendNotification has user-facing side effects (auto-emails the
+    // shared-with user). Previous silent default `true` removed.
+    const missingRequired = requireExplicitField(resolvedConfig, 'sendNotification')
+    if (missingRequired) return missingRequired as unknown as ActionResult
+
+    const {
+      documentId,
+      shareWith,
+      permission = 'reader',
+      sendNotification,
       message,
       makePublic = false,
       publicPermission = 'reader',

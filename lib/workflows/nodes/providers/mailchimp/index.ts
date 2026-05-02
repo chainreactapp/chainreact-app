@@ -913,7 +913,7 @@ export const mailchimpNodes: NodeComponent[] = [
         label: "Status",
         type: "select",
         required: true,
-        defaultValue: "subscribed",
+        description: "Required (Q11). Recommended: \"Pending\" — triggers a confirmation email so the subscriber's consent is recorded (CAN-SPAM / GDPR). Use \"Subscribed\" only when explicit prior consent is already captured.",
         options: [
           { value: "subscribed", label: "Subscribed" },
           { value: "pending", label: "Pending (Double Opt-in)" },

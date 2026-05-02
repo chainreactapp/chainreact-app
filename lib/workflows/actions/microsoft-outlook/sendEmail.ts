@@ -411,17 +411,30 @@ export async function sendOutlookEmail(
       await deleteWorkflowTempFiles(Array.from(cleanupPaths))
     }
 
-    // Try to retrieve the sent message ID from Sent Items
+    // Try to retrieve the sent message ID from Sent Items. Wrapped in
+    // `refreshAndRetry` (Q3, §A5) so a stale-after-send token still produces
+    // a structured auth signal and a refresh attempt rather than a silent
+    // miss. Best-effort: we still swallow non-401 errors and continue, since
+    // messageId is optional output.
     let messageId: string | undefined
     try {
-      const sentRes = await fetch(
-        'https://graph.microsoft.com/v1.0/me/mailFolders/sentitems/messages?$top=1&$orderby=sentDateTime desc&$select=id,subject',
-        { headers: { 'Authorization': `Bearer ${accessToken}` } }
-      )
-      if (sentRes.ok) {
-        const sentData = await sentRes.json()
-        if (sentData.value?.length > 0) {
-          messageId = sentData.value[0].id
+      const sentResult = await refreshAndRetry({
+        provider: 'microsoft-outlook',
+        userId,
+        accessToken,
+        call: async (token) =>
+          fetch(
+            'https://graph.microsoft.com/v1.0/me/mailFolders/sentitems/messages?$top=1&$orderby=sentDateTime desc&$select=id,subject',
+            { headers: { 'Authorization': `Bearer ${token}` } }
+          ),
+      })
+      if (sentResult.success) {
+        const sentRes = sentResult.data
+        if (sentRes.ok) {
+          const sentData = await sentRes.json()
+          if (sentData.value?.length > 0) {
+            messageId = sentData.value[0].id
+          }
         }
       }
     } catch (e) {

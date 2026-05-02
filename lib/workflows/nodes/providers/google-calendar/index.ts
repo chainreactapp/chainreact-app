@@ -765,7 +765,8 @@ export const googleCalendarNodes: NodeComponent[] = [
         name: "sendNotifications",
         label: "Send invitations",
         type: "select",
-        defaultValue: "all",
+        required: true,
+        description: "Required (Q11). Recommended: \"Don't send\" — emails real attendees on event creation.",
         options: [
           { value: "all", label: "Send to all guests" },
           { value: "externalOnly", label: "Send to guests outside your organization" },
@@ -782,7 +783,8 @@ export const googleCalendarNodes: NodeComponent[] = [
         name: "guestsCanInviteOthers",
         label: "Guests can invite others",
         type: "boolean",
-        defaultValue: true,
+        required: true,
+        description: "Required (Q11). Recommended: false — guests inviting more guests expands the invite list beyond the workflow author's configuration.",
         visibilityCondition: {
           field: "attendees",
           operator: "equals",
@@ -794,7 +796,8 @@ export const googleCalendarNodes: NodeComponent[] = [
         name: "guestsCanSeeOtherGuests",
         label: "Guests can see guest list",
         type: "boolean",
-        defaultValue: true,
+        required: true,
+        description: "Required (Q11). Recommended: false — exposes attendee email PII to other attendees.",
         visibilityCondition: {
           field: "attendees",
           operator: "equals",
@@ -1123,7 +1126,8 @@ export const googleCalendarNodes: NodeComponent[] = [
         name: "sendNotifications",
         label: "Send invitations",
         type: "select",
-        defaultValue: "all",
+        required: true,
+        description: "Required (Q11). Recommended: \"Don't send\" — emails real attendees when changed.",
         options: [
           { value: "all", label: "Send to all guests" },
           { value: "externalOnly", label: "Send to guests outside your organization" },
@@ -1267,13 +1271,13 @@ export const googleCalendarNodes: NodeComponent[] = [
         name: "sendNotifications",
         label: "Send cancellation notifications",
         type: "select",
-        defaultValue: "none",
+        required: true,
+        description: "Required (Q11). Recommended: \"Don't send\" — emails real attendees on event delete.",
         options: [
           { value: "all", label: "Send to all guests" },
           { value: "externalOnly", label: "Send to guests outside your organization" },
           { value: "none", label: "Don't send" }
-        ],
-        description: "Whether to send event cancellation notifications to attendees"
+        ]
       }
     ],
     outputSchema: [
@@ -1760,7 +1764,8 @@ export const googleCalendarNodes: NodeComponent[] = [
         name: "sendNotifications",
         label: "Send invitations",
         type: "select",
-        defaultValue: "none",
+        required: true,
+        description: "Required (Q11). Recommended: \"Don't send\" — quickAdd may parse attendees from natural-language text.",
         options: [
           { value: "all", label: "Send to all guests" },
           { value: "externalOnly", label: "Send to guests outside your organization" },
@@ -1885,7 +1890,8 @@ export const googleCalendarNodes: NodeComponent[] = [
         name: "sendNotifications",
         label: "Send invitations",
         type: "select",
-        defaultValue: "all",
+        required: true,
+        description: "Required (Q11). Recommended: \"Don't send\" — emails real attendees when added.",
         options: [
           { value: "all", label: "Send to all guests" },
           { value: "externalOnly", label: "Send to guests outside your organization" },
@@ -1996,7 +2002,8 @@ export const googleCalendarNodes: NodeComponent[] = [
         name: "sendNotifications",
         label: "Send cancellation notifications",
         type: "select",
-        defaultValue: "all",
+        required: true,
+        description: "Required (Q11). Recommended: \"Don't send\" — emails real attendees on attendee removal.",
         options: [
           { value: "all", label: "Send to all guests" },
           { value: "externalOnly", label: "Send to guests outside your organization" },
@@ -2091,7 +2098,8 @@ export const googleCalendarNodes: NodeComponent[] = [
         name: "sendNotifications",
         label: "Send notifications",
         type: "select",
-        defaultValue: "all",
+        required: true,
+        description: "Required (Q11). Recommended: \"Don't send\" — emails real attendees on event move.",
         options: [
           { value: "all", label: "Send to all guests" },
           { value: "externalOnly", label: "Send to guests outside your organization" },

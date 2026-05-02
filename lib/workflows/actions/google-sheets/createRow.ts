@@ -67,15 +67,28 @@ export async function createGoogleSheetsRow(
       return { success: false, message }
     }
 
-    // First, get the headers to understand column structure
-    const headerResponse = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetName)}!1:1`,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      }
-    )
+    // First, get the headers to understand column structure. Wrapped in
+    // `refreshAndRetry` (Q3, §A5) so a 401 from this auxiliary read produces
+    // a structured auth signal + refresh attempt.
+    const headerResult = await refreshAndRetry({
+      provider: 'google-sheets',
+      userId,
+      accessToken,
+      call: async (token) =>
+        fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetName)}!1:1`,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }
+        ),
+    })
+
+    if (!headerResult.success) {
+      return { success: false, message: headerResult.message }
+    }
+    const headerResponse = headerResult.data
 
     if (!headerResponse.ok) {
       throw new Error(`Failed to fetch headers: ${headerResponse.status}`)
@@ -227,22 +240,34 @@ export async function createGoogleSheetsRow(
       }
     }
 
-    // Get sheet metadata if we need to insert at beginning or specific row
+    // Get sheet metadata if we need to insert at beginning or specific row.
+    // Wrapped in `refreshAndRetry` (Q3, §A5).
     let sheetId: number | undefined
     if (insertPosition === 'prepend' || insertPosition === 'specific_row') {
-      const metadataResponse = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`,
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        }
-      )
-      
+      const metadataResult = await refreshAndRetry({
+        provider: 'google-sheets',
+        userId,
+        accessToken,
+        call: async (token) =>
+          fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`,
+            {
+              headers: {
+                Authorization: `Bearer ${token}`,
+              },
+            }
+          ),
+      })
+
+      if (!metadataResult.success) {
+        return { success: false, message: metadataResult.message }
+      }
+      const metadataResponse = metadataResult.data
+
       if (!metadataResponse.ok) {
         throw new Error(`Failed to fetch spreadsheet metadata: ${metadataResponse.status}`)
       }
-      
+
       const spreadsheetData = await metadataResponse.json()
       const sheet = spreadsheetData.sheets?.find((s: any) => s.properties?.title === sheetName)
       
@@ -264,31 +289,43 @@ export async function createGoogleSheetsRow(
       apiMethod = 'append'
     } else if (insertPosition === 'prepend' && sheetId !== undefined) {
       // For prepend, we need to use batchUpdate to insert a row at position 2
-      // First, insert a blank row at position 2
-      const insertRowResponse = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            requests: [{
-              insertDimension: {
-                range: {
-                  sheetId: sheetId,
-                  dimension: "ROWS",
-                  startIndex: 1, // After header row (0-indexed)
-                  endIndex: 2 // Insert 1 row
-                },
-                inheritFromBefore: false
-              }
-            }]
-          }),
-        }
-      )
-      
+      // First, insert a blank row at position 2. Wrapped in `refreshAndRetry`
+      // (Q3, §A5).
+      const insertResult = await refreshAndRetry({
+        provider: 'google-sheets',
+        userId,
+        accessToken,
+        call: async (token) =>
+          fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                requests: [{
+                  insertDimension: {
+                    range: {
+                      sheetId: sheetId,
+                      dimension: "ROWS",
+                      startIndex: 1, // After header row (0-indexed)
+                      endIndex: 2 // Insert 1 row
+                    },
+                    inheritFromBefore: false
+                  }
+                }]
+              }),
+            }
+          ),
+      })
+
+      if (!insertResult.success) {
+        return { success: false, message: insertResult.message }
+      }
+      const insertRowResponse = insertResult.data
+
       if (!insertRowResponse.ok) {
         const errorData = await insertRowResponse.json().catch(() => ({}))
         throw new Error(`Failed to insert row: ${insertRowResponse.status} - ${errorData.error?.message || insertRowResponse.statusText}`)
@@ -299,31 +336,43 @@ export async function createGoogleSheetsRow(
       range = `${sheetName}!2:2`
       apiMethod = 'update'
     } else if (insertPosition === 'specific_row' && specificRow && sheetId !== undefined) {
-      // For specific row, insert a blank row at that position first
-      const insertRowResponse = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            requests: [{
-              insertDimension: {
-                range: {
-                  sheetId: sheetId,
-                  dimension: "ROWS",
-                  startIndex: Number(specificRow) - 1, // Convert to 0-indexed
-                  endIndex: Number(specificRow) // Insert 1 row
-                },
-                inheritFromBefore: false
-              }
-            }]
-          }),
-        }
-      )
-      
+      // For specific row, insert a blank row at that position first.
+      // Wrapped in `refreshAndRetry` (Q3, §A5).
+      const insertResult = await refreshAndRetry({
+        provider: 'google-sheets',
+        userId,
+        accessToken,
+        call: async (token) =>
+          fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                requests: [{
+                  insertDimension: {
+                    range: {
+                      sheetId: sheetId,
+                      dimension: "ROWS",
+                      startIndex: Number(specificRow) - 1, // Convert to 0-indexed
+                      endIndex: Number(specificRow) // Insert 1 row
+                    },
+                    inheritFromBefore: false
+                  }
+                }]
+              }),
+            }
+          ),
+      })
+
+      if (!insertResult.success) {
+        return { success: false, message: insertResult.message }
+      }
+      const insertRowResponse = insertResult.data
+
       if (!insertRowResponse.ok) {
         const errorData = await insertRowResponse.json().catch(() => ({}))
         throw new Error(`Failed to insert row: ${insertRowResponse.status} - ${errorData.error?.message || insertRowResponse.statusText}`)

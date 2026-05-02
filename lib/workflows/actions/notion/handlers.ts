@@ -216,12 +216,20 @@ export interface OutputField {
 
 /**
  * Helper function to make Notion API requests
+ *
+ * §A5 — when `userId` is provided, the underlying fetch is wrapped in
+ * `refreshAndRetry` (Q3) so a 401 from Notion produces a structured auth
+ * failure (refresh+retry once, then throw with the structured message).
+ * The existing retry loop still handles non-401 retryable statuses (429 /
+ * 502 / 503 / 504). Callers that omit `userId` retain the legacy behavior
+ * (no refresh on 401).
  */
 async function notionApiRequest(
   endpoint: string,
   method: string,
   accessToken: string,
-  body?: any
+  body?: any,
+  userId?: string,
 ) {
   const upperMethod = method.toUpperCase()
   const maxAttempts = ["GET", "PATCH"].includes(upperMethod) ? NOTION_RETRY_MAX_ATTEMPTS : 1
@@ -233,16 +241,39 @@ async function notionApiRequest(
     const timeout = setTimeout(() => controller.abort(), NOTION_TIMEOUT_MS)
 
     try {
-      const response = await fetch(`https://api.notion.com/v1${endpoint}`, {
-        method,
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Notion-Version": NOTION_API_VERSION,
-          "Content-Type": "application/json"
-        },
-        body: body ? JSON.stringify(body) : undefined,
-        signal: controller.signal
-      })
+      const doFetch = async (token: string) =>
+        fetch(`https://api.notion.com/v1${endpoint}`, {
+          method,
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Notion-Version": NOTION_API_VERSION,
+            "Content-Type": "application/json"
+          },
+          body: body ? JSON.stringify(body) : undefined,
+          signal: controller.signal
+        })
+
+      let response: Response
+      if (userId) {
+        const { refreshAndRetry } = await import('@/lib/workflows/actions/core/refreshAndRetry')
+        const result = await refreshAndRetry({
+          provider: 'notion',
+          userId,
+          accessToken,
+          call: doFetch,
+        })
+        if (!result.success) {
+          // Permanent auth failure — propagate as a structured error so the
+          // caller's outer catch surfaces the "reconnect" message.
+          const authErr: any = new Error(result.message)
+          authErr.status = 401
+          authErr.authFailure = true
+          throw authErr
+        }
+        response = result.data
+      } else {
+        response = await doFetch(accessToken)
+      }
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}))
@@ -463,7 +494,7 @@ export async function notionUpdatePage(
     let propertySchema: Record<string, { type: string; name: string }> = {}
     try {
       const getPageStart = Date.now()
-      const pageData = await notionApiRequest(`/pages/${pageId}`, "GET", accessToken)
+      const pageData = await notionApiRequest(`/pages/${pageId}`, "GET", accessToken, undefined, context.userId)
       logger.info('[Notion Update] GET page completed', {
         pageId,
         durationMs: Date.now() - getPageStart,
@@ -476,7 +507,7 @@ export async function notionUpdatePage(
         logger.info('Fetching database schema for property types:', databaseId)
 
         const getSchemaStart = Date.now()
-        const dbData = await notionApiRequest(`/databases/${databaseId}`, "GET", accessToken)
+        const dbData = await notionApiRequest(`/databases/${databaseId}`, "GET", accessToken, undefined, context.userId)
         logger.info('[Notion Update] GET database schema completed', {
           databaseId,
           durationMs: Date.now() - getSchemaStart,
@@ -726,7 +757,7 @@ export async function notionUpdatePage(
     })
 
     const patchStart = Date.now()
-    const result = await notionApiRequest(`/pages/${pageId}`, "PATCH", accessToken, payload)
+    const result = await notionApiRequest(`/pages/${pageId}`, "PATCH", accessToken, payload, context.userId)
     logger.info('[Notion Update] PATCH update completed', {
       pageId: result.id,
       url: result.url,
@@ -766,7 +797,7 @@ export async function notionRetrievePage(
     const accessToken = await getDecryptedAccessToken(context.userId, "notion")
     const pageId = context.dataFlowManager.resolveVariable(config.page_id)
     
-    const result = await notionApiRequest(`/pages/${pageId}`, "GET", accessToken)
+    const result = await notionApiRequest(`/pages/${pageId}`, "GET", accessToken, undefined, context.userId)
 
     return {
       success: true,
@@ -802,7 +833,7 @@ export async function notionArchivePage(
     const pageId = context.dataFlowManager.resolveVariable(config.page_id)
     const archived = config.archived === "true"
     
-    const result = await notionApiRequest(`/pages/${pageId}`, "PATCH", accessToken, { archived })
+    const result = await notionApiRequest(`/pages/${pageId}`, "PATCH", accessToken, { archived }, context.userId)
 
     return {
       success: true,
@@ -855,7 +886,7 @@ export async function notionCreateDatabase(
       payload.description = [{ type: "text", text: { content: description } }]
     }
 
-    const result = await notionApiRequest("/databases", "POST", accessToken, payload)
+    const result = await notionApiRequest("/databases", "POST", accessToken, payload, context.userId)
 
     return {
       success: true,
@@ -909,7 +940,7 @@ export async function notionQueryDatabase(
       payload.sorts = config.sorts
     }
 
-    const result = await notionApiRequest(`/databases/${databaseId}/query`, "POST", accessToken, payload)
+    const result = await notionApiRequest(`/databases/${databaseId}/query`, "POST", accessToken, payload, context.userId)
 
     return {
       success: true,
@@ -971,7 +1002,7 @@ export async function notionUpdateDatabase(
       payload.archived = archived
     }
 
-    const result = await notionApiRequest(`/databases/${databaseId}`, "PATCH", accessToken, payload)
+    const result = await notionApiRequest(`/databases/${databaseId}`, "PATCH", accessToken, payload, context.userId)
 
     return {
       success: true,
@@ -1031,7 +1062,7 @@ export async function notionAppendBlocks(
       payload.after = after
     }
 
-    const result = await notionApiRequest(`/blocks/${pageId}/children`, "PATCH", accessToken, payload)
+    const result = await notionApiRequest(`/blocks/${pageId}/children`, "PATCH", accessToken, payload, context.userId)
 
     return {
       success: true,
@@ -1075,7 +1106,7 @@ export async function notionUpdateBlock(
       payload.archived = archived
     }
 
-    const result = await notionApiRequest(`/blocks/${blockId}`, "PATCH", accessToken, payload)
+    const result = await notionApiRequest(`/blocks/${blockId}`, "PATCH", accessToken, payload, context.userId)
 
     return {
       success: true,
@@ -1106,7 +1137,7 @@ export async function notionDeleteBlock(
     const accessToken = await getDecryptedAccessToken(context.userId, "notion")
     const blockId = context.dataFlowManager.resolveVariable(config.block_id)
     
-    const result = await notionApiRequest(`/blocks/${blockId}`, "DELETE", accessToken)
+    const result = await notionApiRequest(`/blocks/${blockId}`, "DELETE", accessToken, undefined, context.userId)
 
     return {
       success: true,
@@ -1140,7 +1171,7 @@ export async function notionRetrieveBlockChildren(
     const filterType = context.dataFlowManager.resolveVariable(config.filterType)
 
     const params = new URLSearchParams({ page_size: pageSize.toString() })
-    const result = await notionApiRequest(`/blocks/${blockId}/children?${params}`, "GET", accessToken)
+    const result = await notionApiRequest(`/blocks/${blockId}/children?${params}`, "GET", accessToken, undefined, context.userId)
 
     let children = result.results || []
 
@@ -1189,7 +1220,7 @@ export async function notionListUsers(
     const pageSize = parseInt(config.page_size) || 100
     
     const params = new URLSearchParams({ page_size: pageSize.toString() })
-    const result = await notionApiRequest(`/users?${params}`, "GET", accessToken)
+    const result = await notionApiRequest(`/users?${params}`, "GET", accessToken, undefined, context.userId)
 
     return {
       success: true,
@@ -1220,7 +1251,7 @@ export async function notionRetrieveUser(
     const accessToken = await getDecryptedAccessToken(context.userId, "notion")
     const userId = context.dataFlowManager.resolveVariable(config.user_id)
     
-    const result = await notionApiRequest(`/users/${userId}`, "GET", accessToken)
+    const result = await notionApiRequest(`/users/${userId}`, "GET", accessToken, undefined, context.userId)
 
     return {
       success: true,
@@ -1269,7 +1300,7 @@ export async function notionCreateComment(
       payload.discussion_id = discussionId
     }
 
-    const result = await notionApiRequest("/comments", "POST", accessToken, payload)
+    const result = await notionApiRequest("/comments", "POST", accessToken, payload, context.userId)
 
     return {
       success: true,
@@ -1307,7 +1338,7 @@ export async function notionRetrieveComments(
       page_size: pageSize.toString() 
     })
     
-    const result = await notionApiRequest(`/comments?${params}`, "GET", accessToken)
+    const result = await notionApiRequest(`/comments?${params}`, "GET", accessToken, undefined, context.userId)
 
     return {
       success: true,
@@ -1359,7 +1390,7 @@ export async function notionSearch(
       }
     }
 
-    const result = await notionApiRequest("/search", "POST", accessToken, payload)
+    const result = await notionApiRequest("/search", "POST", accessToken, payload, context.userId)
 
     return {
       success: true,
@@ -1399,7 +1430,7 @@ export async function notionDuplicatePage(
     const includeChildren = config.include_children === true
 
     // First, retrieve the source page
-    const sourcePage = await notionApiRequest(`/pages/${sourcePageId}`, "GET", accessToken)
+    const sourcePage = await notionApiRequest(`/pages/${sourcePageId}`, "GET", accessToken, undefined, context.userId)
     
     // Extract title from properties
     let originalTitle = ""
@@ -1444,14 +1475,14 @@ export async function notionDuplicatePage(
 
     // Copy content blocks if requested
     if (includeContent) {
-      const blocksResponse = await notionApiRequest(`/blocks/${sourcePageId}/children`, "GET", accessToken)
+      const blocksResponse = await notionApiRequest(`/blocks/${sourcePageId}/children`, "GET", accessToken, undefined, context.userId)
       if (blocksResponse.results?.length > 0) {
         newPagePayload.children = blocksResponse.results
       }
     }
 
     // Create the new page
-    const newPage = await notionApiRequest("/pages", "POST", accessToken, newPagePayload)
+    const newPage = await notionApiRequest("/pages", "POST", accessToken, newPagePayload, context.userId)
 
     // TODO: If includeChildren is true, recursively duplicate child pages
 
@@ -1501,7 +1532,7 @@ export async function notionSyncDatabaseEntries(
       }
     }
 
-    const result = await notionApiRequest(`/databases/${databaseId}/query`, "POST", accessToken, payload)
+    const result = await notionApiRequest(`/databases/${databaseId}/query`, "POST", accessToken, payload, context.userId)
     
     // Categorize results
     const added: any[] = []
@@ -1592,7 +1623,7 @@ export async function notionFindOrCreateDatabaseItem(
       createIfNotFound
     })
 
-    const database = await notionApiRequest(`/databases/${databaseId}`, "GET", accessToken)
+    const database = await notionApiRequest(`/databases/${databaseId}`, "GET", accessToken, undefined, context.userId)
 
     const propertyInfo = resolveDatabaseProperty(database, searchPropertyInput)
     if (!propertyInfo) {
@@ -1616,7 +1647,8 @@ export async function notionFindOrCreateDatabaseItem(
       `/databases/${databaseId}/query`,
       "POST",
       accessToken,
-      searchPayload
+      searchPayload,
+      context.userId
     )
 
     // Step 2: If found, return existing item
@@ -1683,7 +1715,7 @@ export async function notionFindOrCreateDatabaseItem(
       properties: finalProperties
     }
 
-    const newItem = await notionApiRequest("/pages", "POST", accessToken, createPayload)
+    const newItem = await notionApiRequest("/pages", "POST", accessToken, createPayload, context.userId)
 
     logger.info("[Notion Find or Create] Created new item", { id: newItem.id })
 
@@ -1746,7 +1778,7 @@ export async function notionUpdateDatabaseItem(
     let propertySchema: Record<string, { type: string; name: string }> = {}
     if (databaseId) {
       try {
-        const dbData = await notionApiRequest(`/databases/${databaseId}`, "GET", accessToken)
+        const dbData = await notionApiRequest(`/databases/${databaseId}`, "GET", accessToken, undefined, context.userId)
         if (dbData.properties) {
           for (const [propName, propConfig] of Object.entries(dbData.properties) as any) {
             propertySchema[propName] = { type: propConfig.type, name: propName }
@@ -1839,7 +1871,7 @@ export async function notionUpdateDatabaseItem(
     // Make the update request
     const result = await notionApiRequest(`/pages/${itemId}`, "PATCH", accessToken, {
       properties: processedProperties
-    })
+    }, context.userId)
 
     logger.info("[Notion Update Database Item] Item updated successfully:", { itemId })
 
@@ -1907,7 +1939,8 @@ export async function notionArchiveDatabaseItem(
       `/pages/${itemId}`,
       "PATCH",
       accessToken,
-      payload
+      payload,
+      context.userId
     )
 
     logger.info("[Notion Archive Item] Item archived successfully:", { itemId })
@@ -1977,7 +2010,8 @@ export async function notionRestoreDatabaseItem(
       `/pages/${itemId}`,
       "PATCH",
       accessToken,
-      payload
+      payload,
+      context.userId
     )
 
     logger.info("[Notion Restore Item] Item restored successfully:", { itemId })
@@ -2106,7 +2140,8 @@ export async function notionAddBlock(
       `/blocks/${pageId}/children`,
       "PATCH",
       accessToken,
-      payload
+      payload,
+      context.userId
     )
 
     logger.info("[Notion Add Block] Block added successfully")
@@ -2172,7 +2207,9 @@ export async function notionGetBlock(
     const result = await notionApiRequest(
       `/blocks/${blockId}`,
       "GET",
-      accessToken
+      accessToken,
+      undefined,
+      context.userId
     )
 
     logger.info("[Notion Get Block] Block retrieved successfully")
@@ -2245,7 +2282,9 @@ export async function notionGetBlockChildren(
     const result = await notionApiRequest(
       `/blocks/${blockId}/children?${queryParams}`,
       "GET",
-      accessToken
+      accessToken,
+      undefined,
+      context.userId
     )
 
     logger.info("[Notion Get Block Children] Children retrieved successfully")
@@ -2306,14 +2345,18 @@ export async function notionGetPageWithChildren(
     const page = await notionApiRequest(
       `/pages/${pageId}`,
       "GET",
-      accessToken
+      accessToken,
+      undefined,
+      context.userId
     )
 
     // Get children blocks
     const childrenResult = await notionApiRequest(
       `/blocks/${pageId}/children?page_size=100`,
       "GET",
-      accessToken
+      accessToken,
+      undefined,
+      context.userId
     )
 
     let children = childrenResult.results || []
@@ -2327,7 +2370,9 @@ export async function notionGetPageWithChildren(
               const nestedResult = await notionApiRequest(
                 `/blocks/${block.id}/children?page_size=100`,
                 "GET",
-                accessToken
+                accessToken,
+                undefined,
+                context.userId
               )
               const nestedChildren = await getNestedChildren(nestedResult.results || [])
               return { ...block, children: nestedChildren }
@@ -2454,7 +2499,8 @@ export async function notionAdvancedDatabaseQuery(
       `/databases/${databaseId}/query`,
       "POST",
       accessToken,
-      payload
+      payload,
+      context.userId
     )
 
     logger.info("[Notion Advanced Query] Query completed successfully")
@@ -2516,7 +2562,9 @@ export async function notionGetPageProperty(
     const page = await notionApiRequest(
       `/pages/${pageId}`,
       "GET",
-      accessToken
+      accessToken,
+      undefined,
+      context.userId
     )
 
     if (!page.properties) {
@@ -2544,7 +2592,9 @@ export async function notionGetPageProperty(
     const propertyValue = await notionApiRequest(
       `/pages/${pageId}/properties/${propertyId}`,
       "GET",
-      accessToken
+      accessToken,
+      undefined,
+      context.userId
     )
 
     // Format the value based on type
@@ -2748,7 +2798,8 @@ export async function notionAddDatabaseProperty(
       `/databases/${databaseId}`,
       "PATCH",
       accessToken,
-      payload
+      payload,
+      context.userId
     )
 
     logger.info("[Notion Add Database Property] Property added successfully")
@@ -2818,7 +2869,8 @@ export async function notionRemoveDatabaseProperty(
       `/databases/${databaseId}`,
       "PATCH",
       accessToken,
-      payload
+      payload,
+      context.userId
     )
 
     logger.info("[Notion Remove Database Property] Property removed successfully")

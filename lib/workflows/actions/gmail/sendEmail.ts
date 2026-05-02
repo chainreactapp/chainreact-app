@@ -104,17 +104,17 @@ export async function sendGmailEmail(
 
     const accessToken = await getDecryptedAccessToken(userId, "gmail")
 
-    // Build a Gmail SDK client for the given access token. The send call is
-    // wrapped in `refreshAndRetry` (Q3) so a 401 from the SDK triggers one
-    // refresh-and-retry attempt with the new token. Building the client
-    // inside the closure means the retry uses the refreshed token end-to-end
-    // (the OAuth2 client carries the credentials).
+    // Build a Gmail SDK client for the given access token. Both the send
+    // call and the post-send labels.modify (§A5) are wrapped in
+    // `refreshAndRetry` (Q3) so a 401 triggers one refresh-and-retry attempt
+    // with the new token. Building the client inside the closure means the
+    // retry uses the refreshed token end-to-end (the OAuth2 client carries
+    // the credentials).
     const buildGmailClient = (token: string) => {
       const oauth2Client = new google.auth.OAuth2()
       oauth2Client.setCredentials({ access_token: token })
       return google.gmail({ version: 'v1', auth: oauth2Client })
     }
-    const gmail = buildGmailClient(accessToken)
 
     // Build email headers. After Q7 normalization the recipient fields are
     // always arrays, so header assembly is a single .join().
@@ -519,18 +519,27 @@ export async function sendGmailEmail(
 
     const result = sendResult.data
 
-    // Apply labels if specified. Best-effort; uses the original Gmail client
-    // (token may have been refreshed during the send retry — but `gmail.users
-    // .messages.modify` is rare enough that a stale-token failure here is
-    // logged-and-swallowed rather than failing the email).
+    // Apply labels if specified. Best-effort; wrapped in `refreshAndRetry`
+    // (Q3, §A5) so a stale-after-send token produces a structured auth
+    // signal + refresh attempt rather than a silent miss. Non-401 errors
+    // are still logged-and-swallowed so the email-sent success isn't
+    // overridden by a label-application failure.
     if (labels.length > 0 && result.data.id) {
       try {
-        await gmail.users.messages.modify({
-          userId: 'me',
-          id: result.data.id,
-          requestBody: {
-            addLabelIds: labels
-          }
+        await refreshAndRetry({
+          provider: 'gmail',
+          userId,
+          accessToken,
+          call: async (token) => {
+            const client = buildGmailClient(token)
+            return client.users.messages.modify({
+              userId: 'me',
+              id: result.data.id,
+              requestBody: {
+                addLabelIds: labels
+              }
+            })
+          },
         })
       } catch (labelError) {
         logger.error('Failed to apply labels:', labelError)

@@ -1,5 +1,6 @@
 import { ActionResult } from '../index'
 import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
+import { requireExplicitField } from '../core/requireExplicitField'
 import { ExecutionContext } from '../../execution/types'
 import { logger } from '@/lib/utils/logger'
 
@@ -11,6 +12,14 @@ export async function createOnedriveSharingLink(
   context: ExecutionContext
 ): Promise<ActionResult> {
   try {
+    // Q11 — linkScope controls how broadly the link can be shared.
+    // 'anonymous' is too permissive for a hidden default; previous silent
+    // `|| 'anonymous'` removed. Workflow author must explicitly choose
+    // 'anonymous' (external) or 'organization' (internal). UI recommends
+    // 'organization' for internal flows.
+    const missingRequired = requireExplicitField(config, 'linkScope')
+    if (missingRequired) return missingRequired as unknown as ActionResult
+
     const accessToken = await getDecryptedAccessToken(context.userId, "onedrive")
 
     // Resolve dynamic values
@@ -18,7 +27,7 @@ export async function createOnedriveSharingLink(
     const fileId = context.dataFlowManager.resolveVariable(config.fileId)
     const folderIdToShare = context.dataFlowManager.resolveVariable(config.folderIdToShare)
     const linkType = context.dataFlowManager.resolveVariable(config.linkType) || 'view'
-    const linkScope = context.dataFlowManager.resolveVariable(config.linkScope) || 'anonymous'
+    const linkScope = context.dataFlowManager.resolveVariable(config.linkScope)
     const expirationDateTime = context.dataFlowManager.resolveVariable(config.expirationDateTime)
     const password = context.dataFlowManager.resolveVariable(config.password)
 

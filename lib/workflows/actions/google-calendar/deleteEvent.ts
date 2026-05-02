@@ -1,6 +1,7 @@
 import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
 import { resolveValue } from '../core/resolveValue'
 import { ActionResult } from '../core/executeWait'
+import { requireExplicitField } from '../core/requireExplicitField'
 import { google } from 'googleapis'
 
 import { logger } from '@/lib/utils/logger'
@@ -23,10 +24,17 @@ export async function deleteGoogleCalendarEvent(
     // Pass input directly, not wrapped in an object
     const resolvedConfig = needsResolution ? resolveValue(config, input) : config
 
+    // Q11 — sendNotifications has user-facing side effects (auto-emails
+    // attendees on event delete). Previous silent default 'none' removed —
+    // the workflow author must explicitly choose. Existing workflows are
+    // backfilled to 'none' (matches prior behavior) via the backfill registry.
+    const missingRequired = requireExplicitField(resolvedConfig, 'sendNotifications')
+    if (missingRequired) return missingRequired as unknown as ActionResult
+
     let {
       calendarId = 'primary',
       eventId,
-      sendNotifications = 'none'
+      sendNotifications,
     } = resolvedConfig
 
     if (!eventId) {

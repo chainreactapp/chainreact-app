@@ -6,6 +6,9 @@ import { ActionResult } from '../core/executeWait'
 import { buildIdempotencyKey, type HandlerExecutionMeta } from '../core/idempotencyKey'
 import { hashPayload } from '../core/hashPayload'
 import { checkReplay, recordFired } from '../core/sessionSideEffects'
+import { resolveTimezone } from '../core/resolveContextDefaults'
+import { addMinutesToTime, parseTimeOrFail } from '../core/parseTimeOrFail'
+import { requireExplicitFields } from '../core/requireExplicitField'
 import { google } from 'googleapis'
 
 import { logger } from '@/lib/utils/logger'
@@ -37,6 +40,20 @@ export async function createGoogleCalendarEvent(
 
     const resolvedConfig = needsResolution ? resolveValue(config, input) : config
 
+    // Q11 — high-risk fields that have user-facing side effects MUST be
+    // explicitly set on workflow config. The previous silent defaults were:
+    //   sendNotifications=all       → auto-emails attendees on event creation
+    //   guestsCanInviteOthers=true  → invite list expands beyond config author
+    //   guestsCanSeeOtherGuests=true → exposes attendee email PII to attendees
+    // Existing workflows have these backfilled to the legacy values via
+    // lib/workflows/migrations/handlerDefaultsBackfillRegistry.ts (PR-G2).
+    const missingRequired = requireExplicitFields(resolvedConfig, [
+      'sendNotifications',
+      'guestsCanInviteOthers',
+      'guestsCanSeeOtherGuests',
+    ])
+    if (missingRequired) return missingRequired as unknown as ActionResult
+
     // Extract all config fields with new structure
     const {
       calendarId = 'primary',
@@ -54,9 +71,9 @@ export async function createGoogleCalendarEvent(
       attendees,
       notifications = [],
       googleMeet = null,
-      sendNotifications = 'all',
-      guestsCanInviteOthers = true,
-      guestsCanSeeOtherGuests = true,
+      sendNotifications,
+      guestsCanInviteOthers,
+      guestsCanSeeOtherGuests,
       guestsCanModify = false,
       visibility = 'default',
       transparency = 'opaque',
@@ -67,28 +84,31 @@ export async function createGoogleCalendarEvent(
     // Get the decrypted access token for Google
     const accessToken = await getDecryptedAccessToken(userId, "google-calendar")
 
-    // Handle timezone - auto-detect if not specified
-    const getUserTimezone = () => {
-      try {
-        return Intl.DateTimeFormat().resolvedOptions().timeZone
-      } catch {
-        return 'America/New_York' // fallback
+    // Q12 — resolve timezone via workspace → user → UTC, lazily. Only
+    // queries the DB when explicit `startTimeZone` (and `endTimeZone` for
+    // separate-tz events) is unset / 'auto'. Replaces the prior
+    // `Intl.DateTimeFormat().resolvedOptions().timeZone` (server tz) +
+    // 'America/New_York' fallback. The server's timezone is not a meaningful
+    // proxy for the workflow author's intent.
+    let cachedFallbackTz: string | null = null
+    const getFallbackTz = async (): Promise<string> => {
+      if (cachedFallbackTz === null) {
+        cachedFallbackTz = await resolveTimezone({
+          workspaceId: meta?.workspaceId,
+          userId,
+        })
       }
+      return cachedFallbackTz
     }
 
-    // Use startTimeZone for both start and end unless separateTimezones is enabled
-    let eventStartTimeZone = startTimeZone || getUserTimezone()
-    let eventEndTimeZone = separateTimezones && endTimeZone ? endTimeZone : eventStartTimeZone
-
-    // Auto-detect timezone if not set or set to 'auto'
-    if (!eventStartTimeZone || eventStartTimeZone === 'auto') {
-      eventStartTimeZone = getUserTimezone()
-      logger.info(`🌍 [Google Calendar] Auto-detected start timezone: ${eventStartTimeZone}`)
-    }
-
-    if (separateTimezones && (!eventEndTimeZone || eventEndTimeZone === 'auto')) {
-      eventEndTimeZone = getUserTimezone()
-      logger.info(`🌍 [Google Calendar] Auto-detected end timezone: ${eventEndTimeZone}`)
+    const explicitStartTz = startTimeZone && startTimeZone !== 'auto' ? startTimeZone : null
+    let eventStartTimeZone = explicitStartTz ?? (await getFallbackTz())
+    let eventEndTimeZone: string
+    if (separateTimezones) {
+      const explicitEndTz = endTimeZone && endTimeZone !== 'auto' ? endTimeZone : null
+      eventEndTimeZone = explicitEndTz ?? (await getFallbackTz())
+    } else {
+      eventEndTimeZone = eventStartTimeZone
     }
 
     // Build a Calendar SDK client for the given access token. The insert
@@ -101,24 +121,15 @@ export async function createGoogleCalendarEvent(
     }
     const calendar = buildCalendarClient(accessToken)
 
-    // Parse dates and times with proper validation
+    // Parse dates and times. Validation of the time component is handled
+    // separately below (Q11) — `parseDateTime` is now a pure formatter.
     const parseDateTime = (date: string, time: string) => {
-      // Handle special date values or use defaults
       if (!date || date === 'today') {
         date = new Date().toISOString().split('T')[0]
       }
-
-      // Handle special time values or use defaults
       if (!time || time === 'current') {
         time = new Date().toTimeString().slice(0, 5)
       }
-
-      // Validate time format (HH:MM)
-      if (!/^\d{2}:\d{2}$/.test(time)) {
-        time = '09:00' // Default to 9 AM if invalid format
-      }
-
-      // Combine date and time
       return `${date}T${time}:00`
     }
 
@@ -165,13 +176,41 @@ export async function createGoogleCalendarEvent(
         date: parseDate(endDate || startDate)
       }
     } else {
-      // Regular timed event
+      // Regular timed event.
+      //
+      // Q11 — strict HH:MM validation, NO silent substitution of '09:00' /
+      // '10:00'. The 'current' sentinel resolves to "now" deterministically
+      // (preserved); empty / null / undefined reuses 'current' semantics.
+      // Anything else must match HH:MM 24-hour or the handler fails.
+      let resolvedStartTime: string
+      if (!startTime || startTime === 'current') {
+        resolvedStartTime = new Date().toTimeString().slice(0, 5)
+      } else {
+        const parsed = parseTimeOrFail(startTime, 'startTime')
+        if (!parsed.ok) return parsed.failure as unknown as ActionResult
+        resolvedStartTime = parsed.raw
+      }
+
+      // Q11 — end-time defaults to start + 60 minutes (NOT a hardcoded
+      // '10:00'). Explicit end-time is validated strictly. 'current'
+      // sentinel resolves to "now" (preserved).
+      let resolvedEndTime: string
+      if (!endTime) {
+        resolvedEndTime = addMinutesToTime(resolvedStartTime, 60)
+      } else if (endTime === 'current') {
+        resolvedEndTime = new Date().toTimeString().slice(0, 5)
+      } else {
+        const parsed = parseTimeOrFail(endTime, 'endTime')
+        if (!parsed.ok) return parsed.failure as unknown as ActionResult
+        resolvedEndTime = parsed.raw
+      }
+
       eventData.start = {
-        dateTime: parseDateTime(startDate, startTime),
+        dateTime: parseDateTime(startDate, resolvedStartTime),
         timeZone: eventStartTimeZone
       }
       eventData.end = {
-        dateTime: parseDateTime(endDate || startDate, endTime || '10:00'),
+        dateTime: parseDateTime(endDate || startDate, resolvedEndTime),
         timeZone: eventEndTimeZone
       }
     }

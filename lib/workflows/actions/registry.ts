@@ -561,6 +561,8 @@ function createExecutionContextWrapper(handler: Function) {
       nodeId,
       actionType,
       meta: params.meta,
+      // PR-G1 (Q12) — workspace tier of timezone/locale resolution.
+      workspaceId: params.meta?.workspaceId,
       testMode: params.input?.testMode || false,
       dataFlowManager: {
         resolveVariable: (value: any) => resolveValueCore(value, params.input)
@@ -750,7 +752,7 @@ export const actionHandlerRegistry: Record<string, Function> = {
   "google_sheets_action_get_cell_value": (params: { config: any; userId: string; input: Record<string, any> }) =>
     getGoogleSheetsCellValue(params.config, params.userId, params.input),
   "google_sheets_action_create_spreadsheet": (params: { config: any; userId: string; input: Record<string, any> }) =>
-    createGoogleSpreadsheet(params.config, params.userId, params.input),
+    createGoogleSpreadsheet(params.config, params.userId, params.input, params.meta),
 
   // Microsoft Excel actions - wrapped to handle new calling convention
   "microsoft_excel_action_add_row": (params: { config: any; userId: string; input: Record<string, any> }) =>
@@ -774,11 +776,14 @@ export const actionHandlerRegistry: Record<string, Function> = {
   "microsoft_excel_action_add_multiple_rows": (params: { config: any; userId: string; input: Record<string, any> }) =>
     addMicrosoftExcelMultipleRows(params.config, params.userId, params.input),
 
-  // Google Calendar actions - wrapped to handle new calling convention
-  "google_calendar_action_create_event": (params: { config: any; userId: string; input: Record<string, any> }) =>
-    createGoogleCalendarEvent(params.config, params.userId, params.input),
-  "google_calendar_action_update_event": (params: { config: any; userId: string; input: Record<string, any> }) =>
-    updateGoogleCalendarEvent(params.config, params.userId, params.input),
+  // Google Calendar actions - wrapped to handle new calling convention.
+  // Note: createEvent / updateEvent receive `meta` so PR-G1 (Q12) workspace
+  // tier plumbing reaches the timezone resolver and PR-C4 (Q4) idempotency
+  // remains intact when invoked via the registry path.
+  "google_calendar_action_create_event": (params: { config: any; userId: string; input: Record<string, any>; meta?: any }) =>
+    createGoogleCalendarEvent(params.config, params.userId, params.input, params.meta),
+  "google_calendar_action_update_event": (params: { config: any; userId: string; input: Record<string, any>; meta?: any }) =>
+    updateGoogleCalendarEvent(params.config, params.userId, params.input, params.meta),
   "google_calendar_action_delete_event": (params: { config: any; userId: string; input: Record<string, any> }) =>
     deleteGoogleCalendarEvent(params.config, params.userId, params.input),
   "google_calendar_action_get_event": (params: { config: any; userId: string; input: Record<string, any> }) =>

@@ -31,6 +31,23 @@ afterEach(() => {
   resetHarness()
 })
 
+// PR-G2 (Q11) — high-risk fields are now required at the handler level.
+// Tests that aren't specifically pinning the require-failure shape supply
+// the recommended-safe values via this wrapper so the handler proceeds to
+// the behavior under test (timezone, attendees, idempotency, etc.).
+//
+// Tests that DO want to pin the require-failure shape (PR-G2 contract tests
+// in pr-g2-calendar-required-fields.test.ts) call the underlying handler
+// directly and supply the missing-field configuration explicitly.
+const RECOMMENDED_REQUIRED = {
+  sendNotifications: 'none' as const,
+  guestsCanInviteOthers: false,
+  guestsCanSeeOtherGuests: false,
+}
+
+const callCreate: typeof createGoogleCalendarEvent = (config: any, userId, input, meta?) =>
+  createGoogleCalendarEvent({ ...RECOMMENDED_REQUIRED, ...config }, userId, input, meta)
+
 // Bug class: timed event encoded as all-day (or vice versa) — produces an
 // event on the wrong day across timezones, with the wrong duration.
 describe("createGoogleCalendarEvent — timed event", () => {
@@ -46,7 +63,7 @@ describe("createGoogleCalendarEvent — timed event", () => {
       },
     })
 
-    const result = await createGoogleCalendarEvent(
+    const result = await callCreate(
       {
         title: "Standup",
         startDate: "2026-05-01",
@@ -77,10 +94,32 @@ describe("createGoogleCalendarEvent — timed event", () => {
     })
   })
 
-  test("falls back to a default end time of 10:00 when endTime is omitted", async () => {
+  // Q11 — end-time defaults to start + 60 minutes, computed from the
+  // actual start time. Replaces the prior silent '10:00' substitution
+  // (audit createEvent.ts:156).
+  test("end-time defaults to start + 60 minutes when endTime is omitted", async () => {
     mockCalendarApi.events.insert.mockResolvedValue({ data: { id: "x" } })
 
-    await createGoogleCalendarEvent(
+    await callCreate(
+      {
+        title: "T",
+        startDate: "2026-05-01",
+        startTime: "14:30",
+        startTimeZone: "America/New_York",
+      },
+      "user-1",
+      {},
+    )
+
+    const call = mockCalendarApi.events.insert.mock.calls[0][0]
+    // 14:30 + 60 min → 15:30 (anchored to start, not the legacy '10:00').
+    expect(call.requestBody.end.dateTime).toBe("2026-05-01T15:30:00")
+  })
+
+  test("end-time defaults to 10:00 when start is 09:00 (aligned with prior baseline)", async () => {
+    mockCalendarApi.events.insert.mockResolvedValue({ data: { id: "x" } })
+
+    await callCreate(
       {
         title: "T",
         startDate: "2026-05-01",
@@ -96,13 +135,83 @@ describe("createGoogleCalendarEvent — timed event", () => {
   })
 })
 
+// Q11 — strict HH:MM validation. Invalid format → INVALID_TIME_FORMAT
+// failure instead of silent '09:00' / '10:00' substitution
+// (audit createEvent.ts:100, :156).
+describe("createGoogleCalendarEvent — Q11 — time-format validation", () => {
+  test("invalid startTime format returns INVALID_TIME_FORMAT", async () => {
+    mockCalendarApi.events.insert.mockResolvedValue({ data: { id: "x" } })
+
+    const result: any = await callCreate(
+      {
+        title: "T",
+        startDate: "2026-05-01",
+        startTime: "9am", // bad format
+        startTimeZone: "America/New_York",
+      },
+      "user-1",
+      {},
+    )
+
+    expect(result).toMatchObject({
+      success: false,
+      category: "validation",
+      error: { code: "INVALID_TIME_FORMAT", path: "startTime" },
+    })
+    expect(mockCalendarApi.events.insert).not.toHaveBeenCalled()
+  })
+
+  test("invalid endTime format returns INVALID_TIME_FORMAT", async () => {
+    mockCalendarApi.events.insert.mockResolvedValue({ data: { id: "x" } })
+
+    const result: any = await callCreate(
+      {
+        title: "T",
+        startDate: "2026-05-01",
+        startTime: "09:00",
+        endTime: "noon", // bad format
+        startTimeZone: "America/New_York",
+      },
+      "user-1",
+      {},
+    )
+
+    expect(result).toMatchObject({
+      success: false,
+      category: "validation",
+      error: { code: "INVALID_TIME_FORMAT", path: "endTime" },
+    })
+    expect(mockCalendarApi.events.insert).not.toHaveBeenCalled()
+  })
+
+  test("'current' sentinel still resolves to now (preserved behavior)", async () => {
+    mockCalendarApi.events.insert.mockResolvedValue({ data: { id: "x" } })
+
+    const result: any = await callCreate(
+      {
+        title: "T",
+        startDate: "2026-05-01",
+        startTime: "current",
+        endTime: "current",
+        startTimeZone: "America/New_York",
+      },
+      "user-1",
+      {},
+    )
+
+    // Doesn't fail — current is a valid sentinel.
+    expect(result.success).toBe(true)
+    expect(mockCalendarApi.events.insert).toHaveBeenCalledTimes(1)
+  })
+})
+
 // Bug class: all-day events shifting across timezones if encoded with
 // dateTime. The contract is that all-day events use `date` only.
 describe("createGoogleCalendarEvent — all-day event", () => {
   test("uses {date} (not {dateTime, timeZone}) when allDay=true", async () => {
     mockCalendarApi.events.insert.mockResolvedValue({ data: { id: "ad-1" } })
 
-    await createGoogleCalendarEvent(
+    await callCreate(
       {
         title: "Holiday",
         allDay: true,
@@ -127,7 +236,7 @@ describe("createGoogleCalendarEvent — attendees", () => {
   test("filters out malformed entries and keeps the rest", async () => {
     mockCalendarApi.events.insert.mockResolvedValue({ data: { id: "e" } })
 
-    await createGoogleCalendarEvent(
+    await callCreate(
       {
         title: "T",
         startDate: "2026-05-01",
@@ -148,7 +257,7 @@ describe("createGoogleCalendarEvent — attendees", () => {
   test("omits attendees entirely when none are valid", async () => {
     mockCalendarApi.events.insert.mockResolvedValue({ data: { id: "e" } })
 
-    await createGoogleCalendarEvent(
+    await callCreate(
       {
         title: "T",
         startDate: "2026-05-01",
@@ -172,7 +281,7 @@ describe("createGoogleCalendarEvent — Q7 — recipient parsing", () => {
   test("CSV string of attendees is split and trimmed", async () => {
     mockCalendarApi.events.insert.mockResolvedValue({ data: { id: "e" } })
 
-    await createGoogleCalendarEvent(
+    await callCreate(
       {
         title: "T",
         startDate: "2026-05-01",
@@ -194,7 +303,7 @@ describe("createGoogleCalendarEvent — Q7 — recipient parsing", () => {
   test("array form passes through unchanged", async () => {
     mockCalendarApi.events.insert.mockResolvedValue({ data: { id: "e" } })
 
-    await createGoogleCalendarEvent(
+    await callCreate(
       {
         title: "T",
         startDate: "2026-05-01",
@@ -215,7 +324,7 @@ describe("createGoogleCalendarEvent — Q7 — recipient parsing", () => {
   test("array containing a CSV string flattens to a single attendee list", async () => {
     mockCalendarApi.events.insert.mockResolvedValue({ data: { id: "e" } })
 
-    await createGoogleCalendarEvent(
+    await callCreate(
       {
         title: "T",
         startDate: "2026-05-01",
@@ -249,7 +358,7 @@ describe("createGoogleCalendarEvent — Google Meet", () => {
       },
     })
 
-    const result = await createGoogleCalendarEvent(
+    const result = await callCreate(
       {
         title: "T",
         startDate: "2026-05-01",
@@ -271,7 +380,7 @@ describe("createGoogleCalendarEvent — Google Meet", () => {
   test("does NOT add conferenceData when googleMeet is false/absent", async () => {
     mockCalendarApi.events.insert.mockResolvedValue({ data: { id: "e" } })
 
-    await createGoogleCalendarEvent(
+    await callCreate(
       { title: "T", startDate: "2026-05-01", startTime: "09:00" },
       "user-1",
       {},
@@ -292,7 +401,7 @@ describe("createGoogleCalendarEvent — failure paths", () => {
   test("returns auth failure when token retrieval fails (no SDK call fired)", async () => {
     setMockToken(null)
 
-    const result = await createGoogleCalendarEvent(
+    const result = await callCreate(
       { title: "T", startDate: "2026-05-01", startTime: "09:00" },
       "user-1",
       {},
@@ -312,7 +421,7 @@ describe("createGoogleCalendarEvent — failure paths", () => {
       response: { data: { error: { message: "Calendar usage limits exceeded" } } },
     })
 
-    const result = await createGoogleCalendarEvent(
+    const result = await callCreate(
       { title: "T", startDate: "2026-05-01", startTime: "09:00" },
       "user-1",
       {},
@@ -339,7 +448,7 @@ describe("createGoogleCalendarEvent — Q3 — 401 handling", () => {
       )
       .mockResolvedValueOnce({ data: { id: "evt-after-refresh" } })
 
-    const result = await createGoogleCalendarEvent(
+    const result = await callCreate(
       { title: "T", startDate: "2026-05-01", startTime: "09:00" },
       "user-1",
       {},
@@ -357,7 +466,7 @@ describe("createGoogleCalendarEvent — Q3 — 401 handling", () => {
       Object.assign(new Error("Unauthorized"), { code: 401 }),
     )
 
-    const result = await createGoogleCalendarEvent(
+    const result = await callCreate(
       { title: "T", startDate: "2026-05-01", startTime: "09:00" },
       "user-1",
       {},
@@ -377,7 +486,7 @@ describe("createGoogleCalendarEvent — Q3 — 401 handling", () => {
       Object.assign(new Error("Unauthorized"), { code: 401 }),
     )
 
-    const result = await createGoogleCalendarEvent(
+    const result = await callCreate(
       { title: "T", startDate: "2026-05-01", startTime: "09:00" },
       "user-1",
       {},
@@ -414,7 +523,7 @@ describe("createGoogleCalendarEvent — Q4 — idempotency within session", () =
       data: { id: "evt-1", htmlLink: "https://link" },
     })
 
-    const result = await createGoogleCalendarEvent(config, "user-1", {}, meta)
+    const result = await callCreate(config, "user-1", {}, meta)
     expect(result.success).toBe(true)
     expect(mockCalendarApi.events.insert).toHaveBeenCalledTimes(1)
     const records = getSessionRecordCalls()
@@ -425,10 +534,10 @@ describe("createGoogleCalendarEvent — Q4 — idempotency within session", () =
 
   test("replay with matching payload returns cached, no SDK call", async () => {
     mockCalendarApi.events.insert.mockResolvedValue({ data: { id: "evt-1" } })
-    const first = await createGoogleCalendarEvent(config, "user-1", {}, meta)
+    const first = await callCreate(config, "user-1", {}, meta)
 
     mockCalendarApi.events.insert.mockClear()
-    const second = await createGoogleCalendarEvent(config, "user-1", {}, meta)
+    const second = await callCreate(config, "user-1", {}, meta)
     expect(second.success).toBe(true)
     expect(mockCalendarApi.events.insert).not.toHaveBeenCalled()
     expect(second.output?.eventId).toBe(first.output?.eventId)
@@ -444,7 +553,7 @@ describe("createGoogleCalendarEvent — Q4 — idempotency within session", () =
       "mismatch",
     )
 
-    const result = await createGoogleCalendarEvent(config, "user-1", {}, meta)
+    const result = await callCreate(config, "user-1", {}, meta)
     expect(result.success).toBe(false)
     expect(result.error).toBe("PAYLOAD_MISMATCH")
     expect(mockCalendarApi.events.insert).not.toHaveBeenCalled()
@@ -452,11 +561,11 @@ describe("createGoogleCalendarEvent — Q4 — idempotency within session", () =
 
   test("different sessionId fires the SDK again (rerun)", async () => {
     mockCalendarApi.events.insert.mockResolvedValue({ data: { id: "evt-1" } })
-    await createGoogleCalendarEvent(config, "user-1", {}, meta)
+    await callCreate(config, "user-1", {}, meta)
     mockCalendarApi.events.insert.mockClear()
 
     mockCalendarApi.events.insert.mockResolvedValue({ data: { id: "evt-2" } })
-    await createGoogleCalendarEvent(config, "user-1", {}, {
+    await callCreate(config, "user-1", {}, {
       ...meta,
       executionSessionId: "session-2",
     })

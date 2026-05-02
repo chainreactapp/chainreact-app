@@ -256,7 +256,7 @@ Schema-declared multi-recipient / multi-value fields (Gmail / Outlook `to`/`cc`/
 - Every action handler's **principal outbound write call** must be wrapped in `refreshAndRetry` from [`lib/workflows/actions/core/refreshAndRetry.ts`](./lib/workflows/actions/core/refreshAndRetry.ts).
 - Auth scheme is decided by the registry at [`lib/integrations/authSchemes.ts`](./lib/integrations/authSchemes.ts). Add a new provider there before adding a handler that uses it.
 - OAuth-with-refresh providers (Google / Microsoft / Notion / HubSpot / Airtable / Mailchimp / etc.): on 401 → `tokenRefreshService.refresh(provider, userId)` → retry once → permanent failure → `token_revoked` health signal. Non-refreshable (Slack / Discord / GitHub / Stripe / Shopify offline tokens): on 401 → `action_required` health signal immediately, no refresh attempt.
-- Auxiliary calls (header GETs, metadata fetches, post-send lookups) are NOT yet wrapped — see [`/learning/docs/pre-launch-cleanup.md`](./learning/docs/pre-launch-cleanup.md) §A5.
+- Auxiliary calls (header GETs, metadata fetches, post-send lookups, per-share permissions, schema reads) are wrapped too — Sheets / Drive / Outlook sentitems / Gmail labels.modify / Airtable schema GETs / all Notion `notionApiRequest` call sites in `handlers.ts`. The Notion helper itself takes an optional `userId` and wraps the underlying fetch in `refreshAndRetry` when provided. See [`/learning/docs/pre-launch-cleanup.md`](./learning/docs/pre-launch-cleanup.md) §A5 (DONE).
 - See [`/learning/docs/handler-contracts.md`](./learning/docs/handler-contracts.md) Q3.
 
 ## Within-Session Idempotency — session_side_effects (Q4)
@@ -274,6 +274,15 @@ Schema-declared multi-recipient / multi-value fields (Gmail / Outlook `to`/`cc`/
 - Handlers do NOT catch `MissingVariableError` themselves — the engine layer owns the catch-and-convert.
 - Direct handler tests (`__tests__/nodes/*`) do not need to assert missing-variable engine wrapping; engine-level tests in `__tests__/workflows/engine-missing-variable.test.ts` own that contract.
 - See [`/learning/docs/handler-contracts.md`](./learning/docs/handler-contracts.md) (Q2) and [`/learning/docs/resolver-consolidation-design.md`](./learning/docs/resolver-consolidation-design.md).
+
+## Handler Defaults — No Hidden High-Risk Defaults (Q11) + TZ/Locale Resolution (Q12)
+- High-risk defaults (auto-notify, visibility/sharing, consent/compliance, AI behavior) MUST NOT be silently supplied by handlers. The audit at [`learning/docs/handler-defaults-audit.md`](./learning/docs/handler-defaults-audit.md) is the source-of-truth list. PR-G0 lands the helpers + contracts; PR-G1..G6 apply the row-by-row decisions.
+- Missing high-risk field → standardized config failure shape from [`requireExplicitField`](./lib/workflows/actions/core/requireExplicitField.ts): `{success:false, category:'config', error:{code:'MISSING_REQUIRED_FIELD', path}, message}`. Mirrors the Q2 MISSING_VARIABLE pattern.
+- Per-PR rule: handler change + Zod schema marking the field required ship in the same PR-Gn. Visual UI polish (recommended-value labels) is a separate follow-up.
+- **Existing-data migration** is mandatory before each PR-Gn removes a handler default. Append entries to [`lib/workflows/migrations/handlerDefaultsBackfillRegistry.ts`](./lib/workflows/migrations/handlerDefaultsBackfillRegistry.ts), then run `tsx scripts/migrate-handler-defaults.ts --pr=PR-Gn`. Idempotent: only writes when `config[fieldName]` is `undefined` / `null`. `0` / `false` are valid explicit choices and are preserved (Q5).
+- **Timezone / locale resolution** uses [`resolveTimezone`](./lib/workflows/actions/core/resolveContextDefaults.ts) / `resolveLocale`: workspace setting → user setting → `'UTC'` / `'en_US'`. Reads from `workspaces.{timezone,locale}` and `user_profiles.{timezone,locale}` (added in migration `20260501000000`). Invalid IANA / empty values fall through, never hard-fail.
+- Time-string validation uses [`parseTimeOrFail`](./lib/workflows/actions/core/parseTimeOrFail.ts) — strict 24h `HH:MM`. Replaces silent `'09:00'` / `'10:00'` substitutions in Calendar / Outlook handlers (audit Change rows). End-time-from-start uses `addMinutesToTime`.
+- Contracts: [`/learning/docs/handler-contracts.md`](./learning/docs/handler-contracts.md) Q11 (no hidden defaults) + Q12 (tz/locale resolution).
 
 ## Webhook-First Rule
 **Always use webhooks over polling when available.** Only use polling if no webhook exists or webhook requires enterprise plan.

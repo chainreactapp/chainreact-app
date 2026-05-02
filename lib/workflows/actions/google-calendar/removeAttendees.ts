@@ -1,6 +1,7 @@
 import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
 import { resolveValue } from '../core/resolveValue'
 import { ActionResult } from '../core/executeWait'
+import { requireExplicitField } from '../core/requireExplicitField'
 import { google } from 'googleapis'
 
 import { logger } from '@/lib/utils/logger'
@@ -22,12 +23,17 @@ export async function removeGoogleCalendarAttendees(
 
     const resolvedConfig = needsResolution ? resolveValue(config, input) : config
 
+    // Q11 — sendNotifications has user-facing side effects (auto-emails
+    // attendees on attendee changes). Previous silent default 'all' removed.
+    const missingRequired = requireExplicitField(resolvedConfig, 'sendNotifications')
+    if (missingRequired) return missingRequired as unknown as ActionResult
+
     const {
       calendarId = 'primary',
       eventId,
       attendeesToRemove,
       removeAllAttendees = false,
-      sendNotifications = 'all'
+      sendNotifications,
     } = resolvedConfig
 
     if (!eventId) {

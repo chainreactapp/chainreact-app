@@ -163,6 +163,9 @@ describe("uploadGoogleDriveFile — sharing", () => {
         fileFromNode: makeInlineFile("hi"),
         shareWith: ["alice@x.com", "bob@x.com"],
         sharePermission: "writer",
+        // PR-G3 (Q11) — shareNotification is required when shareWith is
+        // non-empty. Tests pinning the share-path behavior supply it.
+        shareNotification: true,
       },
       "user-1",
       {},
@@ -193,6 +196,7 @@ describe("uploadGoogleDriveFile — sharing", () => {
         sourceType: "node",
         fileFromNode: makeInlineFile("hi"),
         shareWith: ["bad@x.com", "good@x.com"],
+        shareNotification: true,
       },
       "user-1",
       {},
@@ -380,6 +384,8 @@ describe("uploadGoogleDriveFile — Q8 — safety floors", () => {
       sourceType: "node",
       fileFromNode: makeInlineFile("hi", "doc.txt", "text/plain"),
       shareWith: ["alice@example.com"],
+      // PR-G3 (Q11) — shareNotification required when shareWith non-empty.
+      shareNotification: true,
     },
     knownSecrets: ["mock-token-12345"],
     knownPii: ["alice@example.com"],

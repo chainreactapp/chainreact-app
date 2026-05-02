@@ -16,6 +16,7 @@ import { logger } from '@/lib/utils/logger'
 import type { ActionResult } from './core/executeWait'
 import type { ExecutionContext } from '../core/executeWorkflow'
 import { resolveValue } from './core/resolveValue'
+import { missingRequiredFieldAsResult } from './core/requireExplicitField'
 
 // Helper to create supabase client for fetching user profile
 const getSupabase = () => createClient(
@@ -202,19 +203,35 @@ type TaskType = 'respond' | 'extract' | 'summarize' | 'classify' | 'translate' |
 
 /**
  * Build prompt from action type configuration (like Zapier's pre-built actions)
- * This converts the structured config into an effective prompt
+ * This converts the structured config into an effective prompt.
+ *
+ * Q11 — when `actionType === 'respond'`, `respondInstructions` is required.
+ * The prior silent fallback ('Respond helpfully to the incoming message')
+ * is removed: AI behavior is too central to workflow output to silently
+ * substitute. Returns `{ ok: false, missingField }` so the caller can
+ * surface MISSING_REQUIRED_FIELD without firing the LLM call.
  */
-function buildPromptFromActionType(config: any): { prompt: string; taskType: TaskType } {
+type BuildPromptResult =
+  | { ok: true; prompt: string; taskType: TaskType }
+  | { ok: false; missingField: string }
+
+function buildPromptFromActionType(config: any): BuildPromptResult {
   const actionType = config.actionType || 'custom'
 
   switch (actionType) {
-    case 'respond':
-      return {
-        prompt: config.respondInstructions || 'Respond helpfully to the incoming message',
-        taskType: 'respond'
+    case 'respond': {
+      const instructions = config.respondInstructions
+      if (instructions === undefined || instructions === null || instructions === '') {
+        return { ok: false, missingField: 'respondInstructions' }
       }
+      return {
+        ok: true,
+        prompt: instructions,
+        taskType: 'respond',
+      }
+    }
 
-    case 'extract':
+    case 'extract': {
       const fields = config.extractFields || ''
       // Parse fields - could be a list or a description
       const fieldLines = fields.split('\n').filter((l: string) => l.trim())
@@ -222,17 +239,19 @@ function buildPromptFromActionType(config: any): { prompt: string; taskType: Tas
 
       if (isFieldList && fieldLines.length > 0) {
         return {
+          ok: true,
           prompt: `Extract the following fields from the input:\n${fieldLines.map((f: string) => `- ${f.trim()}`).join('\n')}\n\nReturn ONLY a JSON object with these exact field names.`,
-          taskType: 'extract'
-        }
-      } else {
-        return {
-          prompt: `${fields}\n\nExtract the requested information and return it as structured data.`,
-          taskType: 'extract'
+          taskType: 'extract',
         }
       }
+      return {
+        ok: true,
+        prompt: `${fields}\n\nExtract the requested information and return it as structured data.`,
+        taskType: 'extract',
+      }
+    }
 
-    case 'summarize':
+    case 'summarize': {
       const format = config.summarizeFormat || 'bullets'
       const focus = config.summarizeFocus || ''
       const formatInstructions: Record<string, string> = {
@@ -242,11 +261,13 @@ function buildPromptFromActionType(config: any): { prompt: string; taskType: Tas
         detailed: 'Provide a detailed summary with clear sections'
       }
       return {
+        ok: true,
         prompt: `${formatInstructions[format]}${focus ? `. Focus on: ${focus}` : ''}`,
-        taskType: 'summarize'
+        taskType: 'summarize',
       }
+    }
 
-    case 'classify':
+    case 'classify': {
       const categories = config.classifyCategories || ''
       const allowMultiple = config.classifyMultiple === 'multiple'
 
@@ -265,11 +286,13 @@ function buildPromptFromActionType(config: any): { prompt: string; taskType: Tas
       }
 
       return {
+        ok: true,
         prompt: `Classify the input into ${allowMultiple ? 'one or more of' : 'exactly one of'} these categories:\n${categoryList.map(c => `- ${c}`).join('\n')}\n\nReturn JSON with "category"${allowMultiple ? ' (array)' : ''}, "confidence" (0-1), and "reasoning".`,
-        taskType: 'classify'
+        taskType: 'classify',
       }
+    }
 
-    case 'translate':
+    case 'translate': {
       const targetLang = config.translateTo === 'other' ? config.translateToCustom : config.translateTo
       const preserveFormatting = config.translatePreserve !== 'no'
       const langNames: Record<string, string> = {
@@ -280,11 +303,13 @@ function buildPromptFromActionType(config: any): { prompt: string; taskType: Tas
       const langName = langNames[targetLang] || targetLang || 'Spanish'
 
       return {
+        ok: true,
         prompt: `Translate the input to ${langName}.${preserveFormatting ? ' Preserve any formatting (markdown, HTML, etc.).' : ''} Return ONLY the translated text, nothing else.`,
-        taskType: 'translate'
+        taskType: 'translate',
       }
+    }
 
-    case 'generate':
+    case 'generate': {
       const genType = config.generateType || 'email'
       const instructions = config.generateInstructions || ''
       const typeContext: Record<string, string> = {
@@ -297,15 +322,18 @@ function buildPromptFromActionType(config: any): { prompt: string; taskType: Tas
       }
 
       return {
+        ok: true,
         prompt: `${typeContext[genType]}:\n${instructions}`,
-        taskType: 'generate'
+        taskType: 'generate',
       }
+    }
 
     case 'custom':
     default:
       return {
+        ok: true,
         prompt: config.prompt || '',
-        taskType: 'custom'
+        taskType: 'custom',
       }
   }
 }
@@ -622,9 +650,16 @@ export async function executeAIAgentAction(
       hasSignatureConfig: !!config.includeSignature
     })
 
-    // Step 2: Build prompt from action type OR use custom prompt
-    // This converts structured config (like Zapier's UI) into an effective prompt
-    const { prompt: builtPrompt, taskType: configuredTaskType } = buildPromptFromActionType(config)
+    // Step 2: Build prompt from action type OR use custom prompt.
+    // This converts structured config (like Zapier's UI) into an effective
+    // prompt. Q11 — when actionType='respond' lacks an explicit
+    // respondInstructions, the builder returns ok:false and the handler
+    // surfaces MISSING_REQUIRED_FIELD without firing the LLM call.
+    const promptResult = buildPromptFromActionType(config)
+    if (!promptResult.ok) {
+      return missingRequiredFieldAsResult(promptResult.missingField)
+    }
+    const { prompt: builtPrompt, taskType: configuredTaskType } = promptResult
     const userPrompt = await resolveValue(builtPrompt, input, context.userId, context)
 
     logger.info('[AI Agent] Action type processed', {

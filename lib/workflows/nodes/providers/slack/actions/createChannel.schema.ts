@@ -29,7 +29,7 @@ export const createChannelActionSchema: NodeComponent = {
       label: "Visibility",
       type: "select",
       required: true,
-      defaultValue: "public",
+      description: "Required (Q11). Recommended: Private — public channels are discoverable by the entire workspace.",
       options: [
         { value: "public", label: "Public" },
         { value: "private", label: "Private" }

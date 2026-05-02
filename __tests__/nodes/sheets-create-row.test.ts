@@ -328,6 +328,62 @@ describe("createGoogleSheetsRow — Q3 — 401 handling", () => {
     expect(getFetchCalls().filter((c) => c.method === "POST")).toHaveLength(1)
     expect(getHealthEngineCalls()).toHaveLength(1)
   })
+
+  // §A5 — auxiliary header GET is also wrapped in `refreshAndRetry`. A
+  // transient 401 on the header read recovers via refresh+retry, then the
+  // write proceeds normally.
+  test("§A5 — header GET 401 → refresh+retry → write proceeds → success", async () => {
+    setMockTokenRefreshOutcome("success")
+    fetchMock
+      // Header GET first attempt 401.
+      .mockResponseOnce("", { status: 401 })
+      // Header GET retry succeeds.
+      .mockResponseOnce(JSON.stringify({ values: [["Email"]] }))
+      // Append POST succeeds with the refreshed token.
+      .mockResponseOnce(
+        JSON.stringify({ updates: { updatedRange: "Sheet1!A2:A2", updatedRows: 1 } }),
+      )
+
+    const result = await createGoogleSheetsRow(
+      {
+        spreadsheetId: "ss-1",
+        sheetName: "Sheet1",
+        newRow_Email: "alice@x.com",
+      },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(true)
+    // 2 GETs (header retry) + 1 POST (append).
+    expect(getFetchCalls().filter((c) => c.method === "GET")).toHaveLength(2)
+    expect(getFetchCalls().filter((c) => c.method === "POST")).toHaveLength(1)
+    expect(getHealthEngineCalls()).toHaveLength(0)
+  })
+
+  // §A5 — permanent 401 on the header GET surfaces as auth failure before
+  // any write attempt. No POST should fire.
+  test("§A5 — header GET permanent 401 → auth failure, no write attempted", async () => {
+    setMockTokenRefreshOutcome("success")
+    fetchMock
+      .mockResponseOnce("", { status: 401 })
+      .mockResponseOnce("", { status: 401 })
+
+    const result = await createGoogleSheetsRow(
+      {
+        spreadsheetId: "ss-1",
+        sheetName: "Sheet1",
+        newRow_Email: "alice@x.com",
+      },
+      "user-1",
+      {},
+    )
+
+    expect(result.success).toBe(false)
+    expect(result.message).toMatch(/reconnect|token|refresh/i)
+    expect(getFetchCalls().filter((c) => c.method === "POST")).toHaveLength(0)
+    expect(getHealthEngineCalls()).toHaveLength(1)
+  })
 })
 
 // Q4 — within-session idempotency.

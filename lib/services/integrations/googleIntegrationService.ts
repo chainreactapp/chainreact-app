@@ -84,6 +84,7 @@ export class GoogleIntegrationService {
       actionType: node.data?.type ?? nodeType,
       provider: 'google-sheets',
       testMode: context.testMode,
+      workspaceId: context.workspaceId,
     }
 
     // Import actual implementations
@@ -115,7 +116,7 @@ export class GoogleIntegrationService {
         
       case "google_sheets_action_create_spreadsheet":
         const { createGoogleSpreadsheet } = await import('@/lib/workflows/actions/googleSheets')
-        return await createGoogleSpreadsheet(config, context.userId, context.data || {})
+        return await createGoogleSpreadsheet(config, context.userId, context.data || {}, meta)
         
       default:
         throw new Error(`Google Sheets action '${nodeType}' is not yet implemented`)
@@ -201,6 +202,7 @@ export class GoogleIntegrationService {
       actionType: node.data?.type ?? nodeType,
       provider: 'google-calendar',
       testMode: context.testMode,
+      workspaceId: context.workspaceId,
     }
 
     switch (nodeType) {
@@ -266,6 +268,7 @@ export class GoogleIntegrationService {
         actionType: node.data?.type,
         provider: 'google-drive',
         testMode: context.testMode,
+        workspaceId: context.workspaceId,
       }
       return await uploadGoogleDriveFile(enrichedConfig, context.userId, context.data || {}, meta)
     } catch (error: any) {
@@ -295,6 +298,7 @@ export class GoogleIntegrationService {
       actionType: node.data?.type,
       provider: 'google-drive',
       testMode: context.testMode,
+      workspaceId: context.workspaceId,
     }
     return await uploadGoogleDriveFile(config, context.userId, context.data || {}, meta)
   }

@@ -1,6 +1,10 @@
 import { getDecryptedAccessToken } from '../core/getDecryptedAccessToken'
 import { resolveValue } from '../core/resolveValue'
 import { ActionResult } from '../core/executeWait'
+import type { HandlerExecutionMeta } from '../core/idempotencyKey'
+import { resolveTimezone } from '../core/resolveContextDefaults'
+import { invalidTimeFormat, parseTimeOrFail } from '../core/parseTimeOrFail'
+import { missingRequiredField } from '../core/requireExplicitField'
 
 import { logger } from '@/lib/utils/logger'
 
@@ -10,7 +14,8 @@ import { logger } from '@/lib/utils/logger'
 export async function createOutlookCalendarEvent(
   config: any,
   userId: string,
-  input: Record<string, any>
+  input: Record<string, any>,
+  meta?: HandlerExecutionMeta,
 ): Promise<ActionResult> {
   try {
     // Resolve config values if they contain template variables
@@ -102,12 +107,21 @@ export async function createOutlookCalendarEvent(
       processedConfig.startTime = '00:00'
       processedConfig.endTime = '23:59'
     } else if (duration === 'custom') {
-      // Use custom end date/time if provided
+      // Q11 — when duration='custom', customEndTime MUST be supplied
+      // explicitly. Silent '17:00' substitution is removed (audit
+      // createCalendarEvent.ts:110).
+      if (!resolvedConfig.customEndTime) {
+        return missingRequiredField('customEndTime') as unknown as ActionResult
+      }
+      const customEndParsed = parseTimeOrFail(resolvedConfig.customEndTime, 'customEndTime')
+      if (!customEndParsed.ok) {
+        return customEndParsed.failure as unknown as ActionResult
+      }
       processedConfig.isAllDay = false
       processedConfig.startDate = formattedDate
       processedConfig.startTime = calculatedStartTime
       processedConfig.endDate = resolvedConfig.customEndDate || formattedDate
-      processedConfig.endTime = resolvedConfig.customEndTime || '17:00'
+      processedConfig.endTime = customEndParsed.raw
     } else {
       // Calculate end time based on duration
       processedConfig.isAllDay = false
@@ -155,42 +169,48 @@ export async function createOutlookCalendarEvent(
     // Get the decrypted access token for Microsoft Outlook
     const accessToken = await getDecryptedAccessToken(userId, "microsoft-outlook")
 
-    // Handle timezone - if "user-timezone" is selected, use the browser's timezone
-    let eventTimeZone = timeZone
-    if (timeZone === 'user-timezone' || !timeZone) {
-      // Use Intl API to get the user's timezone
-      eventTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
-      logger.info(`[Outlook Calendar] Auto-detected user timezone: ${eventTimeZone}`)
-    }
+    // Q12 — resolve timezone via workspace → user → UTC. Replaces
+    // `Intl.DateTimeFormat().resolvedOptions().timeZone` (server tz) so the
+    // event timezone reflects the workspace/user, not the runtime host.
+    const fallbackTimezone = await resolveTimezone({
+      workspaceId: meta?.workspaceId,
+      userId,
+    })
+    const eventTimeZone = timeZone && timeZone !== 'user-timezone' ? timeZone : fallbackTimezone
 
-    // Parse dates and times with proper validation
+    // Q11 — strict HH:MM validation. The 'current' sentinel resolves to
+    // "now"; an invalid format string returns INVALID_TIME_FORMAT instead
+    // of the prior silent '09:00' substitution
+    // (audit createCalendarEvent.ts:190).
+    let timeValidationFailure: ActionResult | null = null
+
     const parseDateTime = (date: string, time: string, isEndDate: boolean = false) => {
-      // Handle special date values or use defaults
       if (!date || date === 'today') {
         date = new Date().toISOString().split('T')[0]
       } else if (date === 'same-as-start' && startDate) {
         date = startDate === 'today' ? new Date().toISOString().split('T')[0] : startDate
       }
 
-      // Handle special time values or use defaults
       if (!time || time === 'current') {
         if (isEndDate) {
-          // For end time, default to 1 hour after start
           const now = new Date()
           now.setHours(now.getHours() + 1)
           time = now.toTimeString().slice(0, 5)
         } else {
-          // For start time, use current time
           time = new Date().toTimeString().slice(0, 5)
+        }
+      } else {
+        const parsed = parseTimeOrFail(time, isEndDate ? 'endTime' : 'startTime')
+        if (!parsed.ok) {
+          timeValidationFailure = parsed.failure as unknown as ActionResult
+          // Return a syntactically-valid placeholder so we don't crash before
+          // the caller checks `timeValidationFailure`. Caller short-circuits.
+          time = '00:00'
+        } else {
+          time = parsed.raw
         }
       }
 
-      // Validate time format (HH:MM)
-      if (!/^\d{2}:\d{2}$/.test(time)) {
-        time = '09:00' // Default to 9 AM if invalid format
-      }
-
-      // Combine date and time
       return `${date}T${time}:00`
     }
 
@@ -255,6 +275,12 @@ export async function createOutlookCalendarEvent(
       eventData.end = {
         dateTime: parseDateTime(endDate, endTime, true),
         timeZone: eventTimeZone
+      }
+      // Q11 — short-circuit if either parseDateTime invocation flagged an
+      // invalid time-format failure. Avoids producing a corrupt provider
+      // call with a placeholder time.
+      if (timeValidationFailure) {
+        return timeValidationFailure
       }
     }
 

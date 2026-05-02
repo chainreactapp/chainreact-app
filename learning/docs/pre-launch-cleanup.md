@@ -72,12 +72,13 @@
 
 | Field | Value |
 |---|---|
-| Status | OPEN |
-| Files | Various — see below |
-| What | PR-C3b wraps each handler's **principal** outbound write call in `refreshAndRetry` (Q3). **Auxiliary** calls — secondary reads / permission / revision / sentitems lookups — are NOT wrapped yet. |
-| Why deferred | Each auxiliary call is an independent migration with its own test surface. Wrapping the principal write covered the dominant 401 case for the 8 already-tested handlers and kept PR-C3b reviewable. |
-| Pre-launch action | Migrate the auxiliary calls listed below to use `refreshAndRetry` so 401s anywhere in a handler produce the standardized auth-failure shape. |
-| Known auxiliary calls | (a) **Sheets** — header GET (`/values/<sheet>!1:1`), metadata GET, insertRow PUT/POST when inserting before/after a specific row. (b) **Notion** — every other `notionApiRequest` call site (update, archive, query, append, manage-database, etc.); only `/pages` POST in `notionCreatePage` is wrapped. (c) **Drive** — `drive.revisions.list` / `drive.revisions.update` / `drive.permissions.create` (per-share), and the schema GET; only `drive.files.create` is wrapped. (d) **Outlook** — the post-send `/me/mailFolders/sentitems/messages` GET that retrieves `messageId`. (e) **Gmail** — `gmail.users.messages.modify` (label application after send). (f) **Airtable** — every `/meta/bases/.../tables` schema GET. |
+| Status | DONE — 2026-05-02 |
+| Files | Sheets, Notion, Drive, Outlook, Gmail, Airtable handlers (see below) |
+| What | PR-C3b wrapped each handler's **principal** outbound write call in `refreshAndRetry` (Q3). This entry tracked the **auxiliary** calls — secondary reads / permission / revision / sentitems lookups — so a 401 anywhere in a handler produces the standardized auth-failure shape. |
+| Resolution | All sub-items below migrated. Auxiliary calls now route through `refreshAndRetry({ provider, userId, accessToken, call: ... })`. Non-401 errors in best-effort aux calls are still logged-and-swallowed; 401s now drive a refresh+retry attempt and emit the appropriate health signal on permanent failure. |
+| Sub-items resolution | (a) **Sheets** — DONE (createRow.ts header GET, metadata GET, batchUpdate POSTs for prepend/specific_row). (b) **Notion** — DONE (`notionApiRequest` helper extended with optional `userId`; ~38 call sites in handlers.ts updated to pass `context.userId`; helper internally wraps the underlying `fetch` in `refreshAndRetry` when `userId` is provided). (c) **Drive** — DONE (uploadFile.ts: revisions.list/update + per-share permissions.create; shareFile.ts: about.get + permissions.create + files.get; createFolder.ts: about.get + permissions.create). (d) **Outlook** — DONE (sendEmail.ts post-send sentitems GET). (e) **Gmail** — DONE (sendEmail.ts post-send labels.modify). (f) **Airtable** — DONE (createRecord.ts × 3 schema GETs + `getAirtableTableFieldNames` and `resolveTableId` helpers extended with `userId`; updateRecord.ts schema GET; duplicateRecord.ts schema GET; getBaseSchema.ts; getTableSchema.ts). |
+| Out-of-scope follow-ups | Found-along-the-way Q3 gaps tracked separately: `manageDatabase.ts` / `manageUsers.ts` / `getPages.ts` / `getPageDetails.ts` use raw `fetch` directly (not `notionApiRequest`) and their principal calls are unwrapped; `notionMakeApiCall` (generic API-call handler) uses raw `fetch` and is unwrapped. These are NEW Q3-principal-call gaps, not §A5 auxiliary gaps — track in a future PR. |
+| Tests | New §A5 cases added to outlook-send-email.test.ts (sentitems aux GET 401 → refresh+retry) and sheets-create-row.test.ts (header GET 401 → refresh+retry, header GET permanent 401 → auth failure). 1780 / 1780 tests pass across 96 suites. |
 | Tracking | [`learning/docs/handler-contracts.md`](handler-contracts.md) Q3 |
 
 ---

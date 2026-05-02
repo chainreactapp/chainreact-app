@@ -355,6 +355,7 @@ export class IntegrationNodeHandlers {
             actionType: node.data?.type ?? nodeType,
             provider: 'microsoft-outlook',
             testMode: context.testMode,
+            workspaceId: context.workspaceId,
           }
           const result = await sendOutlookEmail(config, context.userId, context.data || {}, meta)
           if (!result?.success) {
@@ -773,6 +774,7 @@ export class IntegrationNodeHandlers {
           actionType: node.data?.type ?? nodeType,
           provider: 'airtable',
           testMode: context.testMode,
+          workspaceId: context.workspaceId,
         }
         const createResult = await createAirtableRecord(
           config,

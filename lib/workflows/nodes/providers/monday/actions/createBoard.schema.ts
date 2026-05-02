@@ -67,7 +67,7 @@ export const createBoardActionSchema: NodeComponent = {
         { label: "Share", value: "share" }
       ],
       placeholder: "Select board type...",
-      description: "The visibility type of the board"
+      description: "Required (Q11). Recommended: Private — public boards are visible to the entire workspace."
     },
     {
       name: "description",
