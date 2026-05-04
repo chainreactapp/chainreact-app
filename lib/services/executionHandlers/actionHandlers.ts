@@ -1,6 +1,7 @@
 import { createSupabaseRouteHandlerClient } from "@/utils/supabase/server"
 import { ExecutionContext } from "../workflowExecutionService"
 import { AIActionsService } from "../aiActionsService"
+import { fallbackToRegistry } from "./registryFallback"
 
 import { logger } from '@/lib/utils/logger'
 
@@ -67,7 +68,13 @@ export class ActionNodeHandlers {
         return await this.executeHITLConversation(node, context)
 
       default:
-        throw new Error(`Unknown action node type: ${nodeType}`)
+        // PR-V2C — fall through to registry. Covers v1 logic/control-flow
+        // node types this dispatcher doesn't explicitly handle —
+        // wait_for_time, wait_for_event, http_request, router (v1 naming),
+        // if_then_condition (v1 naming), etc. Test-mode safety inside helper.
+        return await fallbackToRegistry(node, context, {
+          source: 'ActionNodeHandlers',
+        })
     }
   }
 

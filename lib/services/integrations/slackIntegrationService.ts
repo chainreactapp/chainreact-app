@@ -1,5 +1,6 @@
 import { ExecutionContext } from "../workflowExecutionService"
 import { executeAction } from "@/lib/workflows/executeNode"
+import { fallbackToRegistry } from "../executionHandlers/registryFallback"
 
 import { logger } from '@/lib/utils/logger'
 
@@ -30,7 +31,13 @@ export class SlackIntegrationService {
       case "slack_set_status":
         return await this.executeSetStatus(node, context)
       default:
-        throw new Error(`Unknown Slack action: ${nodeType}`)
+        // PR-V2C — Slack has 30+ action types in v1; this service only
+        // explicitly handles 5. The rest (channel ops, user ops, message
+        // reactions, scheduling, reminders, etc.) live in the v1 registry.
+        // Test-mode safety short-circuit enforced inside the helper.
+        return await fallbackToRegistry(node, context, {
+          source: 'SlackIntegrationService',
+        })
     }
   }
 

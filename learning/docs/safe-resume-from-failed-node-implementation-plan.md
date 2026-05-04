@@ -1,8 +1,26 @@
 # Safe Resume-From-Failed-Node — Implementation Plan
 
-**Status:** Approved directionally — phase 0 in progress. All work gated
-behind feature flag `ENABLE_RESUME_FROM_FAILED_NODE` (default `false`)
-through full rollout. Companion to
+**Status:** **Phases 0 + 1 (PR-R1a) shipped 2026-05-04. Phase 2+ paused
+2026-05-04** — blocked on
+[v2 canonical execution engine consolidation](./v2-canonical-execution-engine-plan.md).
+
+Phase 2 was originally going to add `resumeFromFailedNode` to v1's
+`AdvancedExecutionEngine`. Mid-implementation we discovered the codebase
+has two parallel execution engines and that v2 owns the `execution_steps`
+table that resume depends on. Rather than dual-build, the project pauses
+until v2 becomes the canonical engine. PR-R1a's two migrations
+(`20260506000000`, `20260507000000`) and PR-R1a's code (lineage threading
+on v1, helpers in `lib/execution/sessionLineage.ts`, idempotency key
+update, workflow definition hash, Q4 dual-write + read-fallback) all
+remain in place — the schema and helpers are engine-agnostic and
+survive the consolidation.
+
+After v2 cutover lands, Phase 2 resumes targeting v2 directly. Several
+sections below (engine target, file paths, test surface) will need
+revision at that time — they currently reference v1 paths.
+
+All work gated behind feature flag `ENABLE_RESUME_FROM_FAILED_NODE`
+(default `false`) through full rollout. Companion to
 [safe-resume-from-failed-node-project.md](./safe-resume-from-failed-node-project.md)
 (the "what"); this doc is the "how".
 

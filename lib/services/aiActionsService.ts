@@ -1,6 +1,7 @@
 import { summarizeContent, extractInformation, analyzeSentiment, translateText, generateContent, classifyContent } from "@/lib/workflows/actions/aiDataProcessing"
 import { applyTemplateDefaultsToConfig } from "@/lib/workflows/nodes/providers/ai/actions/templates"
 import { ExecutionContext } from "./workflowExecutionService"
+import { fallbackToRegistry } from "./executionHandlers/registryFallback"
 import { logger } from '@/lib/utils/logger'
 
 export class AIActionsService {
@@ -32,7 +33,12 @@ export class AIActionsService {
       case "ai_action_classify":
         return await this.executeWithHandler(nodeType, () => classifyContent(preparedConfig, context.userId, runtimeInput))
       default:
-        throw new Error(`Unknown AI action: ${nodeType}`)
+        // PR-V2C — fall through to registry. v1 AI naming (ai_summarize,
+        // ai_prompt, ai_translate without the `ai_action_` prefix) lands
+        // here. Test-mode safety inside helper.
+        return await fallbackToRegistry(node, context, {
+          source: 'AIActionsService',
+        })
     }
   }
 

@@ -1,10 +1,15 @@
 # Safe Resume-From-Failed-Node Execution
 
-**Status:** In progress behind feature flag `ENABLE_RESUME_FROM_FAILED_NODE`
-(default `false`). Implementation plan:
-[safe-resume-from-failed-node-implementation-plan.md](./safe-resume-from-failed-node-implementation-plan.md).
-This status flips to "shipped" only after rollout completes and PR-R1b
-(Q4 read-fallback removal) lands.
+**Status:** **Paused 2026-05-04** — blocked on
+[v2 canonical execution engine consolidation](./v2-canonical-execution-engine-plan.md).
+PR-R1a shipped (lineage threading on v1) and stays in place. Phase 2+
+will resume on v2 after the consolidation rollout completes.
+
+Implementation plan: [safe-resume-from-failed-node-implementation-plan.md](./safe-resume-from-failed-node-implementation-plan.md).
+Feature flag `ENABLE_RESUME_FROM_FAILED_NODE` remains `false`. Status
+flips to "shipped" only after both projects complete: v2 canonical
+engine rolled out, then PR-R2 onwards built on v2, then user-visible
+rollout finishes.
 
 **Origin:** Spun out of the v1 error-handling UX work
 ([error-handling-ux.md](./error-handling-ux.md)). v1 ships full-workflow retry only;
