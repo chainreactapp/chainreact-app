@@ -613,6 +613,26 @@ Start 400,100 | Vertical 160-200px | Horizontal 400px branches.
 **Required fields:** name, description, category, nodes, connections, is_public, is_predefined, created_by.
 **Guides:** `/learning/docs/template-management-supabase-guide.md`, `/learning/docs/template-quick-reference.md`
 
+## Error Handling UX — Plain-English Errors + One-Click Retry
+User-facing error rendering on `workflow_execution_sessions`. Raw `error_message` stays for technical-details disclosure; humanized snapshot lives in `error_classification jsonb` column.
+
+| File | Purpose |
+|------|---------|
+| `lib/workflows/errors/humanizeActionError.ts` | Pure humanizer — Q1 category → `{title, description, hint, action, severity}`. Heuristic fallback when category absent. |
+| `lib/workflows/errors/classifyExecutionFailure.ts` | DB helper — pulls first failed step from `execution_steps`, calls humanizer, adds `firstFailedNodeId` + `failedNodeCount`. |
+| `app/api/executions/[executionId]/retry/route.ts` | Full-rerun retry. Loads original `trigger_data`, forwards to `/api/workflows/execute` with cookie passthrough so all auth / billing / cost-gate / rate-limit / circuit-breaker checks run uniformly. Original execution row is never mutated. |
+| `components/workflows/ClassifiedErrorCard.tsx` | Renders humanized card + CTA (`reconnect` → `/integrations`, `open_node` → builder w/ `?focusNode=`, `upgrade_plan` → `/subscription`) + technical-details disclosure. |
+| `components/workflows/ExecutionHistoryModal.tsx` | Live UI. Replaces raw `<pre>` rendering with `<ClassifiedErrorCard>`. Detail view shows Retry button on `failed` runs; AlertDialog confirms with generic warning + heightened payment-impacting warning when steps include Stripe / Shopify / Square / PayPal. |
+| `supabase/migrations/20260505000000_add_error_classification_to_execution_sessions.sql` | Adds `error_classification jsonb`. |
+
+**Retry semantics — v1: full rerun only.**
+- Creates new execution session via standard execute pipeline. Original is `failed` and unchanged.
+- `source = 'retry'`, `retryOf = originalSessionId` (already wired in execute route).
+- Q4 idempotency keys are session-scoped → side effects from prior successful steps may fire again on retry. Stripe `Idempotency-Key` follows session id, so retry uses a fresh key.
+- Resume-from-failed-node + cross-session side-effect dedupe is **out of scope** — tracked as separate engine project. See [`/learning/docs/error-handling-ux.md`](./learning/docs/error-handling-ux.md) "Follow-up" section.
+
+**Tests:** `__tests__/workflows/humanizeActionError.test.ts` (23 tests).
+
 ## Critical Reference Guides
 - **Logging:** `/learning/docs/logging-best-practices.md`
 - **Modal Overflow:** `/learning/docs/modal-column-overflow-solution.md`
@@ -620,3 +640,4 @@ Start 400,100 | Vertical 160-200px | Horizontal 400px branches.
 - **Workflow Execution:** `/learning/docs/workflow-execution-implementation-guide.md`
 - **Action/Trigger:** `/learning/docs/action-trigger-implementation-guide.md`
 - **CORS Security:** `/learning/docs/cors-security-guide.md`
+- **Error Handling UX:** `/learning/docs/error-handling-ux.md`

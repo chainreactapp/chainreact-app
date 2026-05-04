@@ -4,6 +4,7 @@ import { NodeExecutionService } from "./nodeExecutionService"
 import { executionHistoryService } from "./executionHistoryService"
 import { ExecutionProgressTracker } from "@/lib/execution/executionProgressTracker"
 import { TestModeConfig, TriggerTestMode, ActionTestMode } from "./testMode/types"
+import { classifyExecutionFailure } from "@/lib/workflows/errors/classifyExecutionFailure"
 
 import { logger } from '@/lib/utils/logger'
 import {
@@ -421,6 +422,17 @@ export class WorkflowExecutionService {
         error: executionError instanceof Error ? executionError.message : String(executionError)
       })
 
+      const crashErrorMessage = executionError instanceof Error ? executionError.message : 'Unknown error'
+      let crashClassification = null
+      try {
+        crashClassification = await classifyExecutionFailure(supabase, executionId, crashErrorMessage)
+      } catch (classifyError) {
+        logger.warn('[WorkflowExecutionService] Failed to classify crash error', {
+          executionId,
+          error: classifyError instanceof Error ? classifyError.message : String(classifyError)
+        })
+      }
+
       // Update session to failed status
       await supabase
         .from("workflow_execution_sessions")
@@ -428,7 +440,8 @@ export class WorkflowExecutionService {
           status: "failed",
           completed_at: new Date().toISOString(),
           execution_time_ms: Date.now() - new Date(executionRecord.started_at).getTime(),
-          error_message: executionError instanceof Error ? executionError.message : 'Unknown error',
+          error_message: crashErrorMessage,
+          error_classification: crashClassification,
           updated_at: new Date().toISOString()
         })
         .eq("id", executionId)
@@ -459,15 +472,29 @@ export class WorkflowExecutionService {
 
     // Update workflow_execution_sessions record to completed status
     const finalStatus = hasErrors ? "failed" : "completed"
+    const aggregateErrorMessage = hasErrors
+      ? `Workflow completed with ${failedNodeIds.length} error(s)`
+      : null
+    let finalClassification = null
+    if (hasErrors) {
+      try {
+        finalClassification = await classifyExecutionFailure(supabase, executionId, aggregateErrorMessage)
+      } catch (classifyError) {
+        logger.warn('[WorkflowExecutionService] Failed to classify execution errors', {
+          executionId,
+          error: classifyError instanceof Error ? classifyError.message : String(classifyError)
+        })
+      }
+    }
+
     const { error: completeError } = await supabase
       .from("workflow_execution_sessions")
       .update({
         status: finalStatus,
         completed_at: new Date().toISOString(),
         execution_time_ms: Date.now() - new Date(executionRecord.started_at).getTime(),
-        error_message: hasErrors
-          ? `Workflow completed with ${failedNodeIds.length} error(s)`
-          : null,
+        error_message: aggregateErrorMessage,
+        error_classification: finalClassification,
         updated_at: new Date().toISOString()
       })
       .eq("id", executionId)

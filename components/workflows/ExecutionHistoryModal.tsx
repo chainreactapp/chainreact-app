@@ -2,6 +2,16 @@
 
 import React, { useState, useEffect } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -19,6 +29,7 @@ import {
   Copy,
   Filter,
   RefreshCw,
+  RotateCcw,
   ChevronRight,
   ChevronDown,
   PlayCircle,
@@ -43,6 +54,8 @@ import { format } from 'date-fns'
 import { integrationIcons } from '@/lib/integrations/integration-icons'
 import { getIntegrationLogoClasses } from '@/lib/integrations/logoStyles'
 import Image from 'next/image'
+import { ClassifiedErrorCard } from './ClassifiedErrorCard'
+import type { PersistedErrorClassification } from '@/lib/workflows/errors/classifyExecutionFailure'
 
 import { logger } from '@/lib/utils/logger'
 
@@ -55,8 +68,18 @@ interface ExecutionHistoryEntry {
   started_at: string
   completed_at?: string
   error_message?: string
+  error_classification?: PersistedErrorClassification | null
   trigger_data?: any
   final_output?: any
+}
+
+// Provider slugs whose actions move money / fulfill orders. Triggers a
+// heightened retry warning so users don't double-charge by retrying.
+const PAYMENT_IMPACTING_PROVIDERS = ["stripe", "shopify", "square", "paypal"]
+function isPaymentImpactingNodeType(nodeType: string | null | undefined): boolean {
+  if (!nodeType) return false
+  const lower = nodeType.toLowerCase()
+  return PAYMENT_IMPACTING_PROVIDERS.some((p) => lower.startsWith(`${p}_`))
 }
 
 interface ExecutionStep {
@@ -98,7 +121,52 @@ export function ExecutionHistoryModal({
   const [view, setView] = useState<'list' | 'details'>('list')
   const [loading, setLoading] = useState(false)
   const [stepsLoading, setStepsLoading] = useState(false)
+  const [retryConfirmOpen, setRetryConfirmOpen] = useState(false)
+  const [retrying, setRetrying] = useState(false)
   const { toast } = useToast()
+
+  const hasPaymentImpactingStep = executionSteps.some((s) =>
+    isPaymentImpactingNodeType(s.node_type)
+  )
+
+  const handleRetry = async () => {
+    if (!selectedExecution) return
+    setRetrying(true)
+    try {
+      const response = await fetch(
+        `/api/executions/${selectedExecution.id}/retry`,
+        { method: "POST", headers: { "Content-Type": "application/json" } }
+      )
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        toast({
+          title: "Retry failed",
+          description:
+            body?.error ||
+            body?.message ||
+            "The workflow could not be retried. Please try again.",
+          variant: "destructive",
+        })
+        return
+      }
+      toast({
+        title: "Workflow retry started",
+        description: "A new execution has been queued.",
+      })
+      setRetryConfirmOpen(false)
+      // Refresh list so the new run shows up
+      await loadHistory()
+    } catch (error) {
+      logger.error("Error retrying execution:", error)
+      toast({
+        title: "Retry failed",
+        description: "Could not reach the server. Please try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setRetrying(false)
+    }
+  }
 
   // Load history when modal opens
   useEffect(() => {
@@ -581,17 +649,14 @@ export function ExecutionHistoryModal({
                               </div>
                             </div>
 
-                            {execution.error_message && (
-                              <div className="mt-3 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
-                                <div className="flex items-start gap-2">
-                                  <AlertCircle className="h-4 w-4 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
-                                  <div className="flex-1 min-w-0">
-                                    <div className="text-xs font-medium text-red-900 dark:text-red-100 mb-1">Error</div>
-                                    <div className="text-sm text-red-700 dark:text-red-300 break-words">
-                                      {execution.error_message}
-                                    </div>
-                                  </div>
-                                </div>
+                            {(execution.error_classification || execution.error_message) && (
+                              <div className="mt-3" onClick={(e) => e.stopPropagation()}>
+                                <ClassifiedErrorCard
+                                  classification={execution.error_classification}
+                                  rawErrorMessage={execution.error_message}
+                                  workflowId={execution.workflow_id}
+                                  variant="compact"
+                                />
                               </div>
                             )}
                           </CardContent>
@@ -612,14 +677,26 @@ export function ExecutionHistoryModal({
                       <CardHeader className="bg-gradient-to-r from-gray-50 to-white dark:from-gray-900 dark:to-gray-950 pb-4">
                         <div className="flex items-center justify-between">
                           <CardTitle className="text-lg font-semibold">Execution Overview</CardTitle>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleCopyExecution(selectedExecution)}
-                          >
-                            <Copy className="h-4 w-4 mr-2" />
-                            Copy Data
-                          </Button>
+                          <div className="flex items-center gap-2">
+                            {selectedExecution.status === 'failed' && (
+                              <Button
+                                size="sm"
+                                variant="default"
+                                onClick={() => setRetryConfirmOpen(true)}
+                              >
+                                <RotateCcw className="h-4 w-4 mr-2" />
+                                Retry execution
+                              </Button>
+                            )}
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleCopyExecution(selectedExecution)}
+                            >
+                              <Copy className="h-4 w-4 mr-2" />
+                              Copy Data
+                            </Button>
+                          </div>
                         </div>
                       </CardHeader>
                       <CardContent className="pt-4">
@@ -659,19 +736,14 @@ export function ExecutionHistoryModal({
                           )}
                         </div>
 
-                        {selectedExecution.error_message && (
-                          <div className="mt-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
-                            <div className="flex items-start gap-3">
-                              <XCircle className="h-5 w-5 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
-                              <div className="flex-1">
-                                <div className="text-sm font-semibold text-red-900 dark:text-red-100 mb-1">
-                                  Execution Failed
-                                </div>
-                                <div className="text-sm text-red-700 dark:text-red-300">
-                                  {selectedExecution.error_message}
-                                </div>
-                              </div>
-                            </div>
+                        {(selectedExecution.error_classification || selectedExecution.error_message) && (
+                          <div className="mt-4">
+                            <ClassifiedErrorCard
+                              classification={selectedExecution.error_classification}
+                              rawErrorMessage={selectedExecution.error_message}
+                              workflowId={selectedExecution.workflow_id}
+                              variant="full"
+                            />
                           </div>
                         )}
                       </CardContent>
@@ -890,6 +962,55 @@ export function ExecutionHistoryModal({
           </Tabs>
         </div>
       </DialogContent>
+
+      <AlertDialog open={retryConfirmOpen} onOpenChange={setRetryConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Retry this execution?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3">
+                <p>
+                  Retry reruns the workflow from the beginning using the original
+                  trigger data. Any actions that already succeeded may run again.
+                </p>
+                {hasPaymentImpactingStep && (
+                  <div className="rounded-md border-2 border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-3 text-amber-900 dark:text-amber-100 text-sm">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                      <div>
+                        <strong className="font-semibold">Payment-impacting actions detected.</strong>{" "}
+                        This workflow includes Stripe / Shopify / payment steps.
+                        Retrying may charge customers, create duplicate orders,
+                        or fire other irreversible side effects.
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  A new execution session will be created and counted toward your
+                  task usage. The original failed execution is not modified.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={retrying}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleRetry} disabled={retrying}>
+              {retrying ? (
+                <>
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                  Retrying...
+                </>
+              ) : (
+                <>
+                  <RotateCcw className="h-4 w-4 mr-2" />
+                  Retry execution
+                </>
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   )
 }
