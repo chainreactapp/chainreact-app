@@ -1,7 +1,6 @@
 import { createClient } from "@supabase/supabase-js"
 import { NextRequest, NextResponse } from "next/server"
 import { logger } from "@/lib/utils/logger"
-import { transitionToFree } from "@/lib/entitlements/entitlement-service"
 
 /**
  * Billing period task usage reset — safety net for ALL users.
@@ -41,11 +40,11 @@ export async function GET(request: NextRequest) {
   try {
     const now = new Date()
 
-    // Find ALL users with expired billing period and tasks_used > 0
+    // Find ALL users with expired billing period and tasks_used > 0 OR overage_tasks_used > 0
     const { data: usersToReset, error: fetchError } = await supabase
       .from('user_profiles')
-      .select('id, plan, tasks_used, tasks_limit, billing_period_start, billing_period_end')
-      .gt('tasks_used', 0)
+      .select('id, plan, tasks_used, tasks_limit, overage_tasks_used, billing_period_start, billing_period_end')
+      .or('tasks_used.gt.0,overage_tasks_used.gt.0')
       .lt('billing_period_end', now.toISOString())
 
     if (fetchError) {
@@ -74,11 +73,12 @@ export async function GET(request: NextRequest) {
           .from('user_profiles')
           .update({
             tasks_used: 0,
+            overage_tasks_used: 0,
             billing_period_start: now.toISOString(),
             billing_period_end: newPeriodEnd.toISOString()
           })
           .eq('id', user.id)
-          .gt('tasks_used', 0) // Atomic guard: only reset if still > 0
+          .or('tasks_used.gt.0,overage_tasks_used.gt.0') // Atomic guard
           .select('id')
 
         if (resetError) {
@@ -120,9 +120,9 @@ export async function GET(request: NextRequest) {
           // Active subscription — safe to reset tasks (webhook should have done this)
           const { data: updated, error: resetError } = await supabase
             .from('user_profiles')
-            .update({ tasks_used: 0 })
+            .update({ tasks_used: 0, overage_tasks_used: 0 })
             .eq('id', user.id)
-            .gt('tasks_used', 0) // Atomic guard
+            .or('tasks_used.gt.0,overage_tasks_used.gt.0') // Atomic guard
             .select('id')
 
           if (resetError) {
@@ -181,122 +181,13 @@ export async function GET(request: NextRequest) {
       errorCount
     })
 
-    // Phase 1 parallel path: also process user_entitlements
-    let entitlementStats = { freeAdvanced: 0, graceTransitioned: 0, errors: 0 }
-    if (process.env.ENTITLEMENTS_V2 === 'true') {
-      entitlementStats = await resetEntitlementPeriods(supabase)
-    }
-
     return NextResponse.json({
       processed: freeResetCount + paidResetCount,
       paidSkipped: paidSkippedCount,
       errors: errorCount,
-      entitlements: entitlementStats,
     })
   } catch (error: any) {
     logger.error('[Cron] Task reset cron failed:', error)
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
-}
-
-/**
- * Phase 1 parallel path: process user_entitlements table.
- * Cron NEVER touches source='stripe' active rows.
- * Only handles:
- *   1. Free/beta/manual users with expired periods -> advance via compute_next_period
- *   2. Grace period users with expired periods -> transition to free tier
- */
-async function resetEntitlementPeriods(supabase: any) {
-  const stats = { freeAdvanced: 0, graceTransitioned: 0, errors: 0 }
-  const now = new Date().toISOString()
-
-  try {
-    // 1. Advance expired periods for free/beta/manual users
-    const { data: expiredFree, error: freeErr } = await supabase
-      .from('user_entitlements')
-      .select('user_id, current_period_start, current_period_end, tier_id')
-      .eq('status', 'active')
-      .in('source', ['free', 'beta', 'manual'])
-      .lt('current_period_end', now)
-
-    if (freeErr) {
-      logger.error('[Cron Entitlements] Failed to fetch expired free users', { error: freeErr.message })
-      stats.errors++
-    } else if (expiredFree && expiredFree.length > 0) {
-      for (const ent of expiredFree) {
-        try {
-          // Use compute_next_period SQL function
-          const { data: nextPeriod } = await supabase.rpc('compute_next_period', {
-            p_current_period_start: ent.current_period_start,
-            p_current_period_end: ent.current_period_end,
-          })
-
-          if (nextPeriod && nextPeriod.length > 0) {
-            const period = nextPeriod[0]
-
-            // Get fresh limit from tier
-            const { data: tierData } = await supabase
-              .from('plans')
-              .select('tasks_per_month')
-              .eq('id', ent.tier_id)
-              .single()
-
-            await supabase
-              .from('user_entitlements')
-              .update({
-                tasks_used: 0,
-                tasks_limit_snapshot: tierData?.tasks_per_month ?? 100,
-                current_period_start: period.next_period_start,
-                current_period_end: period.next_period_end,
-              })
-              .eq('user_id', ent.user_id)
-
-            stats.freeAdvanced++
-          }
-        } catch (err: any) {
-          stats.errors++
-          logger.error('[Cron Entitlements] Failed to advance free user period', {
-            userId: ent.user_id,
-            error: err.message,
-          })
-        }
-      }
-    }
-
-    // 2. Transition grace_period -> free for expired grace periods
-    const { data: expiredGrace, error: graceErr } = await supabase
-      .from('user_entitlements')
-      .select('user_id')
-      .eq('status', 'grace_period')
-      .lt('current_period_end', now)
-
-    if (graceErr) {
-      logger.error('[Cron Entitlements] Failed to fetch expired grace users', { error: graceErr.message })
-      stats.errors++
-    } else if (expiredGrace && expiredGrace.length > 0) {
-      for (const ent of expiredGrace) {
-        try {
-          const success = await transitionToFree(ent.user_id)
-          if (success) {
-            stats.graceTransitioned++
-          } else {
-            stats.errors++
-          }
-        } catch (err: any) {
-          stats.errors++
-          logger.error('[Cron Entitlements] Failed to transition grace user to free', {
-            userId: ent.user_id,
-            error: err.message,
-          })
-        }
-      }
-    }
-
-    logger.info('[Cron Entitlements] Reset completed', stats)
-  } catch (err: any) {
-    logger.error('[Cron Entitlements] Unexpected error', { error: err.message })
-    stats.errors++
-  }
-
-  return stats
 }

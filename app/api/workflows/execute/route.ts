@@ -435,10 +435,44 @@ export async function POST(request: NextRequest) {
               resultType: taskDeductionResult.resultType,
               error: taskDeductionResult.error
             })
+
+            // Fire-and-forget auto-buy when feature flag is on AND user opted in.
+            // Does NOT unblock the in-flight request — user retries after the webhook credits balance.
+            const { FEATURE_FLAGS } = await import('@/lib/featureFlags')
+            let autoBuyHint: { triggered: boolean; code?: string } | undefined
+            if (FEATURE_FLAGS.TASK_PACKS && taskDeductionResult.resultType === 'insufficient_balance') {
+              const { triggerAutoBuyIfEnabled } = await import('@/lib/billing/auto-buy')
+              triggerAutoBuyIfEnabled(billingUserId)
+                .then((result) => {
+                  if (result.ok) {
+                    logger.info('[Execute Route] Auto-buy succeeded after 402', {
+                      userId: billingUserId,
+                      newBalance: result.newBalance,
+                    })
+                  } else {
+                    logger.warn('[Execute Route] Auto-buy did not succeed', {
+                      userId: billingUserId,
+                      code: result.code,
+                    })
+                  }
+                })
+                .catch((err) => {
+                  logger.error('[Execute Route] Auto-buy threw unexpectedly', {
+                    userId: billingUserId,
+                    error: err?.message,
+                  })
+                })
+              autoBuyHint = { triggered: true }
+            }
+
             return errorResponse(
               taskDeductionResult.error,
               402,
-              { tasksNeeded: taskDeductionResult.tasksDeducted || 0, remaining: taskDeductionResult.newBalance }
+              {
+                tasksNeeded: taskDeductionResult.tasksDeducted || 0,
+                remaining: taskDeductionResult.newBalance,
+                ...(autoBuyHint ? { autoBuy: autoBuyHint } : {}),
+              }
             )
           }
 

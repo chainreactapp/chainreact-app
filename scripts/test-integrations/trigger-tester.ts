@@ -179,7 +179,7 @@ function getWebhookEndpoint(provider: string): string {
     gumroad: '/api/webhooks/gumroad',
     'google-sheets': '/api/webhooks/google-sheets',
     notion: '/api/webhooks/notion',
-    stripe: '/api/webhooks/stripe',
+    stripe: '/api/webhooks/stripe-integration',
     airtable: '/api/webhooks/airtable',
     trello: '/api/webhooks/trello',
   }

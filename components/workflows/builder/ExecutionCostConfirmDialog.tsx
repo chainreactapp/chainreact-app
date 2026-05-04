@@ -37,6 +37,15 @@ interface CostPreviewResponse {
     used: number
     unlimited: boolean
   }
+  overage: {
+    enabled: boolean
+    rate: number | null
+    capMultiplier: number
+    tasksUsed: number
+    room: number
+    wouldConsumeAmount: number
+    wouldConsumeCostCents: number
+  }
   wouldExceedBudget: boolean
 }
 
@@ -181,13 +190,30 @@ export function ExecutionCostConfirmDialog({
                 </div>
               )}
 
-              {/* Exceeds budget warning */}
+              {/* Overage notice (charge will spill into overage but is allowed) */}
+              {!preview.wouldExceedBudget && preview.overage.wouldConsumeAmount > 0 && (
+                <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800">
+                  <Info className="w-4 h-4 mt-0.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                  <div className="text-xs text-amber-700 dark:text-amber-300">
+                    <p className="font-medium">
+                      {preview.overage.wouldConsumeAmount} task{preview.overage.wouldConsumeAmount !== 1 ? "s" : ""} will run on overage
+                    </p>
+                    <p className="mt-1">
+                      Estimated additional charge: ${(preview.overage.wouldConsumeCostCents / 100).toFixed(2)}
+                      {preview.overage.rate ? ` ($${preview.overage.rate.toFixed(3)}/task)` : ""}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Exceeds budget warning — even overage cap can't cover */}
               {preview.wouldExceedBudget && (
                 <div className="flex items-start gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800">
                   <AlertTriangle className="w-4 h-4 mt-0.5 text-red-600 dark:text-red-400 shrink-0" />
                   <p className="text-xs text-red-700 dark:text-red-300">
-                    This workflow exceeds your remaining task balance.
-                    Execution will be blocked by the billing system.
+                    {preview.overage.enabled
+                      ? `This workflow exceeds your plan + overage cap (${preview.overage.capMultiplier}× plan limit). Execution will be blocked.`
+                      : "This workflow exceeds your remaining task balance. Enable overage billing in subscription settings to keep running, or wait for the next billing period."}
                   </p>
                 </div>
               )}

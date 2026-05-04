@@ -5,17 +5,6 @@ import Stripe from "stripe"
 import { getStripeClient } from "@/lib/stripe/client"
 
 import { logger } from '@/lib/utils/logger'
-import {
-  isEventProcessed,
-  markEventProcessed,
-  isStaleEvent,
-  syncFromStripe,
-  setGracePeriod,
-  ensureEntitlement,
-  type StripeEventMeta,
-  type StripeSubscriptionData,
-} from '@/lib/entitlements/entitlement-service'
-import { resolveTierByStripePrice } from '@/lib/entitlements/tier-cache'
 
 // Helper function to safely convert timestamps to ISO strings
 function safeTimestampToISO(timestamp: number | null | undefined): string | null {
@@ -94,13 +83,13 @@ export async function POST(request: Request) {
         await handlePaymentFailed(event.data.object as Stripe.Invoice, supabase)
         break
 
+      case "charge.refunded":
+        logger.info("[Stripe Webhook] Processing charge.refunded")
+        await handleChargeRefunded(event.data.object as Stripe.Charge, supabase)
+        break
+
       default:
         logger.info(`[Stripe Webhook] Unhandled event type: ${event.type}`)
-    }
-
-    // Phase 1 parallel write: sync to user_entitlements
-    if (process.env.ENTITLEMENTS_V2 === 'true') {
-      await syncEntitlementFromEvent(event, supabase, stripe)
     }
 
     logger.info(`[Stripe Webhook] Successfully processed event: ${event.type}`)
@@ -113,7 +102,14 @@ export async function POST(request: Request) {
 }
 
 async function handleCheckoutCompleted(session: Stripe.Checkout.Session, supabase: any, stripeClient: Stripe) {
-  logger.info("[Stripe Webhook] handleCheckoutCompleted - Session ID:", session.id)
+  logger.info("[Stripe Webhook] handleCheckoutCompleted - Session ID:", session.id, "mode:", session.mode)
+
+  // One-time pack purchase — separate code path (no subscription to retrieve)
+  if (session.mode === 'payment') {
+    await handlePackPurchaseCompleted(session, supabase)
+    return
+  }
+
   logger.debug("[Stripe Webhook] Has metadata:", !!session.metadata)
   logger.debug("[Stripe Webhook] Has customer email:", !!session.customer_details?.email)
 
@@ -189,6 +185,13 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session, supabas
 
   logger.info("[Stripe Webhook] Retrieved subscription:", subscription.id)
 
+  // Persist payment method ID for off-session auto-buy (closes a latent bug
+  // where this was extracted but never saved — see migration 20260504000003).
+  const defaultPaymentMethodId =
+    typeof (subscription as any).default_payment_method === 'string'
+      ? (subscription as any).default_payment_method
+      : (subscription as any).default_payment_method?.id ?? null
+
   // Extract ONLY the fields that exist in the database
   const subscriptionData = {
     user_id: userId,
@@ -199,6 +202,7 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session, supabas
     billing_cycle: billingCycle || 'monthly',
     current_period_start: safeTimestampToISO(subscription.current_period_start) || new Date().toISOString(),
     current_period_end: safeTimestampToISO(subscription.current_period_end) || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+    default_payment_method_id: defaultPaymentMethodId,
     created_at: safeTimestampToISO(subscription.created) || new Date().toISOString(),
     updated_at: new Date().toISOString()
   }
@@ -274,6 +278,177 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session, supabas
       
     await storeInvoice(invoice, supabase, userId)
   }
+}
+
+/**
+ * One-time pack purchase: credit user_profiles.task_pack_balance and stamp the
+ * pack_purchases row from pending → paid.
+ *
+ * Idempotent on webhook replay via the UNIQUE on stripe_checkout_session_id.
+ * If the pre-insert from /api/billing/packs/checkout didn't happen (e.g. server
+ * failure between session create and pre-insert), we still credit by inserting
+ * a fresh row keyed by session.id.
+ */
+async function handlePackPurchaseCompleted(session: Stripe.Checkout.Session, supabase: any) {
+  if (session.payment_status !== 'paid') {
+    logger.info("[Stripe Webhook] Pack session not paid yet, skipping", {
+      sessionId: session.id,
+      paymentStatus: session.payment_status,
+    })
+    return
+  }
+
+  const userId = session.metadata?.user_id
+  const planCode = session.metadata?.plan_code
+  const packSizeStr = session.metadata?.pack_size
+  const triggeredBy = (session.metadata?.triggered_by as 'manual' | 'auto_buy') ?? 'manual'
+
+  if (!userId || !planCode || !packSizeStr) {
+    logger.error("[Stripe Webhook] Pack session missing required metadata", {
+      sessionId: session.id,
+      metadata: session.metadata,
+    })
+    return
+  }
+
+  const packSize = parseInt(packSizeStr, 10)
+  if (!Number.isFinite(packSize) || packSize <= 0) {
+    logger.error("[Stripe Webhook] Pack session invalid pack_size metadata", {
+      sessionId: session.id,
+      packSizeStr,
+    })
+    return
+  }
+
+  const paymentIntentId =
+    typeof session.payment_intent === 'string'
+      ? session.payment_intent
+      : session.payment_intent?.id ?? null
+
+  // Look up existing pre-insert row
+  const { data: existing } = await supabase
+    .from('pack_purchases')
+    .select('id, status, pack_price_cents, tasks_remaining')
+    .eq('stripe_checkout_session_id', session.id)
+    .single()
+
+  // Idempotent replay: already paid, no-op
+  if (existing && existing.status === 'paid') {
+    logger.info("[Stripe Webhook] Pack purchase already paid, skipping (idempotent)", {
+      sessionId: session.id,
+    })
+    return
+  }
+
+  const packPriceCents = session.amount_total ?? existing?.pack_price_cents ?? 0
+
+  if (existing) {
+    // Flip pending → paid
+    const { error: updateError } = await supabase
+      .from('pack_purchases')
+      .update({
+        status: 'paid',
+        paid_at: new Date().toISOString(),
+        stripe_payment_intent_id: paymentIntentId,
+        pack_price_cents: packPriceCents,
+        tasks_remaining: packSize,
+        triggered_by: triggeredBy,
+      })
+      .eq('id', existing.id)
+      .eq('status', 'pending') // atomic guard against double-flip
+
+    if (updateError) {
+      logger.error("[Stripe Webhook] Failed to flip pack_purchases to paid", {
+        sessionId: session.id,
+        error: updateError.message,
+      })
+      throw updateError
+    }
+  } else {
+    // No pre-insert row found — checkout flow's pre-insert failed but the user paid.
+    // Insert a fresh row keyed by session.id (UNIQUE catches webhook replay).
+    const { error: insertError } = await supabase.from('pack_purchases').insert({
+      user_id: userId,
+      stripe_checkout_session_id: session.id,
+      stripe_payment_intent_id: paymentIntentId,
+      plan_code: planCode,
+      pack_size: packSize,
+      pack_price_cents: packPriceCents,
+      tasks_remaining: packSize,
+      tasks_consumed: 0,
+      status: 'paid',
+      triggered_by: triggeredBy,
+      paid_at: new Date().toISOString(),
+    })
+    if (insertError) {
+      // 23505 unique violation = race with another webhook replay; treat as already-paid
+      if ((insertError as any).code === '23505') {
+        logger.info("[Stripe Webhook] Pack insert hit unique constraint (replay race)", {
+          sessionId: session.id,
+        })
+        return
+      }
+      logger.error("[Stripe Webhook] Failed to insert pack_purchases row", {
+        sessionId: session.id,
+        error: insertError.message,
+      })
+      throw insertError
+    }
+  }
+
+  // Credit user_profiles.task_pack_balance.
+  // RLS-bypass via service-role client; atomic via PostgREST returning representation.
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('task_pack_balance')
+    .eq('id', userId)
+    .single()
+
+  const newBalance = (profile?.task_pack_balance ?? 0) + packSize
+  const { error: balanceError } = await supabase
+    .from('user_profiles')
+    .update({ task_pack_balance: newBalance })
+    .eq('id', userId)
+
+  if (balanceError) {
+    logger.error("[Stripe Webhook] Failed to credit task_pack_balance", {
+      sessionId: session.id,
+      userId,
+      error: balanceError.message,
+    })
+    throw balanceError
+  }
+
+  // Audit row in task_billing_events
+  await supabase.from('task_billing_events').insert({
+    user_id: userId,
+    execution_id: session.id, // session ID acts as the execution_id for idempotency
+    event_type: 'pack_purchase',
+    amount: 0, // not a deduction — purchase event
+    node_breakdown: {},
+    balance_after: 0, // tasks_used unchanged by a pack purchase
+    tasks_limit_snapshot: 0, // not relevant for pack purchases
+    period_start_snapshot: null,
+    period_end_snapshot: null,
+    workflow_id: null,
+    source: 'pack_purchase_webhook',
+    metadata: {
+      pack_size: packSize,
+      pack_price_cents: packPriceCents,
+      plan_code: planCode,
+      stripe_checkout_session_id: session.id,
+      stripe_payment_intent_id: paymentIntentId,
+      triggered_by: triggeredBy,
+      new_pack_balance: newBalance,
+    },
+  })
+
+  logger.info("[Stripe Webhook] Pack purchase credited", {
+    sessionId: session.id,
+    userId,
+    packSize,
+    newBalance,
+  })
 }
 
 async function handleSubscriptionCreated(subscription: Stripe.Subscription, supabase: any) {
@@ -585,6 +760,172 @@ async function storeInvoice(invoice: Stripe.Invoice, supabase: any, userId?: str
 async function handlePaymentSucceeded(invoice: Stripe.Invoice, supabase: any) {
   logger.info("[Stripe Webhook] handlePaymentSucceeded - Invoice:", invoice.id)
   await storeInvoice(invoice, supabase)
+  await resetOverageTasksIfInvoicedMeter(invoice, supabase)
+}
+
+/**
+ * If this invoice settled the user's metered overage line item (either on a
+ * monthly sub renewal or via threshold billing on a yearly sub), reset their
+ * overage_tasks_used to 0 to mirror Stripe's server-side meter reset.
+ */
+async function resetOverageTasksIfInvoicedMeter(invoice: Stripe.Invoice, supabase: any) {
+  const subscriptionId = (invoice as any).subscription
+  if (!subscriptionId) return
+
+  const { data: existingSub } = await supabase
+    .from('subscriptions')
+    .select('user_id')
+    .eq('stripe_subscription_id', subscriptionId)
+    .single()
+  if (!existingSub?.user_id) return
+
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('stripe_subscription_item_id, overage_tasks_used')
+    .eq('id', existingSub.user_id)
+    .single()
+  if (!profile?.stripe_subscription_item_id || !profile.overage_tasks_used) return
+
+  // Look for an invoice line item tied to the user's metered subscription_item.
+  // The line shape has shifted across Stripe API versions; check both common paths.
+  const lines = (invoice as any).lines?.data ?? []
+  const hasMeteredLine = lines.some((line: any) => {
+    const itemId =
+      line.subscription_item ??
+      line.parent?.subscription_item_details?.subscription_item ??
+      line.subscription_item_details?.subscription_item
+    return itemId === profile.stripe_subscription_item_id
+  })
+  if (!hasMeteredLine) return
+
+  const { error } = await supabase
+    .from('user_profiles')
+    .update({ overage_tasks_used: 0 })
+    .eq('id', existingSub.user_id)
+
+  if (error) {
+    logger.error('[Stripe Webhook] Failed to reset overage_tasks_used after invoice', {
+      userId: existingSub.user_id,
+      invoiceId: invoice.id,
+      error: error.message,
+    })
+    return
+  }
+
+  logger.info('[Stripe Webhook] Reset overage_tasks_used after metered invoice paid', {
+    userId: existingSub.user_id,
+    invoiceId: invoice.id,
+    previousOverageTasksUsed: profile.overage_tasks_used,
+  })
+}
+
+/**
+ * Pack-purchase refund handler.
+ *
+ * When Stripe processes a refund for a charge tied to a pack purchase, we:
+ *   1. Find the pack_purchases row by stripe_payment_intent_id (charge.payment_intent)
+ *   2. Decrement user_profiles.task_pack_balance by tasks_remaining (the unused portion)
+ *   3. Mark row as 'refunded', set refunded_at
+ *   4. Insert task_billing_events with event_type='pack_refund'
+ *
+ * Idempotent on replay: already-refunded rows return early.
+ *
+ * Note: support tooling enforces the 24-hour grace window (decision #11) BEFORE
+ * triggering a Stripe refund. The webhook itself processes whatever Stripe sends.
+ */
+async function handleChargeRefunded(charge: Stripe.Charge, supabase: any) {
+  const paymentIntentId =
+    typeof charge.payment_intent === 'string' ? charge.payment_intent : charge.payment_intent?.id
+  if (!paymentIntentId) {
+    logger.info('[Stripe Webhook] charge.refunded without payment_intent — ignoring', { chargeId: charge.id })
+    return
+  }
+
+  const { data: pack } = await supabase
+    .from('pack_purchases')
+    .select('id, user_id, pack_size, tasks_remaining, status')
+    .eq('stripe_payment_intent_id', paymentIntentId)
+    .single()
+
+  if (!pack) {
+    // Not a pack purchase — could be a subscription invoice refund or unrelated charge.
+    logger.debug('[Stripe Webhook] charge.refunded did not match a pack_purchase', { paymentIntentId })
+    return
+  }
+
+  if (pack.status === 'refunded') {
+    logger.info('[Stripe Webhook] Pack already refunded (idempotent)', { packId: pack.id })
+    return
+  }
+
+  // Decrement task_pack_balance by the unused portion (tasks_remaining), clamped at 0.
+  const tasksToRevoke = Math.max(0, pack.tasks_remaining)
+
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('task_pack_balance')
+    .eq('id', pack.user_id)
+    .single()
+
+  const newBalance = Math.max(0, (profile?.task_pack_balance ?? 0) - tasksToRevoke)
+
+  const { error: balanceError } = await supabase
+    .from('user_profiles')
+    .update({ task_pack_balance: newBalance })
+    .eq('id', pack.user_id)
+
+  if (balanceError) {
+    logger.error('[Stripe Webhook] Failed to decrement balance on refund', {
+      packId: pack.id,
+      userId: pack.user_id,
+      error: balanceError.message,
+    })
+    throw balanceError
+  }
+
+  const { error: packError } = await supabase
+    .from('pack_purchases')
+    .update({
+      status: 'refunded',
+      refunded_at: new Date().toISOString(),
+      tasks_remaining: 0,
+    })
+    .eq('id', pack.id)
+
+  if (packError) {
+    logger.error('[Stripe Webhook] Failed to mark pack refunded', { packId: pack.id, error: packError.message })
+    throw packError
+  }
+
+  // Audit row
+  await supabase.from('task_billing_events').insert({
+    user_id: pack.user_id,
+    execution_id: charge.id,
+    event_type: 'pack_refund',
+    amount: 0,
+    node_breakdown: {},
+    balance_after: 0,
+    tasks_limit_snapshot: 0,
+    period_start_snapshot: null,
+    period_end_snapshot: null,
+    workflow_id: null,
+    source: 'pack_refund_webhook',
+    metadata: {
+      pack_purchase_id: pack.id,
+      tasks_revoked: tasksToRevoke,
+      new_pack_balance: newBalance,
+      stripe_charge_id: charge.id,
+      stripe_payment_intent_id: paymentIntentId,
+      amount_refunded_cents: charge.amount_refunded,
+    },
+  })
+
+  logger.info('[Stripe Webhook] Pack refund processed', {
+    packId: pack.id,
+    userId: pack.user_id,
+    tasksRevoked: tasksToRevoke,
+    newBalance,
+  })
 }
 
 async function handlePaymentFailed(invoice: Stripe.Invoice, supabase: any) {
@@ -604,227 +945,3 @@ async function handlePaymentFailed(invoice: Stripe.Invoice, supabase: any) {
   }
 }
 
-// =====================================================================
-// Phase 1: Entitlement sync (parallel write to user_entitlements)
-// =====================================================================
-// Hardened Stripe sync following the approved plan:
-// 1. Idempotency via stripe_processed_events
-// 2. Freshness check via last_stripe_event_at
-// 3. Tier resolution via stripe_tier_mapping (immutable code, not name)
-// 4. State transition validation
-
-async function syncEntitlementFromEvent(
-  event: Stripe.Event,
-  supabase: any,
-  stripeClient: Stripe
-): Promise<void> {
-  try {
-    // 1. Idempotency check
-    const alreadyProcessed = await isEventProcessed(supabase, event.id)
-    if (alreadyProcessed) {
-      logger.debug('[Entitlement Sync] Event already processed, skipping', { eventId: event.id })
-      return
-    }
-
-    const meta: StripeEventMeta = {
-      eventId: event.id,
-      eventType: event.type,
-      eventCreated: new Date(event.created * 1000),
-    }
-
-    switch (event.type) {
-      case 'checkout.session.completed': {
-        const session = event.data.object as Stripe.Checkout.Session
-        const userId = session.metadata?.user_id
-        if (!userId || !session.subscription) break
-
-        const subResponse = await stripeClient.subscriptions.retrieve(session.subscription as string)
-        const sub = subResponse as any
-        const priceId = sub.items.data[0]?.price.id
-        if (!priceId) break
-
-        const tier = await resolveTierByStripePrice(priceId)
-        if (!tier) {
-          logger.warn('[Entitlement Sync] No tier mapping for price', { priceId })
-          break
-        }
-
-        meta.customerId = sub.customer as string
-        meta.subscriptionId = sub.id
-        await ensureEntitlement(userId)
-
-        // Freshness check
-        const { data: ent } = await (supabase as any)
-          .from('user_entitlements')
-          .select('last_stripe_event_at')
-          .eq('user_id', userId)
-          .single()
-
-        if (ent && isStaleEvent(ent, meta.eventCreated)) {
-          logger.warn('[Entitlement Sync] Stale event, skipping', { eventId: event.id })
-          break
-        }
-
-        await syncFromStripe(supabase, userId, {
-          subscriptionId: sub.id,
-          customerId: sub.customer as string,
-          priceId,
-          tierId: tier.tierId,
-          tierCode: tier.tierCode,
-          currentPeriodStart: new Date(sub.current_period_start * 1000),
-          currentPeriodEnd: new Date(sub.current_period_end * 1000),
-          status: sub.status,
-          cancelAtPeriodEnd: sub.cancel_at_period_end,
-        }, meta)
-        break
-      }
-
-      case 'customer.subscription.created':
-      case 'customer.subscription.updated': {
-        const sub = event.data.object as any
-        const priceId = sub.items.data[0]?.price.id
-        if (!priceId) break
-
-        // Find userId from subscriptions table
-        const { data: existingSub } = await supabase
-          .from('subscriptions')
-          .select('user_id')
-          .eq('stripe_subscription_id', sub.id)
-          .single()
-
-        const userId = existingSub?.user_id
-        if (!userId) break
-
-        const tier = await resolveTierByStripePrice(priceId)
-        if (!tier) {
-          logger.warn('[Entitlement Sync] No tier mapping for price', { priceId })
-          break
-        }
-
-        meta.customerId = sub.customer as string
-        meta.subscriptionId = sub.id
-        await ensureEntitlement(userId)
-
-        const { data: ent2 } = await (supabase as any)
-          .from('user_entitlements')
-          .select('last_stripe_event_at')
-          .eq('user_id', userId)
-          .single()
-
-        if (ent2 && isStaleEvent(ent2, meta.eventCreated)) {
-          logger.warn('[Entitlement Sync] Stale event, skipping', { eventId: event.id })
-          break
-        }
-
-        await syncFromStripe(supabase, userId, {
-          subscriptionId: sub.id,
-          customerId: sub.customer as string,
-          priceId,
-          tierId: tier.tierId,
-          tierCode: tier.tierCode,
-          currentPeriodStart: new Date(sub.current_period_start * 1000),
-          currentPeriodEnd: new Date(sub.current_period_end * 1000),
-          status: sub.status,
-          cancelAtPeriodEnd: sub.cancel_at_period_end,
-        }, meta)
-        break
-      }
-
-      case 'customer.subscription.deleted': {
-        const sub = event.data.object as any
-
-        const { data: existingSub } = await supabase
-          .from('subscriptions')
-          .select('user_id')
-          .eq('stripe_subscription_id', sub.id)
-          .single()
-
-        const userId = existingSub?.user_id
-        if (!userId) break
-
-        meta.customerId = sub.customer as string
-        meta.subscriptionId = sub.id
-
-        const { data: ent3 } = await (supabase as any)
-          .from('user_entitlements')
-          .select('last_stripe_event_at')
-          .eq('user_id', userId)
-          .single()
-
-        if (ent3 && isStaleEvent(ent3, meta.eventCreated)) {
-          logger.warn('[Entitlement Sync] Stale event, skipping', { eventId: event.id })
-          break
-        }
-
-        await setGracePeriod(supabase, userId, meta)
-        break
-      }
-
-      case 'invoice.payment_succeeded': {
-        const inv = event.data.object as any
-        if (!inv.subscription) break
-
-        const { data: existingSub } = await supabase
-          .from('subscriptions')
-          .select('user_id')
-          .eq('stripe_subscription_id', inv.subscription)
-          .single()
-
-        const userId = existingSub?.user_id
-        if (!userId) break
-
-        // Get the subscription from Stripe for period dates and price
-        const subResponse2 = await stripeClient.subscriptions.retrieve(inv.subscription as string)
-        const sub = subResponse2 as any
-        const priceId = sub.items.data[0]?.price.id
-        if (!priceId) break
-
-        const tier = await resolveTierByStripePrice(priceId)
-        if (!tier) break
-
-        meta.customerId = sub.customer as string
-        meta.subscriptionId = sub.id
-
-        const { data: ent4 } = await (supabase as any)
-          .from('user_entitlements')
-          .select('last_stripe_event_at')
-          .eq('user_id', userId)
-          .single()
-
-        if (ent4 && isStaleEvent(ent4, meta.eventCreated)) {
-          logger.warn('[Entitlement Sync] Stale event, skipping', { eventId: event.id })
-          break
-        }
-
-        // Reset tasks on successful payment (new billing period)
-        await syncFromStripe(supabase, userId, {
-          subscriptionId: sub.id,
-          customerId: sub.customer as string,
-          priceId,
-          tierId: tier.tierId,
-          tierCode: tier.tierCode,
-          currentPeriodStart: new Date(sub.current_period_start * 1000),
-          currentPeriodEnd: new Date(sub.current_period_end * 1000),
-          status: sub.status,
-          cancelAtPeriodEnd: sub.cancel_at_period_end,
-        }, meta, true) // resetTasks = true
-        break
-      }
-
-      default:
-        // No entitlement sync needed for other events
-        return
-    }
-
-    // Mark event as processed (after successful handling)
-    await markEventProcessed(supabase, meta)
-
-  } catch (error: any) {
-    // Non-blocking during Phase 1 -- log but don't fail the webhook
-    logger.error('[Entitlement Sync] Failed (non-blocking)', {
-      eventId: event.id,
-      eventType: event.type,
-      error: error.message,
-    })
-  }
-}

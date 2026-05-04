@@ -52,7 +52,7 @@ export async function GET(
         .eq("workflow_id", workflowId),
       supabase
         .from("user_profiles")
-        .select("tasks_used, tasks_limit")
+        .select("plan, tasks_used, tasks_limit, overage_enabled, overage_cap_multiplier, overage_tasks_used")
         .eq("id", user.id)
         .single(),
     ])
@@ -98,8 +98,40 @@ export async function GET(
     const tasksUsed = profile?.tasks_used ?? 0
     const tasksLimit = profile?.tasks_limit ?? 100
     const isUnlimited = tasksLimit === -1
-    const remaining = isUnlimited ? Infinity : Math.max(0, tasksLimit - tasksUsed)
-    const wouldExceedBudget = !isUnlimited && chargedCost > remaining
+    const planRoom = isUnlimited ? Infinity : Math.max(0, tasksLimit - tasksUsed)
+
+    // Overage budget (only meaningful when user opted in and a rate is configured)
+    const overageEnabled = Boolean(profile?.overage_enabled)
+    const overageCapMultiplier = Number(profile?.overage_cap_multiplier ?? 2.0)
+    const overageTasksUsed = Number(profile?.overage_tasks_used ?? 0)
+
+    let overageRate: number | null = null
+    let overageRoom = 0
+    if (overageEnabled && !isUnlimited && profile?.plan) {
+      const { data: planRow } = await serviceClient
+        .from('plans')
+        .select('limits')
+        .eq('name', profile.plan)
+        .single()
+      const rate = (planRow?.limits as { overageRate?: number } | null)?.overageRate
+      if (rate && rate > 0) {
+        overageRate = rate
+        const overageCap = Math.floor(tasksLimit * (overageCapMultiplier - 1))
+        overageRoom = Math.max(0, overageCap - overageTasksUsed)
+      }
+    }
+
+    // Split the charge into plan + overage portions
+    const wouldConsumeOverage = !isUnlimited && chargedCost > planRoom
+      ? Math.min(chargedCost - planRoom, overageRoom)
+      : 0
+    const overageCostCents = overageRate ? Math.round(wouldConsumeOverage * overageRate * 100) : 0
+
+    // The hard ceiling is plan + overage. wouldExceedBudget is true only when even
+    // the overage allowance can't cover the request (or overage is disabled and
+    // plan can't cover).
+    const totalRoom = isUnlimited ? Infinity : planRoom + overageRoom
+    const wouldExceedBudget = !isUnlimited && chargedCost > totalRoom
 
     return jsonResponse({
       flatCost: preview.flatCost,
@@ -110,10 +142,19 @@ export async function GET(
       breakdown: preview.breakdown,
       loopDetails: preview.loopDetails,
       balance: {
-        remaining: isUnlimited ? null : remaining,
+        remaining: isUnlimited ? null : planRoom,
         limit: tasksLimit,
         used: tasksUsed,
         unlimited: isUnlimited,
+      },
+      overage: {
+        enabled: overageEnabled,
+        rate: overageRate,
+        capMultiplier: overageCapMultiplier,
+        tasksUsed: overageTasksUsed,
+        room: overageRoom,
+        wouldConsumeAmount: wouldConsumeOverage,
+        wouldConsumeCostCents: overageCostCents,
       },
       wouldExceedBudget,
     })

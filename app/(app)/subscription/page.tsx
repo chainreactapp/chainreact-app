@@ -18,6 +18,8 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { usePlansStore } from "@/stores/plansStore"
+import { OverageToggle } from "@/components/billing/OverageToggle"
+import { TaskPackSection } from "@/components/billing/TaskPackSection"
 
 type BillingCycle = "monthly" | "annual"
 
@@ -474,6 +476,12 @@ export default function SubscriptionPage() {
           </tbody>
         </table>
       </div>
+
+      {/* Overage billing toggle (hidden when plan is free/beta/enterprise) */}
+      <OverageToggle />
+
+      {/* Task packs section (hidden when plan is free/beta/enterprise) */}
+      <TaskPackSection />
 
       {/* Choose Your Plan */}
       <div className="space-y-5">
