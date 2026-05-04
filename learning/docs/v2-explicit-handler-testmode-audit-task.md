@@ -1,6 +1,29 @@
 # Audit: v2 explicit handler testMode / Q8d write interception
 
-**Status:** Open. Spawned 2026-05-04 alongside the PR-V2C merge.
+**Status:** **Audit complete + remediation shipped 2026-05-04** via the
+engine-level pre-call gate (option 2 in the original task brief: "true
+pre-call interception layer that prevents outbound provider writes
+before invocation").
+
+Findings + remediation: [v2-testmode-audit-findings.md](./v2-testmode-audit-findings.md).
+
+Per-handler Q8d remains backlog work (defense-in-depth) — the engine
+gate covers all 44 cases the audit identified, plus any future case.
+Original audit goals achieved:
+
+- ✅ Enumerated 83 explicit dispatch cases across all 6 dispatchers.
+- ✅ Confirmed each path either has Q8d, has a pre-call gate, or
+  newly has the engine-level gate.
+- ✅ Parity tests for all 7 representative cases (plus 6 semantic-
+  property tests) at
+  [`__tests__/workflows/v2-testmode-pregate.test.ts`](../../__tests__/workflows/v2-testmode-pregate.test.ts).
+- ✅ Does not rely on post-hoc `nodeExecutionService` decoration —
+  the engine gate is genuine pre-call interception.
+
+The remainder of this doc is the original task brief (preserved for
+reference).
+
+---
 
 **Companion to:** [v2-canonical-execution-engine-plan.md](./v2-canonical-execution-engine-plan.md)
 

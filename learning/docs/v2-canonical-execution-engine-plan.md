@@ -56,6 +56,26 @@ in place; further resume work paused pending v2 cutover.
   classifies its protection, and adds parity tests for representative
   cases. Phase 4 (parity tests) of this plan blocks on the audit
   completing.
+- 2026-05-04: **audit complete + remediation shipped (engine pre-call
+  gate).** Audit found 83 dispatch cases; ~44 lacked any test-mode
+  protection (Slack inline, Discord, all 9 Notion routings via
+  `managePage`-style wrappers that hardcoded `testMode: false`,
+  Airtable update/delete/list, Trello, HubSpot, Excel, OneNote, Outlook
+  calendar event, Dropbox upload). Rather than add Q8d to 44 handlers
+  (~22 hours of edits), shipped a single engine-level pre-call gate at
+  [nodeExecutionService.ts:executeNode](../../lib/services/nodeExecutionService.ts).
+  Gate fires when `context.testMode && isExternalAction(nodeType) &&
+  actionMode !== EXECUTE_ALL`, returning a `__testModePreCallGate`
+  mock without invoking the dispatcher. Also expanded
+  `isExternalAction`'s prefix list to cover Notion / Airtable / HubSpot
+  / Trello / OneNote / Excel / Stripe / Shopify / GitHub / Mailchimp /
+  Twitter / Facebook / ManyChat / Gumroad / Monday / Square / PayPal —
+  the original list pre-dated those providers so post-hoc
+  `INTERCEPT_WRITES` was silently skipping them too. 14 parity tests at
+  [v2-testmode-pregate.test.ts](../../__tests__/workflows/v2-testmode-pregate.test.ts);
+  1178 tests pass overall. Findings doc:
+  [v2-testmode-audit-findings.md](./v2-testmode-audit-findings.md).
+  Per-handler Q8d remains backlog for defense-in-depth.
 
 ## Context
 
