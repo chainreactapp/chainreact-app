@@ -412,23 +412,57 @@ Document immediately when: bug fix >30 min, gotcha/edge case discovered, new int
 ### Architecture
 The server is the **only authoritative cost source**. Client-side estimation is for passive builder hints only.
 
+The cap is enforced inside the Postgres RPC `deduct_tasks_if_available` (defined in `supabase/migrations/20260504000004_rpc_v3_packs.sql`). Its decision tree consumes in priority order: **plan → pack → overage → 402**. All TS callers are pass-through.
+
 | File | Purpose |
 |------|---------|
-| `lib/featureFlags.ts` | `FEATURE_FLAGS.LOOP_COST_EXPANSION` — gates loop billing |
+| `lib/featureFlags.ts` | `LOOP_COST_EXPANSION`, `OVERAGE_BILLING`, `TASK_PACKS` flags |
 | `lib/workflows/cost-preview.ts` | `computeCostPreview()` — **single source of truth** for cost computation |
 | `lib/workflows/cost-calculator.ts` | Node-level pricing (triggers=0, actions=1, AI=1-5, logic=0) |
-| `lib/workflows/taskDeduction.ts` | Server deduction — uses `computeCostPreview()` + audit logging |
+| `lib/workflows/taskDeduction.ts` | Server deduction — calls the RPC; reads back `packAmount`, `overageAmount`, `overageRateCents` |
 | `lib/workflows/loop-cost-estimator.ts` | Client-side passive estimate only — never authoritative |
-| `app/api/workflows/[id]/preview-cost/route.ts` | Authoritative pre-run cost preview API |
-| `components/workflows/builder/ExecutionCostConfirmDialog.tsx` | Pre-execution confirmation (calls preview API) |
+| `app/api/workflows/[id]/preview-cost/route.ts` | Authoritative pre-run cost preview API; returns `overage` field |
+| `components/workflows/builder/ExecutionCostConfirmDialog.tsx` | Pre-execution confirmation (shows overage cost when run will spill into overage) |
+| `lib/billing/overage-toggle.ts` | `enableOverageForUser` / `disableOverageForUser` — adds/removes Stripe metered subscription_item |
+| `lib/billing/overage-reporter.ts` | Drains `task_overage_events` to Stripe usage records (deterministic idempotency key) |
+| `lib/billing/auto-buy.ts` | `triggerAutoBuyIfEnabled` — off-session pack purchase via `paymentIntents.create` |
+| `app/api/cron/report-overage/route.ts` | Daily cron: pushes overage usage to Stripe |
+| `app/api/cron/usage-alerts/route.ts` | Daily cron: 80%/100%/overage-activated/pack-depleted email alerts |
+| `app/api/cron/reset-task-usage/route.ts` | Period reset safety net — also resets `overage_tasks_used` |
+| `app/api/billing/overage/route.ts` | GET/POST overage opt-in + cap multiplier |
+| `app/api/billing/packs/checkout/route.ts` | One-time pack purchase via Stripe Checkout `mode: 'payment'` |
+| `app/api/billing/packs/route.ts` | GET pack state + history; PATCH auto-buy toggle |
+| `components/billing/OverageToggle.tsx` | Subscription-page card: switch + cap slider |
+| `components/billing/TaskPackSection.tsx` | Subscription-page card: balance + buy button + auto-buy + history |
+| `app/(app)/admin/billing/page.tsx` | Admin read-only view of all users' billing state |
 
 ### Parity Invariant
-These must always match: preview API `chargedCost` = deducted amount = persisted `tasks_used` = billing event `amount`.
+The RPC writes to multiple counters atomically inside its `FOR UPDATE` lock. These must always sum:
 
-### Feature Flag: `ENABLE_LOOP_COST_EXPANSION`
-- `false` (default): loops charged at flat cost (each inner node counted once)
-- `true`: loops charged at worst-case (inner cost × max iterations, capped at 500)
-- Both costs logged on every deduction for reconciliation
+```
+sum(task_billing_events.amount where source != 'period_reset' and event_type != 'pack_purchase' and event_type != 'pack_refund')
+  = sum(metadata.plan_consumed)   -- equals user_profiles.tasks_used per period
+  + sum(metadata.pack_consumed)   -- equals sum(pack_purchases.tasks_consumed)
+  + sum(metadata.overage_consumed) -- equals user_profiles.overage_tasks_used per period
+```
+
+The denormalized cache `user_profiles.task_pack_balance` must always equal `sum(pack_purchases.tasks_remaining where status='paid')` for that user.
+
+### Feature flags
+- `ENABLE_LOOP_COST_EXPANSION` — `false` default. `false`: loops charged at flat cost. `true`: worst-case (inner × max iterations, capped at 500).
+- `ENABLE_OVERAGE_BILLING` — `false` default. Controls whether the execute route exposes overage to users (RPC-side overage works regardless once `user_profiles.overage_enabled = true`, but the toggle UI checks the flag).
+- `ENABLE_TASK_PACKS` — `false` default. Controls whether the auto-buy fire-and-forget is triggered at the 402 path. Manual pack purchase via `/api/billing/packs/checkout` works regardless.
+
+### Tables
+- `task_billing_events` — append-only ledger. Idempotency: UNIQUE `(user_id, execution_id, event_type)`.
+- `task_overage_events` — overage-only sub-ledger + Stripe-reporting queue. UNIQUE `(user_id, execution_id)`. Drained by report-overage cron.
+- `pack_purchases` — one-time pack purchase ledger. UNIQUE `stripe_checkout_session_id`. FIFO consumption ordered by `paid_at`.
+
+### Stripe configuration
+- Subscription prices: `plans.stripe_price_id_monthly/yearly` (created via `scripts/setup-stripe-prices.ts`).
+- Metered overage prices: `plans.stripe_metered_price_id_monthly/yearly` (created via `scripts/setup-stripe-metered-prices.ts`). Yearly prices use `billing_thresholds.usage_gte: 1000` to force monthly invoicing per decision #9.
+- One-time pack prices: `plans.stripe_pack_price_id` (created via `scripts/setup-stripe-pack-prices.ts`).
+- Webhook URL: `/api/webhooks/stripe-billing` (NOT `/api/webhooks/stripe` — that route was deleted; events: `checkout.session.completed`, `customer.subscription.{created,updated,deleted}`, `invoice.payment_{succeeded,failed}`, `charge.refunded`, optional `customer.subscription.trial_will_end`).
 
 ### Rules
 - `computeCostPreview()` is **pure** — no feature flags inside. Callers derive `chargedCost` externally.
@@ -436,7 +470,15 @@ These must always match: preview API `chargedCost` = deducted amount = persisted
 - Client estimator must stay minimal. If it needs to grow, replace with debounced preview API call.
 - Billing event metadata is persisted via awaited UPDATE after RPC write.
 - Reconciliation query: `scripts/reconcile-billing-metadata.sql`
-- Tests: `__tests__/workflows/cost-preview.test.ts` (21 tests covering nested/sibling/empty loops, malformed graphs)
+- Tests: `__tests__/workflows/cost-preview.test.ts` (21 tests for cost preview); `__tests__/billing/` (29 tests across overage-toggle, overage-reporter, auto-buy).
+
+### Pack consumption order (decision #6)
+The RPC consumes from tiers in this order:
+1. Plan tasks (free portion of subscription)
+2. Pack balance (pre-paid, FIFO across pack_purchases.paid_at)
+3. Overage budget (pay-as-you-go, capped at `overage_cap_multiplier × tasks_limit`)
+
+Rationale: customers consume what they pre-paid before getting charged extra. Pack tasks never expire (decision #5) — they survive period rolls and plan downgrades.
 
 ---
 

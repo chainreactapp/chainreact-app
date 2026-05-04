@@ -45,6 +45,12 @@ export interface TaskDeductionResult {
   error?: string
   /** Full cost preview for callers that need it (e.g. returning to client) */
   costPreview?: CostPreview
+  /** Tasks consumed from task pack balance. 0 when no pack consumed. */
+  packAmount?: number
+  /** Tasks consumed past plan limit. 0 when overage disabled or not needed. */
+  overageAmount?: number
+  /** Per-task overage rate (cents) at time of charge. Only set when overageAmount > 0. */
+  overageRateCents?: number
 }
 
 /**
@@ -180,6 +186,9 @@ export async function deductTasksAtomic(
 
     // Success path
     const newBalance = result.current_tasks_limit === -1 ? null : (result.remaining ?? 0)
+    const packAmount = Number(result.consumed_from_pack ?? 0)
+    const overageAmount = Number(result.consumed_from_overage ?? 0)
+    const overageRateCents = Number(result.overage_rate_cents ?? 0)
 
     if (result.applied) {
       logger.info('[TaskDeduction] Tasks deducted', {
@@ -187,7 +196,10 @@ export async function deductTasksAtomic(
         executionSessionId,
         tasksDeducted: totalCost,
         newTasksUsed: result.new_tasks_used,
-        remaining: newBalance ?? 'unlimited'
+        remaining: newBalance ?? 'unlimited',
+        packAmount,
+        overageAmount,
+        overageRateCents,
       })
     } else {
       logger.info('[TaskDeduction] Idempotent replay for execution', {
@@ -210,32 +222,6 @@ export async function deductTasksAtomic(
           })
         }
       })
-
-    // Phase 1 parallel write: also deduct from user_entitlements via deduct_tasks_v2
-    if (process.env.ENTITLEMENTS_V2 === 'true' && result.applied) {
-      (supabase as any).rpc('deduct_tasks_v2', {
-        p_user_id: userId,
-        p_amount: totalCost,
-        p_execution_id: executionSessionId,
-        p_event_type: 'workflow_execution',
-        p_node_breakdown: breakdown,
-        p_workflow_id: options?.workflowId ?? null,
-        p_source: options?.source ?? 'execute_route'
-      }).then(({ error: v2Error }: { error: any }) => {
-        if (v2Error) {
-          logger.warn('[TaskDeduction] deduct_tasks_v2 parallel write failed (non-blocking)', {
-            userId,
-            executionSessionId,
-            error: v2Error.message,
-          })
-        } else {
-          logger.debug('[TaskDeduction] deduct_tasks_v2 parallel write succeeded', {
-            userId,
-            executionSessionId,
-          })
-        }
-      })
-    }
 
     // Awaited: persist structured metadata on billing event for Phase 2 history UI
     const metadataStartTime = Date.now()
@@ -300,6 +286,9 @@ export async function deductTasksAtomic(
       applied: result.applied ?? true,
       resultType,
       costPreview: preview,
+      packAmount,
+      overageAmount,
+      overageRateCents,
     }
   } catch (error: any) {
     logger.error('[TaskDeduction] Unexpected error', {

@@ -39,6 +39,14 @@
     {
       "path": "/api/cron/reset-task-usage",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/cron/report-overage",
+      "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/usage-alerts",
+      "schedule": "0 13 * * *"
     }
   ]
 }
