@@ -5508,7 +5508,9 @@ export type Database = {
           completed_at: string | null
           created_at: string | null
           current_step: string | null
+          error_classification: Json | null
           error_message: string | null
+          error_notifications_sent_at: string | null
           execution_context: Json | null
           execution_time_ms: number | null
           id: string
@@ -5538,7 +5540,9 @@ export type Database = {
           completed_at?: string | null
           created_at?: string | null
           current_step?: string | null
+          error_classification?: Json | null
           error_message?: string | null
+          error_notifications_sent_at?: string | null
           execution_context?: Json | null
           execution_time_ms?: number | null
           id?: string
@@ -5568,7 +5572,9 @@ export type Database = {
           completed_at?: string | null
           created_at?: string | null
           current_step?: string | null
+          error_classification?: Json | null
           error_message?: string | null
+          error_notifications_sent_at?: string | null
           execution_context?: Json | null
           execution_time_ms?: number | null
           id?: string

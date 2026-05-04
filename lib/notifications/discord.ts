@@ -66,80 +66,89 @@ export async function sendDiscordMessage(
   }
 }
 
-/**
- * Format message into Discord embed for better formatting
- */
-function formatDiscordEmbed(message: string): DiscordEmbed {
-  const lines = message.split('\n')
-  const workflowName = lines.find(l => l.includes('Workflow'))?.replace(/^.*"(.*)".*$/, '$1') || 'Unknown'
-  const errorLine = lines.find(l => l.includes('Error:'))?.split('Error: ')[1] || 'Unknown error'
-  const workflowId = lines.find(l => l.includes('Workflow ID:'))?.split(': ')[1]
-  const executionId = lines.find(l => l.includes('Execution ID:'))?.split(': ')[1]
-
-  const fields: Array<{ name: string; value: string; inline?: boolean }> = [
-    {
-      name: '🔧 Workflow',
-      value: workflowName,
-      inline: true
-    },
-    {
-      name: '⏰ Time',
-      value: new Date().toLocaleString(),
-      inline: true
-    }
-  ]
-
-  if (workflowId) {
-    fields.push({
-      name: '🆔 Workflow ID',
-      value: `\`${workflowId}\``,
-      inline: false
-    })
-  }
-
-  if (executionId) {
-    fields.push({
-      name: '📋 Execution ID',
-      value: `\`${executionId}\``,
-      inline: false
-    })
-  }
-
-  fields.push({
-    name: '❌ Error',
-    value: `\`\`\`${errorLine}\`\`\``,
-    inline: false
-  })
-
-  return {
-    title: '⚠️ Workflow Error Alert',
-    description: `Workflow **${workflowName}** encountered an error`,
-    color: 0xDC3545, // Red color
-    fields,
-    timestamp: new Date().toISOString()
-  }
-}
+import type { WorkflowFailurePayload } from './workflowFailurePayload'
 
 /**
- * Send workflow error to Discord with formatted embed
+ * Send workflow error to Discord with humanized embed.
+ *
+ * Discord doesn't support button-style links inside embeds without a bot
+ * interaction handler, so the CTA is appended as a markdown link in the
+ * description.
  */
 export async function sendWorkflowErrorDiscord(
   channelId: string,
-  workflowName: string,
-  workflowId: string,
-  error: string,
-  userId: string,
-  executionId?: string
+  payload: WorkflowFailurePayload,
+  _userId: string
 ): Promise<boolean> {
-  const message = `
-Workflow "${workflowName}" failed
+  try {
+    const botToken = process.env.DISCORD_BOT_TOKEN
+    if (!botToken) {
+      logger.error('Discord bot token not configured')
+      return false
+    }
 
-Error: ${error}
+    const embed = buildWorkflowFailureDiscordEmbed(payload)
+    const fallback = `${payload.title} — workflow "${payload.workflowName}"`
 
-Workflow ID: ${workflowId}
-${executionId ? `Execution ID: ${executionId}` : ''}
-Time: ${new Date().toLocaleString()}
-  `.trim()
+    const response = await fetch(
+      `https://discord.com/api/v10/channels/${channelId}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bot ${botToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ content: fallback, embeds: [embed] }),
+      }
+    )
 
-  return sendDiscordMessage(channelId, message, userId)
+    if (!response.ok) {
+      const error = await response.text()
+      logger.error('Discord API error:', error)
+      return false
+    }
+    return true
+  } catch (err: any) {
+    logger.error('Failed to send Discord workflow error:', { error: err.message, channelId })
+    return false
+  }
+}
+
+function buildWorkflowFailureDiscordEmbed(p: WorkflowFailurePayload): DiscordEmbed {
+  const color = p.severity === 'warning' ? 0xd97706 : 0xdc2626
+  const fields: Array<{ name: string; value: string; inline?: boolean }> = [
+    { name: 'Workflow', value: p.workflowName, inline: true },
+  ]
+  if (p.failedStepName) {
+    fields.push({ name: 'Failed step', value: p.failedStepName, inline: true })
+  }
+  if (p.hint) {
+    fields.push({ name: 'What to do', value: p.hint, inline: false })
+  }
+  if (p.cta) {
+    fields.push({
+      name: 'Action',
+      value: `[${p.cta.label}](${p.cta.url})`,
+      inline: false,
+    })
+  }
+  if (p.technicalDetails) {
+    const truncated =
+      p.technicalDetails.length > 500
+        ? `${p.technicalDetails.slice(0, 500)}…`
+        : p.technicalDetails
+    fields.push({
+      name: 'Technical details',
+      value: `\`\`\`${truncated}\`\`\``,
+      inline: false,
+    })
+  }
+
+  return {
+    title: p.title,
+    description: p.description,
+    color,
+    fields,
+    timestamp: new Date().toISOString(),
+  }
 }

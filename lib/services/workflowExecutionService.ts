@@ -5,6 +5,7 @@ import { executionHistoryService } from "./executionHistoryService"
 import { ExecutionProgressTracker } from "@/lib/execution/executionProgressTracker"
 import { TestModeConfig, TriggerTestMode, ActionTestMode } from "./testMode/types"
 import { classifyExecutionFailure } from "@/lib/workflows/errors/classifyExecutionFailure"
+import { notifyWorkflowFailure } from "@/lib/notifications/errorHandler"
 
 import { logger } from '@/lib/utils/logger'
 import {
@@ -446,6 +447,21 @@ export class WorkflowExecutionService {
         })
         .eq("id", executionId)
 
+      // Fire workflow failure notifications (idempotent — orchestrator dedupes
+      // via error_notifications_sent_at). The execute route's outer catch
+      // also calls this on the same crash; one will win the slot, the other
+      // will be skipped.
+      notifyWorkflowFailure(supabase, workflow.id, {
+        message: crashErrorMessage,
+        stack: executionError instanceof Error ? executionError.stack : undefined,
+        executionId,
+      }).catch((notifyErr) => {
+        logger.error('[WorkflowExecutionService] Failed to fire crash notifications', {
+          executionId,
+          error: notifyErr instanceof Error ? notifyErr.message : String(notifyErr),
+        })
+      })
+
       await progressTracker.complete(false, executionError instanceof Error ? executionError.message : 'Unknown error')
 
       if (executionHistoryId) {
@@ -501,6 +517,21 @@ export class WorkflowExecutionService {
 
     if (completeError) {
       logger.error('Failed to update execution to completed status:', completeError)
+    }
+
+    // Fire failure notifications for the normal-with-errors finalization path.
+    // Without this, workflows that complete with failed nodes (no engine crash)
+    // would silently fail to notify — only the crash path was wired before.
+    if (hasErrors) {
+      notifyWorkflowFailure(supabase, workflow.id, {
+        message: aggregateErrorMessage || 'Workflow completed with errors',
+        executionId,
+      }).catch((notifyErr) => {
+        logger.error('[WorkflowExecutionService] Failed to fire failure notifications', {
+          executionId,
+          error: notifyErr instanceof Error ? notifyErr.message : String(notifyErr),
+        })
+      })
     }
 
     // Complete execution history tracking

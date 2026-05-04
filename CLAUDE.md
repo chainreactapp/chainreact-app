@@ -613,23 +613,47 @@ Start 400,100 | Vertical 160-200px | Horizontal 400px branches.
 **Required fields:** name, description, category, nodes, connections, is_public, is_predefined, created_by.
 **Guides:** `/learning/docs/template-management-supabase-guide.md`, `/learning/docs/template-quick-reference.md`
 
-## Error Handling UX — Plain-English Errors + One-Click Retry
-User-facing error rendering on `workflow_execution_sessions`. Raw `error_message` stays for technical-details disclosure; humanized snapshot lives in `error_classification jsonb` column.
+## Error Handling UX — Plain-English Errors + One-Click Retry + Humanized Notifications
+Workflow failure UX — three coordinated surfaces (in-builder dialog, push notifications, in-app bell) all driven from one persisted `error_classification jsonb` snapshot.
 
+**Data layer:**
 | File | Purpose |
 |------|---------|
 | `lib/workflows/errors/humanizeActionError.ts` | Pure humanizer — Q1 category → `{title, description, hint, action, severity}`. Heuristic fallback when category absent. |
 | `lib/workflows/errors/classifyExecutionFailure.ts` | DB helper — pulls first failed step from `execution_steps`, calls humanizer, adds `firstFailedNodeId` + `failedNodeCount`. |
-| `app/api/executions/[executionId]/retry/route.ts` | Full-rerun retry. Loads original `trigger_data`, forwards to `/api/workflows/execute` with cookie passthrough so all auth / billing / cost-gate / rate-limit / circuit-breaker checks run uniformly. Original execution row is never mutated. |
-| `components/workflows/ClassifiedErrorCard.tsx` | Renders humanized card + CTA (`reconnect` → `/integrations`, `open_node` → builder w/ `?focusNode=`, `upgrade_plan` → `/subscription`) + technical-details disclosure. |
-| `components/workflows/ExecutionHistoryModal.tsx` | Live UI. Replaces raw `<pre>` rendering with `<ClassifiedErrorCard>`. Detail view shows Retry button on `failed` runs; AlertDialog confirms with generic warning + heightened payment-impacting warning when steps include Stripe / Shopify / Square / PayPal. |
+| `app/api/executions/[executionId]/retry/route.ts` | Full-rerun retry. Loads original `trigger_data`, forwards to `/api/workflows/execute` with cookie passthrough. Original execution row never mutated. |
+| `lib/services/workflowExecutionService.ts` | Calls `classifyExecutionFailure` at both finalization paths (engine crash + normal-with-errors), then fires `notifyWorkflowFailure`. |
 | `supabase/migrations/20260505000000_add_error_classification_to_execution_sessions.sql` | Adds `error_classification jsonb`. |
+| `supabase/migrations/20260505000001_add_error_notifications_sent_at.sql` | Adds `error_notifications_sent_at TIMESTAMPTZ` for one-shot notification dedup. |
+
+**Live builder UI (v2):**
+| File | Purpose |
+|------|---------|
+| `app/(app)/workflows/v2/api/flows/[flowId]/runs/history/route.ts` | v2 history endpoint. Returns `errorClassification` + `errorMessage` per run. |
+| `components/workflows/builder/WorkflowHistoryDialog.tsx` | **Live** v2 dialog. List shows compact `<ClassifiedErrorCard>` per failed run; detail view renders full card + Retry button + step list. Auto-jumps to detail via `pendingExecutionId` prop from `?historyExecution=` deep link. |
+| `components/workflows/builder/BuilderHeader.tsx` + `WorkflowBuilderV2.tsx` | Plumbs `?historyExecution=` from URL → `BuilderHeader` → `WorkflowHistoryDialog`; strips param after consumption. |
+| `components/workflows/ClassifiedErrorCard.tsx` | Pure render — humanized card + CTA (`reconnect` → `/integrations`, `open_node` → builder w/ `?focusNode=&historyExecution=`, `upgrade_plan` → `/subscription`) + technical-details disclosure. |
+
+**Notification fan-out** (one classification → email / Slack / Discord / SMS / in-app):
+| File | Purpose |
+|------|---------|
+| `lib/notifications/errorHandler.ts` | Orchestrator. Atomically claims `error_notifications_sent_at` for dedup, looks up classification, builds payload, fans out. Exposes `notifyWorkflowFailure(supabase, workflowId, errorDetails)`. |
+| `lib/notifications/workflowFailurePayload.ts` | Pure builder — one `WorkflowFailurePayload` shape consumed by all channels. CTA URL routing: `null` action → History deep link `/workflows/builder/{id}?historyExecution={executionId}`. |
+| `lib/notifications/email.ts` | Humanized HTML + plain-text. Accent card with title / description / hint / CTA button / collapsed `<details>` Technical Details. |
+| `lib/notifications/slack.ts` | Block kit: header / description / hint context / workflow + failed-step fields / CTA button / truncated technical context. |
+| `lib/notifications/discord.ts` | Embed with inline fields + CTA as markdown link + truncated technical code block. |
+| (SMS — inline in `errorHandler.ts`) | Terse only: `ChainReact: ${title} — workflow "${name}".` No URL. |
+| (In-app — inline in `errorHandler.ts`) | Inserts into `notifications` table with `type='workflow_failed'`, deep-link `action_url`. Default-enabled when `error_notifications_enabled` is true; opt out via `settings.error_notification_in_app = false`. |
+
+**Notification orchestration** is called from both `workflowExecutionService` finalization paths. Pre-existing fallback calls in `app/api/workflows/execute/route.ts` catch and `advancedExecutionEngine` catch still fire for pre-execution / pre-finalization errors. Idempotency: orchestrator atomically claims `error_notifications_sent_at` so only one fan-out happens per execution.
 
 **Retry semantics — v1: full rerun only.**
 - Creates new execution session via standard execute pipeline. Original is `failed` and unchanged.
 - `source = 'retry'`, `retryOf = originalSessionId` (already wired in execute route).
 - Q4 idempotency keys are session-scoped → side effects from prior successful steps may fire again on retry. Stripe `Idempotency-Key` follows session id, so retry uses a fresh key.
-- Resume-from-failed-node + cross-session side-effect dedupe is **out of scope** — tracked as separate engine project. See [`/learning/docs/error-handling-ux.md`](./learning/docs/error-handling-ux.md) "Follow-up" section.
+- Resume-from-failed-node + cross-session side-effect dedupe is **out of scope** — tracked as a future project: [Safe resume-from-failed-node execution](./learning/docs/safe-resume-from-failed-node-project.md). Do not start that work without explicit go-ahead. See also [`/learning/docs/error-handling-ux.md`](./learning/docs/error-handling-ux.md) "Follow-up" section.
+
+**Follow-up cleanup:** `components/workflows/ExecutionHistoryModal.tsx` is dead code (zero call sites; the live dialog is `WorkflowHistoryDialog`). After the v2 dialog is verified in production, delete the file or extract truly-shared pieces into reusable components.
 
 **Tests:** `__tests__/workflows/humanizeActionError.test.ts` (23 tests).
 
