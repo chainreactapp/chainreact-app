@@ -15,6 +15,22 @@ through full rollout. Companion to
   with the resume API; (7) Q4 dual-write + read-fallback with logging,
   uuid type; (8) project doc stays "in progress behind feature flag"
   until rollout.
+- 2026-05-04: round 2 review added the v2 history API contract under
+  Phase 5 — list endpoint exposes `rootExecutionId` +
+  `workflowDefinitionHash`; detail endpoint adds `graphNodeId` for
+  resume eligibility lookups.
+- 2026-05-04: **Phase 0 shipped to prod.** Migration
+  `20260506000000_add_resume_lineage_columns.sql` applied; backfill
+  clean (12/12 sessions), `idx_wes_root_execution_id` present.
+- 2026-05-04: **Phase 1 / PR-R1a shipped (commits 1-7).** Migration
+  `20260507000000_add_root_to_session_side_effects.sql` applied to
+  prod. Engine writes lineage; meta threads through to handlers; Q4
+  dual-writes both id columns and reads root-first with structured
+  fallback log. 1154 tests green across 69 suites; no regressions.
+  Engine path corrected from `lib/services/` → `lib/execution/` in
+  this doc. Test inventory consolidated into existing test files.
+  PR-R1b is now observation-gated on `q4_lineage_fallback_hit` log
+  reaching zero.
 
 ## Context
 
@@ -223,7 +239,7 @@ existing flows.
 
 **PR-R1a.** Engine writes lineage; handlers read it.
 
-- [`AdvancedExecutionEngine.createExecutionSession`](../../lib/services/advancedExecutionEngine.ts):
+- [`AdvancedExecutionEngine.createExecutionSession`](../../lib/execution/advancedExecutionEngine.ts):
   - Compute `workflow_definition_hash` from workflow nodes/edges.
   - On retry path: read `original.root_execution_id` and propagate; set
     `workflow_definition_hash` from current workflow.
@@ -251,16 +267,27 @@ existing flows.
   - **UNIQUE constraint** on `(execution_session_id, node_id, action_type)` is preserved during dual-write. A separate unique index on `(root_execution_id, node_id, action_type)` is **not** added yet — would block legitimate retry writes that share a root.
   - One full release cycle later (PR-R1b), drop the fallback read path and the `execution_session_id` UNIQUE constraint, replacing it with `(root_execution_id, node_id, action_type)` UNIQUE. PR-R1b is gated on the fallback log emitting zero hits over the observation window.
 
-**Tests:**
-- `__tests__/workflows/q4-lineage.test.ts` — new run + retry share root id
-  → second run's handler call hits cache via root lookup.
-- `__tests__/workflows/q4-fallback-read.test.ts` — row written before
-  rollout (no `root_execution_id`) is still found via session-id fallback;
-  fallback emits the expected log line.
-- `__tests__/workflows/stripe-idempotency-lineage.test.ts` — Stripe header
-  formed from root id; verifies same value across retries.
-- Existing Q4 tests should pass without modification (lineage = sessionId
-  for non-retry runs).
+**Tests (as actually shipped — consolidated into existing files):**
+- `__tests__/workflows/sessionSideEffects.test.ts` — extended from 28 → 35
+  tests covering:
+  - `buildIdempotencyKey — PR-R1a retry lineage`: root preserved when
+    supplied; falls back to `executionSessionId` when missing/empty.
+  - `formatProviderIdempotencyKey`: renders from rootExecutionId; uses
+    root (not session) on retries; pre-PR-R1a callers see no behavior
+    change.
+  - `checkReplay — PR-R1a lineage read`: cross-session dedup via root;
+    fallback to `execution_session_id = key.rootExecutionId` for
+    pre-rollout rows; fresh-run gap-window replay covered by fallback;
+    no fallback log when both reads miss; mismatch via root lookup.
+  - `recordFired` PR-R1a dual-write: retry-context fire writes both id
+    columns with different values.
+- `__tests__/workflows/engine-create-session-lineage.test.ts` — 16 tests
+  on the pure helpers in `lib/execution/sessionLineage.ts`: fresh
+  vs retry root resolution, retry-of-a-retry stability, pre-Phase-0
+  fallback, lookup error fall-through, hash null on missing/cyclic data,
+  volatile UI fields ignored.
+- Existing Q4 tests pass without modification (lineage = sessionId for
+  non-retry runs).
 
 **Rollback plan:** if PR-R1a misbehaves, the read-fallback path means
 existing session-scoped Q4 records are still discoverable. If lineage
@@ -373,29 +400,70 @@ flag is off so external callers cannot probe.
   path, the auth/billing forwarding, the 404-when-flag-off case, and the
   loop / window / hash gates.
 
-### Phase 5 — UI: two-button retry dialog
+### Phase 5 — UI: two-button retry dialog + v2 history API contract
 
-**PR-R5.** [`ExecutionHistoryModal.tsx`](../../components/workflows/ExecutionHistoryModal.tsx)
-+ [`ClassifiedErrorCard.tsx`](../../components/workflows/ClassifiedErrorCard.tsx).
+**PR-R5.** [`WorkflowHistoryDialog.tsx`](../../components/workflows/builder/WorkflowHistoryDialog.tsx)
+(the live builder history UI) + [`ClassifiedErrorCard.tsx`](../../components/workflows/ClassifiedErrorCard.tsx),
+plus the v2 history API endpoints that feed the dialog.
 
-- ExecutionHistoryModal:
-  - Compute `canResume` from session + workflow hash + steps.
+> Plan revisions: phase 5 originally targeted `ExecutionHistoryModal.tsx`.
+> The live UI shipped to users is `builder/WorkflowHistoryDialog.tsx` —
+> that's the file to change. Round-2 review also added the v2 history API
+> contract below, since the UI computes `canResume` client-side and needs
+> the backing data exposed.
+
+**v2 history API changes:**
+
+- [`app/(app)/workflows/v2/api/flows/[flowId]/runs/history/route.ts`](../../app/(app)/workflows/v2/api/flows/[flowId]/runs/history/route.ts)
+  (list endpoint):
+  - Extend the `SELECT` to include `root_execution_id` and
+    `workflow_definition_hash` (both nullable; resume is only offered when
+    they're non-null).
+  - Add to the `FlowRunSummary` response:
+    `rootExecutionId: s.root_execution_id || null`,
+    `workflowDefinitionHash: s.workflow_definition_hash || null`.
+  - `error_classification.firstFailedNodeId` is already included via the
+    existing `errorClassification` passthrough — no change needed.
+- [`app/(app)/workflows/v2/api/runs/[runId]/nodes/route.ts`](../../app/(app)/workflows/v2/api/runs/[runId]/nodes/route.ts)
+  (detail endpoint):
+  - The current mapping at line 54 sets `node_id: s.node_name || s.node_type || s.node_id` — that's a display label, not the graph node id. Resume eligibility checks (does `firstFailedNodeId` still exist? is it inside a loop? is any loop partially completed?) need the **graph node id** to match against the current workflow definition.
+  - Add a sibling field `graphNodeId: s.node_id` to the response. Keep
+    the existing `node_id` field for backward compat (it remains the
+    display label).
+  - No new column reads required — `execution_steps.node_id` is already
+    selected.
+  - Existing `status` and `output_data` fields are sufficient for the
+    UI to detect "did at least one upstream node succeed" and "is any
+    loop step in a partially-completed state."
+
+**UI:**
+
+- WorkflowHistoryDialog:
+  - Compute `canResume` from session + workflow hash + steps + window.
+    Mirror the API's eligibility predicates so the button never appears
+    for a request the API will reject.
   - Render second button "Resume from failed step" when `canResume`.
   - New AlertDialog copy: "Only the [N] remaining steps will run.
     Previously completed steps are skipped." Heightened payment warning
     only if a payment-impacting step exists *downstream* of the failed
-    node (reuses `isPaymentImpactingNodeType` against the resumed subgraph).
-  - Calls `POST /api/executions/[id]/resume`.
+    node (reuses `isPaymentImpactingNodeType` against the resumed
+    subgraph).
+  - Calls `POST /api/executions/[id]/resume`. When the API returns 404
+    (flag off), the button is not rendered in the first place — so this
+    path should be unreachable in practice.
 - ClassifiedErrorCard: when `canResume`, the `open_node` action's CTA gets
   a sibling "Resume from failed step" CTA. The `firstFailedNodeId` field
   becomes load-bearing.
 - New small component
   `components/workflows/RetryModePicker.tsx` to keep the two-button block
-  reusable across the modal and the card.
+  reusable across the dialog and the card.
 
 **Tests:**
-- Component tests for the modal verifying the button shows/hides under
-  each precondition.
+- Component tests for the dialog verifying the button shows/hides under
+  each precondition (no successful upstream step, hash mismatch, loop
+  failure, partially completed loop, expired window, flag off, missing
+  `rootExecutionId` or `workflowDefinitionHash` on the run).
+- API contract tests for the new fields on both endpoints.
 - Visual: light + dark mode pass per CLAUDE.md §7.
 
 ### Phase 6 — Provider-by-provider safety review
@@ -423,24 +491,33 @@ Targets:
 twice with the same `rootExecutionId` and asserts only one provider call
 fires.
 
-### Phase 7 — Feature flag + rollout
+### Phase 7 — Rollout
 
-**PR-R7.** Gate everything behind `ENABLE_RESUME_FROM_FAILED_NODE`.
+**PR-R7.** Phased rollout of the feature flag (defined in phase 0).
 
-- Flag added to [`lib/featureFlags.ts`](../../lib/featureFlags.ts).
-- Default `false`. UI hides the second button when off. API endpoint
-  returns 404 when off (so external callers cannot probe).
+- Flag and window env var already exist from phase 0; behavior already
+  gated by API + UI from phases 4 + 5.
 - Rollout sequence:
-  1. Internal accounts only (`super_admin` capability check).
+  1. Internal accounts only (`super_admin` capability check) — flip flag
+     `true` only for admin users.
   2. 1% via user_id hash.
   3. 10%.
   4. 100%.
 - Observability: emit one metric per resume — `resume.executed`,
-  `resume.blocked.{reason}`, `resume.idempotency_hit_count`. Dashboard
-  watches the idempotency hit count vs. fresh fire count to confirm Q4 is
-  doing its job.
+  `resume.blocked.{reason}`, `resume.idempotency_hit_count`,
+  `q4_lineage_fallback_hit`. Dashboard watches the idempotency hit count
+  vs. fresh fire count to confirm Q4 is doing its job, and the fallback
+  count to confirm phase 1's read-fallback can be retired.
+- After 100% rollout holds for one week with no incidents:
+  - Land **PR-R1b**: drop Q4 read-fallback, swap UNIQUE constraint to
+    `(root_execution_id, node_id, action_type)`.
+  - Update [project doc](./safe-resume-from-failed-node-project.md) status
+    from "in progress behind feature flag" to "shipped".
+  - Update CLAUDE.md §10 to remove the "do not start without explicit
+    go-ahead" note for this project.
 
-**Tests:** feature-flag test asserting all behavior is gated.
+**Tests:** feature-flag test asserting all paths gate correctly when the
+flag is off (404 from API, button hidden in UI).
 
 ## File-level change inventory
 
@@ -448,55 +525,48 @@ fires.
 |---|---|---|
 | `supabase/migrations/{date}_add_resume_lineage_columns.sql` | 0 | NEW |
 | `supabase/migrations/{date}_add_root_to_session_side_effects.sql` | 1 | NEW |
-| `lib/services/advancedExecutionEngine.ts` | 1, 2 | EDIT |
+| `lib/execution/advancedExecutionEngine.ts` | 1, 2 | EDIT |
+| `lib/execution/sessionLineage.ts` | 1 | NEW (extracted helpers, testable in isolation) |
 | `lib/services/workflowExecutionService.ts` | 2 | EDIT |
 | `lib/services/nodeExecutionService.ts` | 2 | EDIT |
 | `lib/workflows/dataFlowContext.ts` | 2 | EDIT (add `seedNodeOutputs` method) |
 | `lib/workflows/actions/core/idempotencyKey.ts` | 1 | EDIT |
-| `lib/workflows/actions/core/sessionSideEffects.ts` | 1 | EDIT (lookup by root) |
+| `lib/workflows/actions/core/sessionSideEffects.ts` | 1 | EDIT (lookup by root, dual-write, fallback log) |
+| `lib/workflows/executeNode.ts` | 1 | EDIT (thread `rootExecutionId` into `handlerMeta`) |
+| `lib/workflows/workflowDefinitionHash.ts` | 1 | NEW (pure helper) |
+| `__tests__/workflows/workflowDefinitionHash.test.ts` | 1 | NEW (26 tests) |
+| `__tests__/workflows/engine-create-session-lineage.test.ts` | 1 | NEW (16 tests on extracted helpers) |
+| `__tests__/workflows/sessionSideEffects.test.ts` | 1 | EDIT (lineage cases, dual-write, fallback) |
+| `__tests__/nodes/gmail-send-email.test.ts` | 1 | EDIT (key shape now includes `rootExecutionId`) |
+| `__tests__/nodes/outlook-send-email.test.ts` | 1 | EDIT (key shape now includes `rootExecutionId`) |
 | `lib/workflows/cost-preview.ts` | 4 | EDIT (accept `fromNodeId`) |
 | `lib/workflows/taskDeduction.ts` | 4 | EDIT (new event_type) |
-| `app/api/workflows/execute/route.ts` | 3 | EDIT (mode dispatch) |
+| `app/api/workflows/execute/route.ts` | 1, 3 | EDIT (phase 1: pass `retryOf` to engine; phase 3: mode dispatch) |
 | `app/api/workflows/[id]/preview-cost/route.ts` | 3 | EDIT |
 | `app/api/executions/[executionId]/resume/route.ts` | 3 | NEW |
-| `components/workflows/ExecutionHistoryModal.tsx` | 5 | EDIT |
+| `components/workflows/builder/WorkflowHistoryDialog.tsx` | 5 | EDIT |
+| `app/(app)/workflows/v2/api/flows/[flowId]/runs/history/route.ts` | 5 | EDIT (expose `rootExecutionId`, `workflowDefinitionHash`) |
+| `app/(app)/workflows/v2/api/runs/[runId]/nodes/route.ts` | 5 | EDIT (add `graphNodeId` field) |
 | `components/workflows/ClassifiedErrorCard.tsx` | 5 | EDIT |
 | `components/workflows/RetryModePicker.tsx` | 5 | NEW |
-| `lib/featureFlags.ts` | 7 | EDIT |
+| `lib/featureFlags.ts` | 0 | EDIT (flag + window env var) |
 | `learning/docs/handler-contracts.md` | 1 | EDIT (Q4 contract: lineage) |
 | `learning/docs/safe-resume-from-failed-node-project.md` | 7 | EDIT (mark shipped) |
 | `CLAUDE.md` §6, §10 | 1, 7 | EDIT |
 | `scripts/reconcile-billing-metadata.sql` | 4 | EDIT |
 
-## Open questions for review
+## Resolved decisions (from 2026-05-04 review)
 
-Before I start phase 0, I'd like your call on:
-
-1. **Resume eligibility window.** Today's full retry has no window — you can
-   retry a year-old failed run. For resume, the underlying provider state
-   may have drifted (a Stripe customer was deleted, a Slack channel
-   archived). Do we cap resume at e.g. 7 days post-failure? Or leave
-   unbounded and let provider errors surface?
-
-2. **Loop nodes.** Phase 1 hides resume when the failed node is *inside* a
-   loop. But what about a failed node that sits *after* a loop that
-   completed successfully? The completed loop's output replays from
-   `execution_steps.output_data`. I believe this is safe; confirming.
-
-3. **AI agent + dynamic templates.** The AI agent action persists no
-   checkpoints today. Skip-with-replay (D2 Option A) gives downstream nodes
-   the cached output without re-calling the LLM. Confirming this is desired
-   — alternative is to force AI-agent-bearing workflows to use full retry.
-
-4. **Resume after partial loop.** If a loop completed 7 of 10 iterations
-   then a downstream node failed: resume from the downstream node, the loop
-   is treated as a single completed unit (its full output array is
-   replayed). Confirming this is the right granularity.
-
-5. **Phase ordering.** Phases 0-2 are pure plumbing with no user-visible
-   change. Phase 3 exposes the API but UI is gated. Phase 5 is the
-   user-visible one. Acceptable to merge phases 0-2 and observe for a
-   week before opening phase 3?
+| Question | Decision |
+|---|---|
+| Eligibility window | 7 days from original failure timestamp; configurable via `RESUME_FROM_FAILED_NODE_WINDOW_DAYS`. |
+| Failed node inside a loop | Resume hidden. Full retry only. |
+| Partially-completed loop in prior run | Resume hidden — loop must be a single fully-completed step record to be replayed as a unit. |
+| Completed loop upstream of failed node | Replayed as one unit from `execution_steps.output_data`. |
+| AI agent on resume | Cached output replayed; LLM is **not** called again. |
+| Phase ordering | Billing (phase 3) lands before or with the resume API (phase 4). API is gated by flag and returns 404 when off. |
+| Q4 migration | Dual-write `root_execution_id` + `execution_session_id`. Read root first, fall back to session for one release cycle, log fallback hits. `uuid` type, matching the `session_side_effects` precedent. |
+| Project doc status | "In progress behind feature flag" until rollout completes; flipped to "shipped" only after PR-R1b lands and 100% holds for a week. |
 
 ## Verification plan (end-to-end, post-phase-7)
 

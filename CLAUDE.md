@@ -651,7 +651,7 @@ Workflow failure UX — three coordinated surfaces (in-builder dialog, push noti
 - Creates new execution session via standard execute pipeline. Original is `failed` and unchanged.
 - `source = 'retry'`, `retryOf = originalSessionId` (already wired in execute route).
 - Q4 idempotency keys are session-scoped → side effects from prior successful steps may fire again on retry. Stripe `Idempotency-Key` follows session id, so retry uses a fresh key.
-- Resume-from-failed-node + cross-session side-effect dedupe is **out of scope** — tracked as a future project: [Safe resume-from-failed-node execution](./learning/docs/safe-resume-from-failed-node-project.md). Do not start that work without explicit go-ahead. See also [`/learning/docs/error-handling-ux.md`](./learning/docs/error-handling-ux.md) "Follow-up" section.
+- Resume-from-failed-node + cross-session side-effect dedupe is **in progress behind feature flag `ENABLE_RESUME_FROM_FAILED_NODE`** (default `false`; eligibility window via `RESUME_FROM_FAILED_NODE_WINDOW_DAYS`, default 7). Project doc: [Safe resume-from-failed-node execution](./learning/docs/safe-resume-from-failed-node-project.md). Implementation plan: [safe-resume-from-failed-node-implementation-plan.md](./learning/docs/safe-resume-from-failed-node-implementation-plan.md). Until rollout completes, the flag stays off in production and no user-visible behavior changes. See also [`/learning/docs/error-handling-ux.md`](./learning/docs/error-handling-ux.md) "Follow-up" section.
 
 **Follow-up cleanup:** `components/workflows/ExecutionHistoryModal.tsx` is dead code (zero call sites; the live dialog is `WorkflowHistoryDialog`). After the v2 dialog is verified in production, delete the file or extract truly-shared pieces into reusable components.
 

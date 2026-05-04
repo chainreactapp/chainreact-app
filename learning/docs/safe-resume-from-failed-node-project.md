@@ -1,6 +1,10 @@
 # Safe Resume-From-Failed-Node Execution
 
-**Status:** Future project — not in scope for current sprint. Do **not** start design or implementation without explicit go-ahead.
+**Status:** In progress behind feature flag `ENABLE_RESUME_FROM_FAILED_NODE`
+(default `false`). Implementation plan:
+[safe-resume-from-failed-node-implementation-plan.md](./safe-resume-from-failed-node-implementation-plan.md).
+This status flips to "shipped" only after rollout completes and PR-R1b
+(Q4 read-fallback removal) lands.
 
 **Origin:** Spun out of the v1 error-handling UX work
 ([error-handling-ux.md](./error-handling-ux.md)). v1 ships full-workflow retry only;

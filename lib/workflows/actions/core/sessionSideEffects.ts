@@ -1,8 +1,13 @@
 /**
- * Within-session idempotency registry (PR-C4, Q4).
+ * Cross-session idempotency registry (PR-C4 → PR-R1a, Q4).
  *
- * Two functions, both keyed on `SideEffectKey`
- * `(executionSessionId, nodeId, actionType)`:
+ * Keyed on `SideEffectKey` `(executionSessionId, rootExecutionId,
+ * nodeId, actionType)`. Reads use `(rootExecutionId, nodeId, actionType)`
+ * so retries and resumes that share a lineage root see each other's
+ * marker rows. Writes dual-write both id columns during the read-
+ * fallback window (see below).
+ *
+ * Two functions:
  *
  *   - `checkReplay(key, payloadHash)` — atomic read of any prior row.
  *     Returns `{kind: 'fresh'}` (no row, fire normally),
@@ -11,11 +16,26 @@
  *     `{kind: 'mismatch', storedHash}` (different hash, handler must
  *     return PAYLOAD_MISMATCH).
  *
+ *     Read sequence (PR-R1a):
+ *       1. Try `(root_execution_id, node_id, action_type)`.
+ *       2. If no row, fall back to
+ *          `(execution_session_id, node_id, action_type)` to catch
+ *          rows written between Phase 0 (column added) and Phase 1
+ *          (this commit, dual-write enabled). Emit
+ *          `q4_lineage_fallback_hit` so the cleanup PR (PR-R1b) can
+ *          gate on zero hits.
+ *
  *   - `recordFired(key, result, payloadHash, options?)` — write the
  *     marker after a successful first fire. Idempotent on its own:
  *     a UNIQUE-violation is caught and treated as already-recorded,
  *     so a concurrent fire that loses the unique-constraint race
  *     doesn't error.
+ *
+ *     Write (PR-R1a): always populates BOTH `execution_session_id`
+ *     and `root_execution_id`. The UNIQUE constraint on
+ *     `(execution_session_id, node_id, action_type)` still holds
+ *     during the dual-write window; PR-R1b will swap it for a
+ *     UNIQUE on the lineage tuple once the fallback log is silent.
  *
  * Both calls go through the service-role admin client. Failures are
  * conservative:
@@ -33,6 +53,7 @@
  *
  * Contract: see `learning/docs/handler-contracts.md` Q4 and
  * `learning/docs/session-side-effects-design.md` §3.
+ * Lineage rationale: `learning/docs/safe-resume-from-failed-node-implementation-plan.md`.
  */
 
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -65,6 +86,13 @@ export interface CheckReplayOptions {
  * Atomically read the existing marker for `key` and compare its
  * stored hash to `payloadHash`. See `ReplayOutcome` for the three
  * exhaustive return shapes.
+ *
+ * Read sequence (PR-R1a): root_execution_id → execution_session_id
+ * fallback. The fallback path catches rows written between Phase 0
+ * deploy (column added) and Phase 1 deploy (dual-write enabled) —
+ * those rows have only execution_session_id populated. Each
+ * fallback hit emits `q4_lineage_fallback_hit` so PR-R1b can gate
+ * on a zero count over the observation window.
  */
 export async function checkReplay(
   key: SideEffectKey,
@@ -73,20 +101,62 @@ export async function checkReplay(
 ): Promise<ReplayOutcome> {
   try {
     const supabase = options.supabase ?? createAdminClient()
-    const { data, error } = await supabase
+
+    // Primary read: by retry-lineage root.
+    const primary = await supabase
       .from(TABLE)
       .select('payload_hash, result_snapshot')
-      .eq('execution_session_id', key.executionSessionId)
+      .eq('root_execution_id', key.rootExecutionId)
       .eq('node_id', key.nodeId)
       .eq('action_type', key.actionType)
       .maybeSingle()
 
-    if (error) {
+    if (primary.error) {
       logger.error(
-        '[sessionSideEffects.checkReplay] DB read failed; falling back to fresh',
-        { error: error.message, key },
+        '[sessionSideEffects.checkReplay] root-keyed DB read failed; falling back to fresh',
+        { error: primary.error.message, key },
       )
       return { kind: 'fresh' }
+    }
+
+    let data: any = primary.data
+
+    // Fallback read (PR-R1a, removed in PR-R1b): by execution_session_id
+    // = root, for rows written before dual-write rolled out. Pre-rollout
+    // rows have root_execution_id NULL but execution_session_id = the
+    // run's own id, which is precisely what we passed as `rootExecutionId`
+    // in the key (lineage anchors at the originating session). The
+    // fallback runs even when root === session because a fresh run can
+    // also have a pre-rollout marker for itself (engine restart in the
+    // gap window).
+    if (!data) {
+      const fallback = await supabase
+        .from(TABLE)
+        .select('payload_hash, result_snapshot')
+        .eq('execution_session_id', key.rootExecutionId)
+        .eq('node_id', key.nodeId)
+        .eq('action_type', key.actionType)
+        .maybeSingle()
+
+      if (fallback.error) {
+        logger.error(
+          '[sessionSideEffects.checkReplay] session-id fallback read failed; treating as fresh',
+          { error: fallback.error.message, key },
+        )
+        return { kind: 'fresh' }
+      }
+
+      if (fallback.data) {
+        // Structured log line so a dashboard / alert can gate PR-R1b
+        // (drop the fallback path) on this counter staying at zero.
+        logger.warn('q4_lineage_fallback_hit', {
+          executionSessionId: key.executionSessionId,
+          rootExecutionId: key.rootExecutionId,
+          nodeId: key.nodeId,
+          actionType: key.actionType,
+        })
+        data = fallback.data
+      }
     }
 
     if (!data) return { kind: 'fresh' }
@@ -125,8 +195,13 @@ export async function recordFired(
     const provider =
       options.provider ?? deriveProviderFromActionType(key.actionType)
 
+    // PR-R1a — dual-write: populate both id columns. The UNIQUE constraint
+    // is still on `(execution_session_id, node_id, action_type)` during
+    // this window; PR-R1b will swap it for the lineage tuple once the
+    // q4_lineage_fallback_hit counter is silent.
     const row = {
       execution_session_id: key.executionSessionId,
+      root_execution_id: key.rootExecutionId,
       node_id: key.nodeId,
       action_type: key.actionType,
       provider,

@@ -507,7 +507,8 @@ export async function POST(request: NextRequest) {
       const { AdvancedExecutionEngine } = require("@/lib/execution/advancedExecutionEngine")
       const executionEngine = new AdvancedExecutionEngine()
 
-      // Create execution session — stamp with canonical billing scope
+      // Create execution session — stamp with canonical billing scope and
+      // (PR-R1a) retry-lineage root + workflow definition hash for resume.
       const executionSession = await executionEngine.createExecutionSession(
         workflowId,
         userId,
@@ -517,6 +518,7 @@ export async function POST(request: NextRequest) {
           executionMode,
           workflowData: workflowData || workflow,
           billingScope,
+          retryOf,  // PR-R1a — engine resolves root_execution_id from the original
         }
       )
 

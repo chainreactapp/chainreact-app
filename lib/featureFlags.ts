@@ -39,4 +39,35 @@ export const FEATURE_FLAGS = {
    * Rollout: deploy false → create live pack prices → enable for self → flip on.
    */
   TASK_PACKS: process.env.ENABLE_TASK_PACKS === 'true',
+
+  /**
+   * When true, the workflow execution history surfaces a "Resume from failed
+   * step" button alongside the existing "Retry full workflow" button, and the
+   * `/api/executions/[id]/resume` endpoint accepts traffic. When false, the
+   * endpoint returns 404 and the button is hidden.
+   *
+   * Resume re-runs only the unfinished portion of a failed workflow, replaying
+   * upstream completed nodes' outputs from `execution_steps.output_data` and
+   * relying on retry-lineage Q4 idempotency to prevent any provider-side
+   * double-fire. Eligibility is bounded by RESUME_FROM_FAILED_NODE_WINDOW_DAYS.
+   *
+   * Plan: learning/docs/safe-resume-from-failed-node-implementation-plan.md
+   * Rollout: super_admin → 1% → 10% → 100% → drop Q4 read-fallback.
+   */
+  RESUME_FROM_FAILED_NODE: process.env.ENABLE_RESUME_FROM_FAILED_NODE === 'true',
 } as const
+
+/**
+ * Eligibility window (in days) past which a failed run can no longer be resumed
+ * from its broken step. Full retry remains available regardless. Default: 7.
+ *
+ * Beyond this window, provider state may have drifted (deleted Stripe customers,
+ * archived Slack channels) such that replaying upstream outputs would mislead
+ * the user about what actually happened in the resumed run.
+ */
+export const RESUME_FROM_FAILED_NODE_WINDOW_DAYS: number = (() => {
+  const raw = process.env.RESUME_FROM_FAILED_NODE_WINDOW_DAYS
+  if (!raw) return 7
+  const parsed = Number.parseInt(raw, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 7
+})()
