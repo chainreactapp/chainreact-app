@@ -2,7 +2,6 @@ import { NextRequest, NextResponse, after } from 'next/server'
 import { jsonResponse, errorResponse, successResponse } from '@/lib/utils/api-response';
 import { executeWebhookWorkflow } from '@/lib/webhooks/execute';
 import { createClient } from '@supabase/supabase-js';
-import { webhookManager } from '@/lib/webhooks/webhookManager';
 import { checkRateLimit, RateLimitPresets } from '@/lib/utils/rate-limit';
 import crypto from 'crypto';
 
