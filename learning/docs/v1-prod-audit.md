@@ -41,7 +41,7 @@ The audit found three things, two of which were expected and **one of which mate
 | 4 | [lib/webhooks/gmail-processor.ts:1576](../../lib/webhooks/gmail-processor.ts) | Gmail push notification | ❌ | ✓ custom map (no TTL — leak risk) | ❌ | ⚠ Port |
 | 5 | [lib/webhooks/google-processor.ts](../../lib/webhooks/google-processor.ts) (5 entry points) | Calendar/Drive/Sheets webhooks | ❌ | ✓ custom maps (no TTL) | ❌ | ⚠ Port |
 | 6 | [lib/services/discordInviteTracker.ts](../../lib/services/discordInviteTracker.ts) | Discord member-join event | ✓ via #3 | ✓ via #3 (`${guildId}:${memberId}:${joinedAt}`) | ❌ | ✓ Migrated 2026-05-04 (PR-V2-WEBHOOK-DISCORD-INVITE) |
-| 7 | [app/api/workflow/[provider]/route.ts:303](../../app/api/workflow/[provider]/route.ts) | Provider-specific webhook | ❌ | None | ❌ | ⚠ Port |
+| 7 | [app/api/workflow/[provider]/route.ts](../../app/api/workflow/[provider]/route.ts) | Provider-specific webhook | ✓ via #3 | ✓ via #3 (`requestId`) | ❌ | ✓ Migrated 2026-05-04 (PR-V2-WEBHOOK-PROVIDER) |
 | 8 | [app/api/microsoft-graph/worker/route.ts:1220](../../app/api/microsoft-graph/worker/route.ts) | MS Graph queue worker | ❌ | ✓ 3 layers | ❌ | ⚠ Port |
 | 9 | [app/api/webhooks/stripe-integration/route.ts](../../app/api/webhooks/stripe-integration/route.ts) | Stripe events | ✓ via #3 | ✓ via #3 (`event.id`) | ❌ | ✓ Migrated 2026-05-04 (PR-V2-WEBHOOK-STRIPE-INT) |
 | 10 | [app/api/webhooks/mailchimp/route.ts](../../app/api/webhooks/mailchimp/route.ts) (2 entry points) | Mailchimp events | ❌ | None | ❌ | ⚠ Port |

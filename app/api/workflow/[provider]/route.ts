@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { jsonResponse, errorResponse, successResponse } from '@/lib/utils/api-response'
 import { createClient } from '@supabase/supabase-js'
-import { AdvancedExecutionEngine } from '@/lib/execution/advancedExecutionEngine'
+import { executeWebhookWorkflow } from '@/lib/webhooks/execute'
 import { handleDropboxWebhookEvent } from '@/lib/webhooks/dropboxTriggerHandler'
 
 import { logger } from '@/lib/utils/logger'
@@ -66,6 +66,43 @@ setInterval(() => {
     }
   }
 }, 5 * 60 * 1000)
+
+/**
+ * PR-V2-WEBHOOK-PROVIDER: routes provider-specific webhook executions
+ * through the unified webhook dispatcher. Dedup uses requestId as the
+ * primary signal (per-request ID generated for the inbound webhook).
+ *
+ * Exported for tests.
+ */
+export async function dispatchProviderWebhook(
+  workflow: { id: string; user_id: string },
+  provider: string,
+  triggerNode: any,
+  transformedPayload: any,
+  requestId: string,
+): Promise<{ success: boolean; sessionId?: string; duplicate?: boolean; error?: string }> {
+  try {
+    const result = await executeWebhookWorkflow({
+      workflowId: workflow.id,
+      userId: workflow.user_id,
+      provider,
+      triggerType: triggerNode?.data?.type ?? `${provider}_webhook`,
+      triggerData: transformedPayload,
+      metadata: {
+        requestId,
+        providerId: provider,
+      },
+      dedupeKey: requestId,
+    })
+
+    if (!result.success) {
+      return { success: false, error: result.error }
+    }
+    return { success: true, sessionId: result.sessionId, duplicate: result.duplicate }
+  } catch (dispatchError: any) {
+    return { success: false, error: dispatchError?.message ?? 'dispatch threw' }
+  }
+}
 
 export async function POST(
   request: NextRequest,
@@ -299,33 +336,30 @@ export async function POST(
       // Test sessions are handled separately in the test session processing section below.
 
       try {
-        // Create execution session
-        const executionEngine = new AdvancedExecutionEngine()
-        const session = await executionEngine.createExecutionSession(
-          workflow.id,
-          workflow.user_id,
-          'webhook',
-          {
-            inputData: transformedPayload,
-            provider: provider,
-            triggerNode: triggerNode,
-            requestId: requestId
-          }
+        logger.info(`${logPrefix} Starting workflow execution for workflow ${workflow.id}...`)
+        const dispatchResult = await dispatchProviderWebhook(
+          { id: workflow.id, user_id: workflow.user_id },
+          provider,
+          triggerNode,
+          transformedPayload,
+          requestId,
         )
 
-        logger.info(`${logPrefix} Created execution session: ${session.id} for workflow ${workflow.id}`)
+        if (!dispatchResult.success) {
+          throw new Error(dispatchResult.error || 'dispatch failed')
+        }
 
-        // Execute the workflow
-        logger.info(`${logPrefix} Starting workflow execution for workflow ${workflow.id}...`)
-        await executionEngine.executeWorkflowAdvanced(session.id, transformedPayload)
-        logger.info(`${logPrefix} Workflow execution completed for workflow ${workflow.id}`)
+        logger.info(`${logPrefix} Workflow execution completed for workflow ${workflow.id}`, {
+          sessionId: dispatchResult.sessionId,
+          duplicate: dispatchResult.duplicate,
+        })
 
         // Log webhook execution
         await logWebhookExecution(workflow.id, provider, payload, headers, 'success', Date.now() - startTime)
 
         results.push({
           workflowId: workflow.id,
-          sessionId: session.id,
+          sessionId: dispatchResult.sessionId ?? null,
           success: true,
           executionTime: Date.now() - startTime
         })
