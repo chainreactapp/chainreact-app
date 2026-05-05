@@ -8,8 +8,6 @@ import {
 import { getBaseUrl } from "@/lib/utils/getBaseUrl"
 import { CONNECTED_STATUSES_LIST } from "./connectionStatus"
 
-import { logger } from '@/lib/utils/logger'
-
 function getOAuthRedirectUri(provider: string): string {
   const baseUrl = getBaseUrl()
   return `${baseUrl}/api/integrations/${provider}/callback`
@@ -53,23 +51,6 @@ export async function validateIntegrationScopes(
     validation = validateScopes(provider, grantedScopes)
   }
 
-  // Update the integration record with validation results
-  try {
-    await db
-      .from("integrations")
-      .update({
-        granted_scopes: grantedScopes,
-        missing_scopes: validation.missing,
-        scope_validation_status: validation.status,
-        last_scope_check: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("user_id", userId)
-      .eq("provider", provider)
-  } catch (error) {
-    logger.error("Failed to update integration scope validation:", error)
-  }
-
   return {
     provider,
     valid: validation.valid,
@@ -78,27 +59,6 @@ export async function validateIntegrationScopes(
     status: validation.status,
     lastChecked: new Date().toISOString(),
   }
-}
-
-export async function validateAllUserIntegrations(userId: string): Promise<ScopeValidationResult[]> {
-  const { data: integrations } = await db
-    .from("integrations")
-    .select("*")
-    .eq("user_id", userId)
-    .in("status", CONNECTED_STATUSES_LIST)
-
-  if (!integrations) return []
-
-  const results: ScopeValidationResult[] = []
-
-  for (const integration of integrations) {
-    if (!integration.granted_scopes) continue
-
-    const result = await validateIntegrationScopes(userId, integration.provider, integration.granted_scopes)
-    results.push(result)
-  }
-
-  return results
 }
 
 export function generateReconnectionUrl(provider: string, state?: string): string {
@@ -206,69 +166,8 @@ export function generateReconnectionUrl(provider: string, state?: string): strin
   }
 }
 
-export async function checkIntegrationHealth(
-  userId: string,
-  provider: string,
-): Promise<{
-  connected: boolean
-  scopesValid: boolean
-  lastChecked: string
-  issues: string[]
-}> {
-  try {
-    const { data: integration } = await db
-      .from("integrations")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("provider", provider)
-      .single()
-
-    if (!integration) {
-      return {
-        connected: false,
-        scopesValid: false,
-        lastChecked: new Date().toISOString(),
-        issues: ["Integration not found"],
-      }
-    }
-
-    const issues: string[] = []
-
-    // Check if token exists
-    if (!integration.access_token) {
-      issues.push("Access token missing")
-    }
-
-    // Check if token is expired
-    if (integration.expires_at && integration.expires_at < Date.now() / 1000) {
-      issues.push("Access token expired")
-    }
-
-    // Check scope validation
-    const scopesValid = integration.scope_validation_status === "valid"
-    if (!scopesValid) {
-      issues.push("Missing required permissions")
-    }
-
-    return {
-      connected: integration.is_active && issues.length === 0,
-      scopesValid,
-      lastChecked: integration.last_scope_check || integration.updated_at,
-      issues,
-    }
-  } catch (error) {
-    logger.error("Failed to check integration health:", error)
-    return {
-      connected: false,
-      scopesValid: false,
-      lastChecked: new Date().toISOString(),
-      issues: ["Health check failed"],
-    }
-  }
-}
-
 /**
- * Validates the scopes for an integration and updates the database accordingly
+ * Validates the scopes for an integration. Does not persist results.
  *
  * @param integrationId The ID of the integration to validate
  * @param grantedScopes Array of scopes granted by the OAuth provider
@@ -296,18 +195,6 @@ export async function validateAndUpdateIntegrationScopes(
 
   const validation = validateScopes(integration.provider, grantedScopes)
 
-  // Update integration record
-  await db
-    .from("integrations")
-    .update({
-      granted_scopes: grantedScopes,
-      missing_scopes: validation.missing,
-      scope_validation_status: validation.status,
-      last_scope_check: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", integrationId)
-
   return {
     integration,
     valid: validation.valid,
@@ -318,13 +205,14 @@ export async function validateAndUpdateIntegrationScopes(
 }
 
 /**
- * Validates all integrations for a user
+ * Validates all integrations for a user. Granted scopes are not persisted on
+ * the integrations row, so validation runs against an empty granted list and
+ * surfaces missing required scopes rather than reading historical state.
  *
  * @param userId The user ID to validate integrations for
  * @returns Array of validation results
  */
 export async function validateAllIntegrations(userId: string): Promise<any[]> {
-  // Get all connected integrations for the user
   const { data: integrations, error } = await db
     .from("integrations")
     .select("*")
@@ -335,18 +223,8 @@ export async function validateAllIntegrations(userId: string): Promise<any[]> {
     throw new Error(`Failed to fetch integrations: ${error?.message || "Unknown error"}`)
   }
 
-  // Validate scopes for all integrations
-  const validationResults = await Promise.all(
-    integrations.map(async (integration: any) => {
-      const result = validateScopes(integration.provider, integration.granted_scopes || [])
-      return {
-        ...integration,
-        scopeValidation: result,
-      }
-    }),
-  )
-
-  // Further checks or updates can be done here...
-
-  return validationResults
+  return integrations.map((integration: any) => ({
+    ...integration,
+    scopeValidation: validateScopes(integration.provider, []),
+  }))
 }
