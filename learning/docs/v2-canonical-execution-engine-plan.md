@@ -11,6 +11,8 @@ in place; further resume work paused pending v2 cutover.
 
 ## Revisions log
 
+- 2026-05-05: **Stage 1-2 operational rollout checklist added (Phase 5 §"Stage 1-2 operational rollout checklist").** No code change. Captures the operator-facing steps: how to enable the flag (env var + redeploy), how to opt in a user (admin UI / SQL), 10 representative workflow scenarios to test, the three observability surfaces (dispatch log / v2 service logs / DB row checks), the two rollback paths (per-user SQL UPDATE / global env-var flip), and a 9-item checklist of criteria for approving stage 5 (v1 deletion). Also expanded the Stage 5 cleanup list with a complete deletion inventory (engine, fallback paths, dispatch infrastructure, dead code, tests, docs) and a recommended 4-PR split so step 1 can be reverted independently if v2 hits a regression in production. **Decision (operator-driven from here):** stages 1-2 execute against existing infrastructure with no new code. Stage 5 deletion gates on the soak-window criteria, not engineering availability.
+- 2026-05-05: **Stage 5 prep — three additional direct-caller migrations shipped** (`d4a1c4505` Mailchimp, `1c56f3b2a` integration-webhooks, `abddf0f95` execute-advanced). Found via post-Phase-4 grep sweep: the original 10-caller brief missed audit row #10 (Mailchimp), audit row #11 (generic provider webhook at `/api/integration-webhooks/[provider]`), and the manual-trigger route at `/api/workflows/execute-advanced` (not in the audit). All three migrate via the same Option B (delegation) pattern; execute-advanced uses Option A (inline dispatch decision) since it's a route, not a service. Remaining `new AdvancedExecutionEngine()` call sites: 11 in `__tests__/parity/` (intentional, deleted with v1 in stage 5), 3 v1-fallback paths in routes + unified webhook dispatcher (deleted in stage 5), `lib/testing/workflowTesting.ts:51` (audit-classified Deprecate, deleted in stage 5), `lib/webhooks/google-processor.ts:3044` (test-session path, separate migration). Total: 13 direct-caller migrations shipped (10 from original brief + 3 from grep sweep).
 - 2026-05-05: **Phase 4 shipped — parity test suite.** `__tests__/parity/` (5 files, 18 tests) covers v1↔v2 dispatch parity for representative scenarios. Tests mock at the handler-class boundary (v1: `executeAction` from `lib/workflows/executeNode`; v2: `IntegrationNodeHandlers.execute` + `ActionNodeHandlers.execute`) so both engines' graph traversal runs end-to-end while we capture per-node dispatch shape. Scenarios shipped:
   - **`linear-single-action.parity.test.ts`** (3 tests) — trigger → action: both engines dispatch the action node with same (nodeId, nodeType, userId).
   - **`multi-step-chain.parity.test.ts`** (3 tests) — trigger → action1 → action2: both visit action nodes in the same topological order.
@@ -525,19 +527,246 @@ between engines and produce equivalent results.
 | 4 | Webhook + scheduled triggers | each entry path migrates one at a time | per-trigger parity, no missed events |
 | 5 | v1 deletion | nothing left calling `AdvancedExecutionEngine` | confirm via grep + dashboard before merge |
 
+### Stage 1-2 operational rollout checklist
+
+The rollout is operator-driven, not code-driven, from this point forward.
+Stages 1-2 (super_admin + selected workflows) execute against the existing
+flag/opt-in infrastructure. No new code is required until stage 5
+(deletion). Run this checklist for stage 1, then expand to stage 2.
+
+#### 1. Enable the flag in the environment
+
+Set the env var on the deployment platform (Vercel: Settings → Environment
+Variables; same for Preview if you want to soak there first):
+
+```
+ENABLE_V2_LIVE_EXECUTION=true
+```
+
+Then **redeploy** — the value is read once at process startup
+(`lib/featureFlags.ts:78`). Existing workers continue with the old value
+until the new build replaces them.
+
+**Verification after deploy:** trigger any execution. The structured
+dispatch log line should now show `v2LiveExecutionEnabled: true` for
+non-opted-in users (but still `executionEngine: 'v1'` because opt-in is
+the second gate).
+
+#### 2. Opt in one user
+
+The admin UI is the canonical path: `/admin → "v2 Rollout" tab → enter
+user UUID → toggle on → step-up auth`. This exercises the same code
+path as the SQL below and writes an audit row.
+
+For ad-hoc / direct DB cases, the equivalent SQL (use sparingly — the
+admin path also writes audit log entries):
+
+```sql
+-- Opt the workflow OWNER in. The dispatcher reads opt-in for the
+-- workflow's user_id, not the caller's id, so the owner is what matters
+-- for webhook/cron-triggered runs.
+UPDATE user_profiles
+SET opt_in_v2_execution = true
+WHERE id = '<uuid-of-workflow-owner>';
+
+-- Verify it landed:
+SELECT id, opt_in_v2_execution
+FROM user_profiles
+WHERE id = '<uuid-of-workflow-owner>';
+```
+
+#### 3. Workflows to test
+
+Run each scenario as the opted-in user. Each one exercises a distinct
+codepath that has its own failure mode on v2.
+
+| # | Scenario | How to trigger | What v2 must do |
+|---|---|---|---|
+| 1 | Single-action (Slack/Gmail) | Builder → "Run Once" or manual API hit | Workflow completes, Slack/Gmail message arrives. Provider write count = 1. |
+| 2 | Multi-step with `{{...}}` references | Trigger → action1 → action2 where action2 references `{{action1.output.field}}` | Strict pre-resolution succeeds; second action sees concrete value, not template. |
+| 3 | Branching | Trigger → A and B (two outputs) | Both A and B execute. Order may differ from v1 (DFS vs BFS) — set equality is OK. |
+| 4 | Webhook-triggered | Stripe test event / Mailchimp ping | Engine-dispatch log shows `executionMode: 'webhook'`, `executionEngine: 'v2'`. |
+| 5 | Scheduled-trigger | Wait for the next cron tick or temporarily set a 1-min cron | `executionMode: 'scheduled'`, `executionEngine: 'v2'`. |
+| 6 | Retry of failed execution | Run a workflow that fails on a configurable node, then click "Retry" in the history dialog | New execution row's `root_execution_id` matches the original's; Q4 dedupe prevents pre-failure side effects from re-firing. |
+| 7 | Billing-gated execution | Run as a user near their task limit | v2 returns `billingFailed: true` with `kind: 'insufficient_balance'`; route maps to 402. No nodes execute. |
+| 8 | HITL pause | Workflow with a HITL node | Execution pauses, `workflow_execution_sessions.status = 'paused'`, resume endpoint completes the run. |
+| 9 | Test mode | Builder "Run with mock trigger" | Engine pre-call gate blocks external actions; integration handler is NOT invoked for writes. Read-only handlers (fetch/get/list) still execute. |
+| 10 | Missing variable (Q2) | Workflow with `{{nonexistent.field}}` in an action | v2 returns the standardized config-failure shape with `error.code: 'MISSING_VARIABLE'` BEFORE handler dispatch. |
+
+#### 4. Logs / metrics to watch
+
+Per-execution observability lives in three places. Watch all three for the
+first ~10 v2 executions, then sample.
+
+**(a) Structured engine-dispatch log** (every workflow run, both engines):
+
+```json
+{
+  "executionEngine": "v2",          // ← the load-bearing field
+  "executionMode": "live",          // or webhook | scheduled | sandbox
+  "v2LiveExecutionEnabled": true,
+  "userOptedIntoV2Execution": true
+}
+```
+
+Filter the production log stream for `[Webhook Execute] Engine dispatch`,
+`Workflow execution`, or `Engine dispatch` to see this. If you ever see
+`executionEngine: 'v1'` for an opted-in user with the flag on, the
+dispatcher misrouted — file a bug.
+
+**(b) v2 service-level logs:**
+
+- `🚀 Starting workflow execution service` — v2 entered
+- `🛡️ Engine pre-call gate: <nodeType> (test mode, no provider call)` —
+  expected in test mode for external actions
+- `[WorkflowExecutionService] Billing gate threw unexpectedly` — fail-
+  closed billing path. Should never appear in normal operation.
+- `q4_lineage_fallback_hit` — Q4 dedupe missed lineage; should be silent
+  on v2 (Phase 2 closed the gap). Non-zero rate means a meta-construction
+  site missed the rootExecutionId thread.
+
+**(c) Database checks per execution:**
+
+```sql
+-- After triggering a v2 execution, find the session and verify its shape:
+SELECT
+  id,
+  status,
+  execution_engine,                     -- not always set; presence depends on logger
+  root_execution_id,
+  workflow_definition_hash,             -- non-null for v2 (PR-R1a parity)
+  error_classification,                 -- populated by v2 on failure (asymmetric vs v1)
+  paused_node_id,
+  paused_at
+FROM workflow_execution_sessions
+WHERE workflow_id = '<wf-uuid>'
+ORDER BY created_at DESC
+LIMIT 5;
+
+-- execution_steps must have one row per executed node on v2:
+SELECT node_id, status, started_at, completed_at, error_message
+FROM execution_steps
+WHERE execution_session_id = '<session-uuid>'
+ORDER BY started_at;
+
+-- Billing ledger must record one row with eventType matching the entry:
+SELECT execution_id, event_type, amount, metadata
+FROM task_billing_events
+WHERE execution_id = '<session-uuid>';
+-- Expect: 'workflow_execution' for manual, 'workflow_execution_webhook'
+-- for webhooks, 'workflow_execution_scheduled' for cron.
+```
+
+**Non-DB metrics:**
+
+- Latency p50/p95 per executionEngine — v2 should be within 20% of v1.
+- Error rate per executionEngine — v2 should not exceed v1's baseline.
+- Provider write count per workflow — must match v1 (one Stripe charge,
+  one Slack post, etc.). Double-writes here would mean Q4 idempotency
+  broke.
+
+#### 5. Rollback command
+
+If v2 misbehaves, two rollback paths exist (use either or both):
+
+**Per-user rollback (immediate, no redeploy):**
+
+```sql
+UPDATE user_profiles
+SET opt_in_v2_execution = false
+WHERE id = '<uuid-of-workflow-owner>';
+```
+
+The dispatcher reads opt-in fresh on every execution — the next run
+after this UPDATE goes to v1. **In-flight executions already on v2 stay
+on v2 until they finish.** No mid-execution rollback exists; design-
+intent: don't double-execute.
+
+**Global kill switch (affects every user, requires redeploy):**
+
+Remove or set to false in the deployment env:
+```
+ENABLE_V2_LIVE_EXECUTION=
+```
+Then redeploy. Same in-flight semantic — already-running v2 executions
+finish on v2; new ones go to v1.
+
+**Verification after rollback:** trigger an execution; dispatch log
+should show `executionEngine: 'v1'`.
+
+#### 6. Criteria for approving Stage 5 (v1 deletion)
+
+Stage 5 cuts the v1 fallback paths permanently. Do NOT proceed until all
+of these hold:
+
+- [ ] Stage 1 (super_admin only) has run for at least 24 hours with zero
+      v2-attributed regressions.
+- [ ] Stage 2 (selected workflows) has run end-to-end on at least 5
+      production workflows covering: manual, webhook, scheduled, retry,
+      billing-gated.
+- [ ] Per-engine error rate: v2 ≤ v1 over the soak window.
+- [ ] Per-engine latency p95: v2 ≤ 1.2× v1 baseline.
+- [ ] Provider write count parity: spot-check one Stripe / Slack / Gmail
+      run on each engine. Same provider call count, same payload shape.
+- [ ] `execution_steps` populated for every v2 run (run the DB check
+      above).
+- [ ] `error_classification` populated on at least one induced failure.
+- [ ] `q4_lineage_fallback_hit` log silent across the soak window.
+- [ ] Billing ledger: one row per execution, no double-billing observed
+      (`event_type` distinct between manual / webhook / scheduled).
+- [ ] No open issues filed referencing `WorkflowExecutionService` or
+      `executionEngine: 'v2'` regressions.
+
+When all boxes check, **then** kick off stage 3 (flag default `true` for
+all direct executions) — soak that for another window — then stage 5
+(delete v1). The Stage 5 cleanup list is the next subsection.
+
 ### Stage 5 cleanup
 
-Delete:
+When the criteria above are all met, the deletion PR removes:
 
-- `lib/execution/advancedExecutionEngine.ts`
-- The v1 branch in [app/api/workflows/execute/route.ts](../../app/api/workflows/execute/route.ts)
-- Any v1-only helper imports
-- `__tests__/workflows/engine-create-session-lineage.test.ts` if it
-  tests v1-only logic (the helpers in `sessionLineage.ts` are reused
-  by v2 — those tests stay)
-- Update [CLAUDE.md](../../CLAUDE.md) §10 references to remove v1 mention.
-- Update [safe-resume-from-failed-node-implementation-plan.md](./safe-resume-from-failed-node-implementation-plan.md)
-  to lift the "v1 only" / "v2 only" distinction throughout.
+**Engine implementation:**
+- [lib/execution/advancedExecutionEngine.ts](../../lib/execution/advancedExecutionEngine.ts) — entire file.
+
+**v1 fallback paths added during Phase 3 dispatch migrations (revert to v2-only):**
+- [app/api/workflows/execute/route.ts](../../app/api/workflows/execute/route.ts) — v1 fork at the live/sequential branch.
+- [app/api/workflows/execute-advanced/route.ts](../../app/api/workflows/execute-advanced/route.ts) — v1 fallback added by PR-V2-EXECUTE-ADVANCED.
+- [app/api/workflows/execute-stream/route.ts](../../app/api/workflows/execute-stream/route.ts) — HITL stream's v1 path.
+- [lib/webhooks/execute.ts](../../lib/webhooks/execute.ts) — v1 fallback inside the unified webhook dispatcher.
+
+**Dispatch infrastructure (no longer needed once v1 is gone):**
+- [lib/execution/v2LiveExecutionDispatch.ts](../../lib/execution/v2LiveExecutionDispatch.ts) — pure helper exists only to choose between v1/v2.
+- The opt-in column: `user_profiles.opt_in_v2_execution` (and the migration that added it). Drop in a separate migration after the dispatch helper is removed so a rollback path exists across one deploy.
+- The flag: `FEATURE_FLAGS.V2_LIVE_EXECUTION` in [lib/featureFlags.ts](../../lib/featureFlags.ts).
+- Admin route + UI: [app/api/admin/v2-execution-opt-in/route.ts](../../app/api/admin/v2-execution-opt-in/route.ts), [components/admin/V2ExecutionRollout.tsx](../../components/admin/V2ExecutionRollout.tsx), [lib/admin/v2OptInActions.ts](../../lib/admin/v2OptInActions.ts).
+- The "v2 Rollout" admin tab integration in [app/(app)/admin/page.tsx](../../app/(app)/admin/page.tsx).
+
+**Dead code uncovered by the audit (delete with v1):**
+- `executeWithParallelProcessing` + `executeMainWorkflowPath` + `executeParallelBranches` + the `Semaphore` class — all v1-internal, never wired into the running path.
+- `executeSubWorkflows` + `enableSubWorkflows` flag — `workflow_compositions` table doesn't exist in production (verified via prod query 2026-05-04).
+- [lib/testing/workflowTesting.ts](../../lib/testing/workflowTesting.ts) — audit row #15, classified Deprecate.
+- [lib/webhooks/google-processor.ts:3044](../../lib/webhooks/google-processor.ts) — test-session execution path. Migrate to v2's test-session flow OR delete if the codepath is also unused.
+
+**Tests:**
+- All `__tests__/parity/*.parity.test.ts` files (5 files, 18 tests) — they require v1 to test parity against. After v1 is gone, parity is no longer meaningful; convert each scenario to a v2-only structural test or delete.
+- `__tests__/workflows/engine-create-session-lineage.test.ts` — keep if it tests the engine-agnostic helpers in `sessionLineage.ts`; delete if it tests v1's `createExecutionSession` directly.
+- `__tests__/workflows/v2-live-dispatch.test.ts` — tests the dispatch helper that's also being deleted.
+- `__tests__/webhooks/execute-v2-dispatch.test.ts` — same.
+- `__tests__/admin/v2-opt-in-actions.test.ts` — tests the admin opt-in helpers being deleted.
+- `__tests__/billing/billing-gate.test.ts` — review for v1-specific assertions; some may need to be inlined into v2-only tests.
+
+**Documentation:**
+- Update [CLAUDE.md](../../CLAUDE.md) §10 to remove all v1 mentions and the entire "Engine dispatch (PR-V2-FLAG)" / "Direct-caller migrations status" sections (these become historical).
+- Update [safe-resume-from-failed-node-implementation-plan.md](./safe-resume-from-failed-node-implementation-plan.md) — lift the "v1 only" / "v2 only" distinction throughout. Resume Phase 2+ can ship on the now-canonical v2.
+- Update [v1-prod-audit.md](./v1-prod-audit.md) — add a final resolutions log entry marking the audit closed by v1 deletion.
+
+**Deletion order (one PR or multiple? — recommend multiple):**
+1. PR-V1-DELETE-FALLBACKS: remove all `if/else` v1 forks; every route + dispatcher always uses v2. Flag and column stay (kill switch survives one deploy).
+2. PR-V1-DELETE-ENGINE: delete `advancedExecutionEngine.ts` + dead-code helpers + `lib/testing/workflowTesting.ts`.
+3. PR-V1-DELETE-INFRA: delete the dispatch helper, flag, column, admin UI, opt-in tests. Run a separate migration to drop the column.
+4. PR-V1-DELETE-DOCS: refactor CLAUDE.md / audit doc / resume plan.
+
+Splitting lets the team revert step 1 alone if v2 has a bug surface in production that wasn't caught during stages 1-2.
 
 ### Resume project (paused) unblocks
 
