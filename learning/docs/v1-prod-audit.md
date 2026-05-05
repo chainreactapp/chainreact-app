@@ -38,7 +38,7 @@ The audit found three things, two of which were expected and **one of which mate
 | 1 | [app/api/workflows/execute/route.ts:508](../../app/api/workflows/execute/route.ts) | Manual API / scheduled trigger | ✓ | N/A | ✓ | ⚠ Port |
 | 2 | [app/api/workflow-webhooks/[workflowId]/route.ts](../../app/api/workflow-webhooks/[workflowId]/route.ts) | Per-workflow webhook | ✓ via #3 | ✓ via #3 (auto-derived) | ❌ | ✓ Migrated 2026-05-04 (PR-V2-WEBHOOK-PER-WORKFLOW) |
 | 3 | [lib/webhooks/execute.ts:154](../../lib/webhooks/execute.ts) | Unified webhook dispatcher | ❌ | ✓ in-memory cache | ❌ | ⚠ Port |
-| 4 | [lib/webhooks/gmail-processor.ts:1576](../../lib/webhooks/gmail-processor.ts) | Gmail push notification | ❌ | ✓ custom map (no TTL — leak risk) | ❌ | ⚠ Port |
+| 4 | [lib/webhooks/gmail-processor.ts](../../lib/webhooks/gmail-processor.ts) | Gmail push notification | ✓ via #3 | ✓ local map (preserved for rollback-on-error semantics; `skipDedup: true` to dispatcher) | ❌ | ✓ Migrated 2026-05-04 (PR-V2-WEBHOOK-GMAIL) |
 | 5 | [lib/webhooks/google-processor.ts](../../lib/webhooks/google-processor.ts) (5 entry points) | Calendar/Drive/Sheets webhooks | ❌ | ✓ custom maps (no TTL) | ❌ | ⚠ Port |
 | 6 | [lib/services/discordInviteTracker.ts](../../lib/services/discordInviteTracker.ts) | Discord member-join event | ✓ via #3 | ✓ via #3 (`${guildId}:${memberId}:${joinedAt}`) | ❌ | ✓ Migrated 2026-05-04 (PR-V2-WEBHOOK-DISCORD-INVITE) |
 | 7 | [app/api/workflow/[provider]/route.ts](../../app/api/workflow/[provider]/route.ts) | Provider-specific webhook | ✓ via #3 | ✓ via #3 (`requestId`) | ❌ | ✓ Migrated 2026-05-04 (PR-V2-WEBHOOK-PROVIDER) |

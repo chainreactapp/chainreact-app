@@ -1,5 +1,5 @@
 import { createSupabaseServiceClient } from '@/utils/supabase/server'
-import { AdvancedExecutionEngine } from '@/lib/execution/advancedExecutionEngine'
+import { executeWebhookWorkflow } from '@/lib/webhooks/execute'
 import { google } from 'googleapis'
 import { getDecryptedAccessToken } from '@/lib/workflows/actions/core/getDecryptedAccessToken'
 import { logInfo, logError, logSuccess, logWarning } from '@/lib/logging/backendLogger'
@@ -1565,15 +1565,18 @@ async function triggerMatchingGmailWorkflows(event: GmailWebhookEvent): Promise<
         continue
       }
 
-      // Email matches filters - trigger the workflow
+      // Email matches filters - trigger the workflow.
+      // PR-V2-WEBHOOK-GMAIL: route through unified webhook dispatcher.
+      // The local processedGmailEvents map stays as-is for the rollback-
+      // on-error semantic (see catch below) — pass `skipDedup: true` to
+      // the dispatcher so its own cache doesn't second-guess the local
+      // dedup. dedupeToken still mediates the local map.
       try {
         logger.info(`🎯 Triggering workflow: "${workflow.name}" (${workflow.id})`)
 
         if (dedupeToken) {
           markGmailEventProcessed(workflow.id, dedupeToken)
         }
-
-        const executionEngine = new AdvancedExecutionEngine()
 
         // Build flattened trigger data for variable resolution
         const flattenedEmailData = emailDetails || {
@@ -1583,33 +1586,7 @@ async function triggerMatchingGmailWorkflows(event: GmailWebhookEvent): Promise<
           content: ''
         }
 
-        const executionSession = await executionEngine.createExecutionSession(
-          workflow.id,
-          workflow.user_id,
-          'webhook',
-          {
-            metadata: { requestId: event.requestId },
-            inputData: {
-              ...event.eventData,
-              emailDetails: emailDetails,
-              trigger: {
-                type: matchedTriggerType,
-                from: flattenedEmailData.from,
-                subject: flattenedEmailData.subject,
-                body: flattenedEmailData.body || flattenedEmailData.content || '',
-                to: flattenedEmailData.to,
-                date: flattenedEmailData.date,
-                hasAttachments: flattenedEmailData.hasAttachments,
-                data: flattenedEmailData
-              }
-            },
-            webhookEvent: event
-          }
-        )
-
-        // Execute the workflow asynchronously (don't wait for completion)
-        // IMPORTANT: Include flattened trigger structure for {{trigger.from}}, {{trigger.subject}}, {{trigger.body}}
-        executionEngine.executeWorkflowAdvanced(executionSession.id, {
+        const triggerData = {
           ...event.eventData,
           emailDetails: emailDetails,
           trigger: {
@@ -1622,9 +1599,26 @@ async function triggerMatchingGmailWorkflows(event: GmailWebhookEvent): Promise<
             hasAttachments: flattenedEmailData.hasAttachments,
             data: flattenedEmailData
           }
+        }
+
+        const dispatchResult = await executeWebhookWorkflow({
+          workflowId: workflow.id,
+          userId: workflow.user_id,
+          provider: 'gmail',
+          triggerType: matchedTriggerType,
+          triggerData,
+          metadata: {
+            requestId: event.requestId,
+            emailAddress: event.eventData.emailAddress,
+          },
+          skipDedup: true,
         })
 
-        logger.info(`✅ Successfully triggered workflow ${workflow.name} (${workflow.id}) with session ${executionSession.id}`)
+        if (!dispatchResult.success) {
+          throw new Error(dispatchResult.error || 'gmail dispatch failed')
+        }
+
+        logger.info(`✅ Successfully triggered workflow ${workflow.name} (${workflow.id}) with session ${dispatchResult.sessionId}`)
       } catch (workflowError) {
         logger.error(`Failed to trigger workflow ${workflow.id}:`, workflowError)
         if (dedupeToken) {
