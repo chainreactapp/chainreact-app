@@ -734,7 +734,8 @@ export class WorkflowExecutionService {
       return {
         results,
         interceptedActions: executionContext.interceptedActions,
-        executionHistoryId
+        executionHistoryId,
+        executionId,
       }
     }
 
