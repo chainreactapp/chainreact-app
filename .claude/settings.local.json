@@ -110,7 +110,8 @@
       "WebFetch(domain:www.lindy.ai)",
       "WebFetch(domain:www.electricmonk.com)",
       "WebFetch(domain:www.lowcode.agency)",
-      "WebFetch(domain:automationatlas.io)"
+      "WebFetch(domain:automationatlas.io)",
+      "PowerShell(node scripts\\\\trash\\\\verify-resume-lineage.mjs)"
     ],
     "deny": [],
     "ask": [],
