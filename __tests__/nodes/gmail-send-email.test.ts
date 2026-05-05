@@ -406,6 +406,7 @@ describe("sendGmailEmail — Q4 — idempotency within session", () => {
     expect(records).toHaveLength(1)
     expect(records[0].key).toEqual({
       executionSessionId: "session-1",
+      rootExecutionId: "session-1",  // PR-R1a: builder fills root from session when meta omits lineage
       nodeId: "node-A",
       actionType: "gmail_action_send_email",
     })

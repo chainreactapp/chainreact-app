@@ -6,6 +6,8 @@
  * Run: npx jest __tests__/webhooks/execute.test.ts --verbose
  */
 
+jest.mock('server-only', () => ({}))
+
 const mockCreateSession = jest.fn().mockResolvedValue({ id: 'session-1' })
 const mockExecuteWorkflow = jest.fn().mockResolvedValue({ success: true })
 
@@ -16,8 +18,39 @@ jest.mock('@/lib/execution/advancedExecutionEngine', () => ({
   })),
 }))
 
+// Mock WorkflowExecutionService — existing tests pin v1 default path.
+const mockV2Execute = jest.fn()
+jest.mock('@/lib/services/workflowExecutionService', () => ({
+  WorkflowExecutionService: jest.fn().mockImplementation(() => ({
+    executeWorkflow: mockV2Execute,
+  })),
+}))
+
 jest.mock('@/lib/utils/logger', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+}))
+
+// PR-V2-WEBHOOKS — the dispatcher now looks up workflow row + opt-in
+// before deciding v1/v2. These existing tests pin the v1 default path,
+// so the lookup mock returns workflow + opt-in:false → v1 dispatch.
+const mockAdminFrom = jest.fn().mockImplementation((table: string) => {
+  const builder: any = {
+    select: () => builder,
+    eq: () => builder,
+    maybeSingle: async () => {
+      if (table === 'workflows') {
+        return { data: { id: 'wf-1', user_id: 'user-1', name: 'test' }, error: null }
+      }
+      if (table === 'user_profiles') {
+        return { data: { opt_in_v2_execution: false }, error: null }
+      }
+      return { data: null, error: null }
+    },
+  }
+  return builder
+})
+jest.mock('@/lib/supabase/admin', () => ({
+  createAdminClient: jest.fn(() => ({ from: mockAdminFrom })),
 }))
 
 import { executeWebhookWorkflow, _clearDedupCache, _getDedupCacheSize } from '@/lib/webhooks/execute'

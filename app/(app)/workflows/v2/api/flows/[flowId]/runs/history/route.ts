@@ -39,7 +39,9 @@ export async function GET(
 
     const { data: sessions, error } = await supabase
       .from("workflow_execution_sessions")
-      .select("id, status, started_at, completed_at, test_mode, session_type, error_message")
+      .select(
+        "id, status, started_at, completed_at, test_mode, session_type, error_message, error_classification"
+      )
       .eq("workflow_id", flowId)
       .eq("user_id", user.id)
       .order("started_at", { ascending: false })
@@ -58,6 +60,8 @@ export async function GET(
       finishedAt: s.completed_at,
       revisionId: null,
       sessionType: s.session_type || "manual",
+      errorMessage: s.error_message || null,
+      errorClassification: s.error_classification || null,
       metadata: {
         ...(s.error_message ? { error: s.error_message } : {}),
       },

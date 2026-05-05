@@ -1,5 +1,6 @@
 import { Client, GuildMember, Invite, Collection } from "discord.js"
 import { createSupabaseServiceClient } from "@/utils/supabase/server"
+import { executeWebhookWorkflow } from "@/lib/webhooks/execute"
 
 import { logger } from '@/lib/utils/logger'
 
@@ -26,6 +27,63 @@ function normalizeInviteCode(value?: string | null): string | null {
 
   const code = lastSegment.split('?')[0].split('#')[0]
   return code || null
+}
+
+/**
+ * Routes Discord member-join workflow execution through the unified webhook
+ * dispatcher. PR-V2-WEBHOOK-DISCORD-INVITE — replaces direct
+ * AdvancedExecutionEngine instantiation so v2 dispatch + dedup + billing all
+ * live in `lib/webhooks/execute.ts`.
+ *
+ * Dedup key resolves audit Q4 — this entry path previously had no dedup.
+ * Falls back through joinedAt → triggerData.timestamp → 'unknown' so a
+ * stable key is always produced.
+ *
+ * Exported for tests; not intended as a public API surface for the module.
+ */
+export async function dispatchMemberJoinWorkflow(
+  workflow: { id: string; user_id: string },
+  member: GuildMember,
+  triggerData: Record<string, any>,
+  inviteCode: string | null,
+): Promise<void> {
+  try {
+    const joinedAtISO =
+      member.joinedAt?.toISOString() ??
+      (typeof triggerData?.timestamp === 'string' ? triggerData.timestamp : undefined) ??
+      'unknown'
+    const dedupeKey = `${member.guild.id}:${member.id}:${joinedAtISO}`
+
+    const result = await executeWebhookWorkflow({
+      workflowId: workflow.id,
+      userId: workflow.user_id,
+      provider: 'discord',
+      triggerType: 'discord_trigger_member_join',
+      triggerData,
+      metadata: {
+        changeType: 'member_join',
+        guildId: member.guild.id,
+        memberId: member.id,
+      },
+      dedupeKey,
+    })
+
+    if (result.success) {
+      logger.info('[Discord] Workflow triggered successfully for member join', {
+        workflowId: workflow.id,
+        memberId: member.id,
+        inviteCode,
+        sessionId: result.sessionId,
+        duplicate: result.duplicate,
+      })
+    } else {
+      logger.error(`Failed to execute workflow ${workflow.id} for member join`, {
+        error: result.error,
+      })
+    }
+  } catch (executionError) {
+    logger.error(`Failed to execute workflow ${workflow.id} for member join`, executionError)
+  }
 }
 
 class DiscordInviteTracker {
@@ -356,34 +414,7 @@ class DiscordInviteTracker {
           continue
         }
 
-        // Execute workflow
-        try {
-          const { AdvancedExecutionEngine } = await import('@/lib/execution/advancedExecutionEngine')
-          const executionEngine = new AdvancedExecutionEngine()
-          const executionSession = await executionEngine.createExecutionSession(
-            workflow.id,
-            workflow.user_id,
-            'webhook',
-            {
-              inputData: triggerData,
-              webhookEvent: {
-                provider: 'discord',
-                changeType: 'member_join',
-                metadata: triggerData,
-                event: triggerData
-              }
-            }
-          )
-
-          await executionEngine.executeWorkflowAdvanced(executionSession.id, triggerData)
-          logger.info('[Discord] Workflow triggered successfully for member join', {
-            workflowId: workflow.id,
-            memberId: member.id,
-            inviteCode
-          })
-        } catch (executionError) {
-          logger.error(`Failed to execute workflow ${workflow.id} for member join`, executionError)
-        }
+        await dispatchMemberJoinWorkflow(workflow, member, triggerData, inviteCode)
       }
     } catch (error) {
       logger.error("Error triggering member join workflow:", error)

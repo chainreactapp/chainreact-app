@@ -3,7 +3,7 @@ import { jsonResponse, errorResponse } from '@/lib/utils/api-response'
 import { createClient } from '@supabase/supabase-js'
 import crypto from 'crypto'
 import Stripe from 'stripe'
-import { AdvancedExecutionEngine } from '@/lib/execution/advancedExecutionEngine'
+import { executeWebhookWorkflow } from '@/lib/webhooks/execute'
 
 import { logger } from '@/lib/utils/logger'
 
@@ -50,6 +50,70 @@ const getEventsForTrigger = (triggerType: string): string[] => {
   }
 
   return eventMap[triggerType] || []
+}
+
+/**
+ * PR-V2-WEBHOOK-STRIPE-INT: routes Stripe-integration webhook executions
+ * through the unified webhook dispatcher (executeWebhookWorkflow). Closes
+ * audit `Dedup: None` for this entry path — `dedupeKey: event.id` gives
+ * stable dedup across Stripe webhook retries (Stripe re-sends the same
+ * event.id on retry).
+ *
+ * Exported for tests.
+ */
+export async function dispatchStripeIntegrationWorkflow(
+  workflow: { id: string; user_id: string },
+  event: Stripe.Event,
+  matchingResources: Array<{ id: string }>,
+  requestId: string,
+): Promise<{ success: boolean; sessionId?: string; duplicate?: boolean; error?: string }> {
+  try {
+    const result = await executeWebhookWorkflow({
+      workflowId: workflow.id,
+      userId: workflow.user_id,
+      provider: 'stripe',
+      triggerType: `stripe_event_${event.type}`,
+      triggerData: {
+        stripeEvent: event,
+        triggerResourceIds: matchingResources.map((resource) => resource.id),
+      },
+      metadata: {
+        requestId,
+        eventId: event.id,
+        eventType: event.type,
+        connectedAccount: event.account ?? null,
+      },
+      dedupeKey: event.id,
+    })
+
+    if (!result.success) {
+      logger.error('[Stripe Integration Webhook] Workflow dispatch failed', {
+        workflowId: workflow.id,
+        eventId: event.id,
+        eventType: event.type,
+        error: result.error,
+      })
+      return { success: false, error: result.error }
+    }
+
+    logger.info('[Stripe Integration Webhook] Workflow execution completed', {
+      workflowId: workflow.id,
+      sessionId: result.sessionId,
+      eventType: event.type,
+      eventId: event.id,
+      duplicate: result.duplicate,
+    })
+    return { success: true, sessionId: result.sessionId, duplicate: result.duplicate }
+  } catch (dispatchError: any) {
+    logger.error('[Stripe Integration Webhook] Workflow dispatch threw', {
+      workflowId: workflow.id,
+      eventId: event.id,
+      eventType: event.type,
+      error: dispatchError?.message ?? 'Unknown dispatch error',
+      stack: dispatchError?.stack?.split('\n').slice(0, 5).join('\n') ?? 'no stack',
+    })
+    return { success: false, error: dispatchError?.message ?? 'dispatch threw' }
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -270,23 +334,8 @@ export async function POST(request: NextRequest) {
       return jsonResponse({ received: true, skipped: true, reason: 'workflow_not_active' })
     }
 
-    const executionEngine = new AdvancedExecutionEngine()
-    const executionSession = await executionEngine.createExecutionSession(
+    logger.info('[Stripe Integration Webhook] Dispatching execution', {
       workflowId,
-      workflow.user_id,
-      'webhook',
-      {
-        metadata: { requestId },
-        inputData: {
-          stripeEvent: event,
-          triggerResourceIds: matchingResources.map((resource: any) => resource.id)
-        }
-      }
-    )
-
-    logger.info('[Stripe Integration Webhook] Execution started', {
-      workflowId,
-      executionSessionId: executionSession.id,
       eventType: event.type,
       eventId: event.id,
     })
@@ -296,26 +345,12 @@ export async function POST(request: NextRequest) {
     // it with the response path. Without this, Vercel kills the function at 60s
     // and the workflow execution is silently abandoned.
     after(async () => {
-      try {
-        await executionEngine.executeWorkflowAdvanced(executionSession.id, {
-          stripeEvent: event,
-          triggerResourceIds: matchingResources.map((resource: any) => resource.id)
-        })
-        logger.info('[Stripe Integration Webhook] Workflow execution completed', {
-          workflowId,
-          executionSessionId: executionSession.id,
-          eventType: event.type,
-          eventId: event.id,
-        })
-      } catch (execError: any) {
-        logger.error('[Stripe Integration Webhook] Workflow execution failed', {
-          workflowId,
-          executionSessionId: executionSession.id,
-          eventType: event.type,
-          error: execError?.message || 'Unknown execution error',
-          stack: execError?.stack?.split('\n').slice(0, 5).join('\n') || 'no stack',
-        })
-      }
+      await dispatchStripeIntegrationWorkflow(
+        workflow as { id: string; user_id: string },
+        event,
+        matchingResources,
+        requestId,
+      )
     })
 
     return jsonResponse({
@@ -323,7 +358,6 @@ export async function POST(request: NextRequest) {
       workflowId,
       eventId: event.id,
       eventType: event.type,
-      executionSessionId: executionSession.id
     })
   } catch (error: any) {
     logger.error('[Stripe Integration Webhook] Handler error:', error)

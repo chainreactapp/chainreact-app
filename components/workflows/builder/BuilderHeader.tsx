@@ -101,6 +101,13 @@ interface BuilderHeaderProps {
   setShowExecutionHistory?: (show: boolean) => void
   onSelectHistoryRun?: (runId: string) => Promise<void> | void
   activeRunId?: string | null
+  /**
+   * Deep-link target: when set (typically from `?historyExecution=` query
+   * param), the History dialog auto-opens to the detail view of this run.
+   */
+  pendingHistoryExecutionId?: string | null
+  /** Called once the deep-link target has been consumed. */
+  onPendingHistoryConsumed?: () => void
   // Pre-activation review props (from useWorkflowSaveActions)
   showActivationReview?: boolean
   setShowActivationReview?: (show: boolean) => void
@@ -141,6 +148,8 @@ const BuilderHeaderComponent = ({
   setShowExecutionHistory,
   onSelectHistoryRun,
   activeRunId,
+  pendingHistoryExecutionId,
+  onPendingHistoryConsumed,
   showActivationReview = false,
   setShowActivationReview,
   confirmActivation,
@@ -175,6 +184,15 @@ const BuilderHeaderComponent = ({
   useEffect(() => {
     router.prefetch('/workflows')
   }, [router])
+
+  // Deep-link: when a `?historyExecution=...` query param arrives via prop,
+  // open the History dialog. WorkflowHistoryDialog handles the auto-select
+  // into detail view from there.
+  useEffect(() => {
+    if (pendingHistoryExecutionId) {
+      setShowHistoryDialog(true)
+    }
+  }, [pendingHistoryExecutionId])
 
   const isLiveTestingDisabled = isExecuting || isSaving
 
@@ -951,6 +969,8 @@ const BuilderHeaderComponent = ({
         workflowId={workflowId || ""}
         onSelectRun={onSelectHistoryRun}
         activeRunId={activeRunId}
+        pendingExecutionId={pendingHistoryExecutionId ?? null}
+        onPendingConsumed={onPendingHistoryConsumed}
       />
 
       <SaveAsTemplateDialog

@@ -1,6 +1,6 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { jsonResponse, errorResponse, successResponse } from '@/lib/utils/api-response';
-import { AdvancedExecutionEngine } from '@/lib/execution/advancedExecutionEngine';
+import { executeWebhookWorkflow } from '@/lib/webhooks/execute';
 import { createClient } from '@supabase/supabase-js';
 import { webhookManager } from '@/lib/webhooks/webhookManager';
 import { checkRateLimit, RateLimitPresets } from '@/lib/utils/rate-limit';
@@ -115,6 +115,49 @@ function verifyHmacSignature(payload: string, signature: string | null, secret: 
   } catch (error) {
     logger.error('HMAC verification error:', error);
     return false;
+  }
+}
+
+/**
+ * PR-V2-WEBHOOK-PER-WORKFLOW: routes per-workflow webhook executions
+ * through the unified webhook dispatcher. No explicit dedupeKey — the
+ * dispatcher's auto-derivation handles payload shapes with `.id` /
+ * `.eventId`. This entry path handles user-defined webhooks where the
+ * payload shape is determined by the external caller, so a stable
+ * content-derived key isn't always available.
+ *
+ * Exported for tests.
+ */
+export async function dispatchPerWorkflowWebhook(
+  workflow: { id: string; user_id: string },
+  payload: any,
+  headers: Record<string, string>,
+): Promise<{ success: boolean; sessionId?: string; duplicate?: boolean; error?: string }> {
+  try {
+    const result = await executeWebhookWorkflow({
+      workflowId: workflow.id,
+      userId: workflow.user_id,
+      provider: 'webhook',
+      triggerType: 'workflow_webhook',
+      triggerData: payload,
+      metadata: {
+        webhookHeaders: headers,
+      },
+    })
+
+    if (!result.success) {
+      logger.error(`[Workflow Webhook] Dispatch failed for ${workflow.id}`, { error: result.error })
+      return { success: false, error: result.error }
+    }
+
+    logger.info(`[Workflow Webhook] Execution completed for ${workflow.id}`, {
+      sessionId: result.sessionId,
+      duplicate: result.duplicate,
+    })
+    return { success: true, sessionId: result.sessionId, duplicate: result.duplicate }
+  } catch (dispatchError: any) {
+    logger.error(`[Workflow Webhook] Dispatch threw for ${workflow.id}`, dispatchError)
+    return { success: false, error: dispatchError?.message ?? 'dispatch threw' }
   }
 }
 
@@ -292,18 +335,21 @@ export async function POST(
       // Don't fail the webhook if logging fails
     }
 
-    const executionEngine = new AdvancedExecutionEngine();
-    const executionSession = await executionEngine.createExecutionSession(
-      workflowId,
-      workflow.user_id,
-      'webhook',
-      { inputData: payload }
-    );
+    // PR-V2-WEBHOOK-PER-WORKFLOW: route through unified webhook dispatcher
+    // so v1/v2 dispatch + billing + dedup live in lib/webhooks/execute.ts.
+    // No explicit dedupeKey — the dispatcher's auto-derivation looks at
+    // payload.id / payload.eventId / metadata.requestId, which covers the
+    // common payload shapes external callers use. Vercel's after() lets
+    // the workflow run for the full maxDuration after the response ships.
+    after(async () => {
+      await dispatchPerWorkflowWebhook(
+        { id: workflowId, user_id: workflow.user_id },
+        payload,
+        headers,
+      )
+    })
 
-    // Asynchronously execute the workflow without waiting for it to complete
-    executionEngine.executeWorkflowAdvanced(executionSession.id, payload);
-
-    return jsonResponse({ success: true, sessionId: executionSession.id });
+    return jsonResponse({ success: true, queued: true });
   } catch (error: any) {
     logger.error(`Webhook error for workflow ${workflowId}:`, error);
     return errorResponse('Internal server error' , 500);

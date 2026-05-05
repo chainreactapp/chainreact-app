@@ -1,7 +1,7 @@
 // Use Node.js EventEmitter only on server-side
 import { checkDiscordBotConfig, validateDiscordBotToken } from '@/lib/utils/discordConfig'
 import { createSupabaseServiceClient } from '@/utils/supabase/server'
-import { AdvancedExecutionEngine } from '@/lib/execution/advancedExecutionEngine'
+import { executeWebhookWorkflow } from '@/lib/webhooks/execute'
 
 import { logger } from '@/lib/utils/logger'
 
@@ -1101,27 +1101,43 @@ class DiscordGateway extends SimpleEventEmitter {
         }
 
         try {
-          const executionEngine = new AdvancedExecutionEngine()
-          const executionSession = await executionEngine.createExecutionSession(
-            workflow.id,
-            workflow.user_id,
-            'webhook',
-            {
-              inputData: triggerData,
-              webhookEvent: {
-                provider: 'discord',
-                changeType: 'member_join',
-                metadata: triggerData,
-                event: triggerData
-              }
-            }
-          )
+          // PR-V2-WEBHOOK-DISCORD-GATEWAY: route through unified webhook
+          // dispatcher. Resolves audit §4 Q4 — Discord gateway WS events
+          // had no dedup at this call site. Discord's RESUME protocol
+          // prevents protocol-level duplicates in normal operation, but
+          // multi-instance deploys + crashes mid-handler can re-deliver.
+          // dedupeKey = `${guildId}:${memberId}:${joined_at}` per Q4
+          // resolution — stable across re-deliveries of the same member-
+          // join event.
+          const memberId = memberData.user?.id || 'unknown-member'
+          const joinedAtISO = memberData.joined_at || 'unknown'
+          const dedupeKey = `${memberData.guild_id}:${memberId}:${joinedAtISO}`
 
-          await executionEngine.executeWorkflowAdvanced(executionSession.id, triggerData)
+          const dispatchResult = await executeWebhookWorkflow({
+            workflowId: workflow.id,
+            userId: workflow.user_id,
+            provider: 'discord',
+            triggerType: 'discord_trigger_member_join',
+            triggerData,
+            metadata: {
+              changeType: 'member_join',
+              guildId: memberData.guild_id,
+              memberId,
+              source: 'discord-gateway',
+            },
+            dedupeKey,
+          })
+
+          if (!dispatchResult.success) {
+            throw new Error(dispatchResult.error || 'discord-gateway dispatch failed')
+          }
+
           logger.info('[Discord] Workflow triggered successfully for member join', {
             workflowId: workflow.id,
-            memberId: memberData.user?.id || null,
-            inviteCode: normalizedInvite
+            memberId,
+            inviteCode: normalizedInvite,
+            sessionId: dispatchResult.sessionId,
+            duplicate: dispatchResult.duplicate,
           })
         } catch (error) {
           logger.error(`Failed to execute workflow ${workflow.id} for member join`, error)

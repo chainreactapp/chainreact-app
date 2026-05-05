@@ -12,7 +12,8 @@ import WebhookSettings from "@/components/admin/WebhookSettings"
 import { NodeTestingDashboard } from "@/components/admin/NodeTestingDashboard"
 import { TemplateAnalyticsDashboard } from "@/components/admin/TemplateAnalyticsDashboard"
 import { AgentEvalDashboard } from "@/components/admin/agent-eval/AgentEvalDashboard"
-import { Crown, Shield, Users, Settings, User, Building, Zap, Sparkles, TestTube, FlaskConical, ListChecks, Webhook, PlayCircle, BarChart3, Activity } from "lucide-react"
+import V2ExecutionRollout from "@/components/admin/V2ExecutionRollout"
+import { Crown, Shield, Users, Settings, User, Building, Zap, Sparkles, TestTube, FlaskConical, ListChecks, Webhook, PlayCircle, BarChart3, Activity, Rocket } from "lucide-react"
 import { LightningLoader } from '@/components/ui/lightning-loader'
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { RoleBadge } from "@/components/ui/role-badge"
@@ -111,7 +112,7 @@ export default function AdminPage() {
 
         {/* Admin Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-9">
+          <TabsList className="grid w-full grid-cols-10">
             <TabsTrigger value="overview" className="flex items-center gap-2">
               <Crown className="h-4 w-4" />
               Overview
@@ -147,6 +148,10 @@ export default function AdminPage() {
             <TabsTrigger value="agent-eval" className="flex items-center gap-2">
               <Activity className="h-4 w-4" />
               Agent Eval
+            </TabsTrigger>
+            <TabsTrigger value="v2-rollout" className="flex items-center gap-2">
+              <Rocket className="h-4 w-4" />
+              v2 Rollout
             </TabsTrigger>
           </TabsList>
 
@@ -278,6 +283,10 @@ export default function AdminPage() {
 
           <TabsContent value="agent-eval" className="space-y-6">
             <AgentEvalDashboard />
+          </TabsContent>
+
+          <TabsContent value="v2-rollout" className="space-y-6">
+            <V2ExecutionRollout />
           </TabsContent>
         </Tabs>
     </div>

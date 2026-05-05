@@ -51,6 +51,9 @@ import {
 
 interface StubRow {
   execution_session_id: string
+  /** PR-R1a — present on rows written under dual-write; optional so
+   *  pre-rollout rows can be seeded for fallback-read tests. */
+  root_execution_id?: string
   node_id: string
   action_type: string
   provider: string
@@ -118,6 +121,7 @@ function makeStubSupabase(rows: StubRow[] = []) {
 
 const KEY: SideEffectKey = {
   executionSessionId: 'session-1',
+  rootExecutionId: 'session-1',  // PR-R1a: fresh runs have root === session
   nodeId: 'node-A',
   actionType: 'gmail_action_send_email',
 }
@@ -181,7 +185,7 @@ describe('hashPayload — Q4 canonicalization', () => {
 // ─── buildIdempotencyKey ────────────────────────────────────────────────
 
 describe('buildIdempotencyKey — Q4 meta gate', () => {
-  test('returns the key when all three pieces are present', () => {
+  test('returns the key when all three pieces are present (no lineage → root falls back to session)', () => {
     const key = buildIdempotencyKey({
       executionSessionId: 'session-1',
       nodeId: 'node-A',
@@ -189,6 +193,7 @@ describe('buildIdempotencyKey — Q4 meta gate', () => {
     })
     expect(key).toEqual({
       executionSessionId: 'session-1',
+      rootExecutionId: 'session-1',
       nodeId: 'node-A',
       actionType: 'gmail_action_send_email',
     })
@@ -227,10 +232,74 @@ describe('buildIdempotencyKey — Q4 meta gate', () => {
   })
 })
 
+describe('buildIdempotencyKey — PR-R1a retry lineage', () => {
+  test('rootExecutionId is preserved when supplied (retry case)', () => {
+    const key = buildIdempotencyKey({
+      executionSessionId: 'retry-session-2',
+      rootExecutionId: 'original-session-1',
+      nodeId: 'node-A',
+      actionType: 'stripe_action_create_payment_intent',
+    })
+    expect(key).toEqual({
+      executionSessionId: 'retry-session-2',
+      rootExecutionId: 'original-session-1',
+      nodeId: 'node-A',
+      actionType: 'stripe_action_create_payment_intent',
+    })
+  })
+
+  test('rootExecutionId falls back to executionSessionId when missing or empty', () => {
+    const supplied = buildIdempotencyKey({
+      executionSessionId: 'session-1',
+      rootExecutionId: '',
+      nodeId: 'node-A',
+      actionType: 'gmail_action_send_email',
+    })
+    const omitted = buildIdempotencyKey({
+      executionSessionId: 'session-1',
+      nodeId: 'node-A',
+      actionType: 'gmail_action_send_email',
+    })
+    expect(supplied?.rootExecutionId).toBe('session-1')
+    expect(omitted?.rootExecutionId).toBe('session-1')
+    expect(supplied).toEqual(omitted)
+  })
+})
+
 describe('formatProviderIdempotencyKey — Stripe-header form', () => {
-  test('renders the colon-joined string', () => {
+  test('renders the colon-joined string from rootExecutionId', () => {
     expect(formatProviderIdempotencyKey(KEY)).toBe(
       'session-1:node-A:gmail_action_send_email',
+    )
+  })
+
+  test('uses rootExecutionId, not executionSessionId, on retries', () => {
+    // A retry session: session id is new (retry-session-2), but root
+    // points back to the original. Stripe header uses root → header
+    // value matches the original run's, so Stripe's server-side dedup
+    // rejects the retry's API call.
+    const retryKey: SideEffectKey = {
+      executionSessionId: 'retry-session-2',
+      rootExecutionId: 'original-session-1',
+      nodeId: 'node-A',
+      actionType: 'stripe_action_create_payment_intent',
+    }
+    expect(formatProviderIdempotencyKey(retryKey)).toBe(
+      'original-session-1:node-A:stripe_action_create_payment_intent',
+    )
+  })
+
+  test('header value is identical for fresh-run pre-PR-R1a callers (no behavior change)', () => {
+    // Caller threads only executionSessionId (no rootExecutionId).
+    // Builder fills root from session. Header value matches what the
+    // pre-PR-R1a code produced.
+    const key = buildIdempotencyKey({
+      executionSessionId: 'session-1',
+      nodeId: 'node-A',
+      actionType: 'stripe_action_create_payment_intent',
+    })!
+    expect(formatProviderIdempotencyKey(key)).toBe(
+      'session-1:node-A:stripe_action_create_payment_intent',
     )
   })
 })
@@ -248,6 +317,7 @@ describe('checkReplay — Q4 three exhaustive outcomes', () => {
     const stub = makeStubSupabase([
       {
         execution_session_id: KEY.executionSessionId,
+        root_execution_id: KEY.rootExecutionId,
         node_id: KEY.nodeId,
         action_type: KEY.actionType,
         provider: 'gmail',
@@ -271,6 +341,7 @@ describe('checkReplay — Q4 three exhaustive outcomes', () => {
     const stub = makeStubSupabase([
       {
         execution_session_id: KEY.executionSessionId,
+        root_execution_id: KEY.rootExecutionId,
         node_id: KEY.nodeId,
         action_type: KEY.actionType,
         provider: 'gmail',
@@ -295,6 +366,148 @@ describe('checkReplay — Q4 three exhaustive outcomes', () => {
   })
 })
 
+// ─── checkReplay — PR-R1a retry-lineage reads + fallback ───────────────
+
+describe('checkReplay — PR-R1a lineage read', () => {
+  // A retry: new session id, root points back at the original.
+  const RETRY_KEY: SideEffectKey = {
+    executionSessionId: 'retry-session-2',
+    rootExecutionId: 'original-session-1',
+    nodeId: 'node-A',
+    actionType: 'stripe_action_create_payment_intent',
+  }
+
+  test('finds the original-run row via root_execution_id (cross-session dedup)', async () => {
+    // Original run wrote this marker. Retry comes through with a new
+    // session id but inherited root.
+    const stub = makeStubSupabase([
+      {
+        execution_session_id: 'original-session-1',
+        root_execution_id: 'original-session-1',
+        node_id: 'node-A',
+        action_type: 'stripe_action_create_payment_intent',
+        provider: 'stripe',
+        external_id: 'pi_123',
+        result_snapshot: SAMPLE_RESULT,
+        payload_hash: 'hash-charge',
+      },
+    ])
+
+    const out = await checkReplay(RETRY_KEY, 'hash-charge', {
+      supabase: stub.client,
+    })
+    expect(out.kind).toBe('cached')
+  })
+
+  test('falls back to execution_session_id read for pre-rollout rows', async () => {
+    const { logger } = require('@/lib/utils/logger')
+    // Pre-rollout row: only execution_session_id populated. Lineage root
+    // matches the row's execution_session_id, but root_execution_id is
+    // absent (pre-Phase-1 dual-write).
+    const stub = makeStubSupabase([
+      {
+        execution_session_id: 'original-session-1',
+        // root_execution_id intentionally absent — pre-rollout shape.
+        node_id: 'node-A',
+        action_type: 'stripe_action_create_payment_intent',
+        provider: 'stripe',
+        external_id: 'pi_legacy',
+        result_snapshot: SAMPLE_RESULT,
+        payload_hash: 'hash-legacy',
+      },
+    ])
+
+    const out = await checkReplay(RETRY_KEY, 'hash-legacy', {
+      supabase: stub.client,
+    })
+    expect(out.kind).toBe('cached')
+    // Structured log fired so PR-R1b can gate on a zero count.
+    expect(logger.warn).toHaveBeenCalledWith(
+      'q4_lineage_fallback_hit',
+      expect.objectContaining({
+        executionSessionId: 'retry-session-2',
+        rootExecutionId: 'original-session-1',
+        nodeId: 'node-A',
+        actionType: 'stripe_action_create_payment_intent',
+      }),
+    )
+  })
+
+  test('fresh-run gap-window replay: same-session row with NULL root is found via fallback', async () => {
+    const { logger } = require('@/lib/utils/logger')
+    ;(logger.warn as jest.Mock).mockClear()
+
+    // Same-session replay (e.g. engine restart). KEY has root === session.
+    // The seeded row predates dual-write — execution_session_id set, root NULL.
+    const stub = makeStubSupabase([
+      {
+        execution_session_id: KEY.executionSessionId,
+        // root_execution_id intentionally absent — pre-rollout shape.
+        node_id: KEY.nodeId,
+        action_type: KEY.actionType,
+        provider: 'gmail',
+        external_id: 'msg-gap',
+        result_snapshot: SAMPLE_RESULT,
+        payload_hash: 'hash-gap',
+      },
+    ])
+
+    const out = await checkReplay(KEY, 'hash-gap', { supabase: stub.client })
+    expect(out.kind).toBe('cached')
+    // Fallback log fires — even fresh runs need the safety net during the
+    // dual-write gap window.
+    expect(logger.warn).toHaveBeenCalledWith(
+      'q4_lineage_fallback_hit',
+      expect.objectContaining({
+        executionSessionId: KEY.executionSessionId,
+        rootExecutionId: KEY.rootExecutionId,
+      }),
+    )
+  })
+
+  test('no row in either index → fresh, no fallback log emitted', async () => {
+    const { logger } = require('@/lib/utils/logger')
+    ;(logger.warn as jest.Mock).mockClear()
+
+    const stub = makeStubSupabase()
+    const out = await checkReplay(KEY, 'hash-1', { supabase: stub.client })
+
+    expect(out).toEqual({ kind: 'fresh' })
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      'q4_lineage_fallback_hit',
+      expect.anything(),
+    )
+  })
+
+  test('truly fresh on retry: primary misses, fallback misses, returns fresh', async () => {
+    const stub = makeStubSupabase()
+    const out = await checkReplay(RETRY_KEY, 'hash-charge', {
+      supabase: stub.client,
+    })
+    expect(out).toEqual({ kind: 'fresh' })
+  })
+
+  test('row exists with mismatching hash → mismatch (read by root)', async () => {
+    const stub = makeStubSupabase([
+      {
+        execution_session_id: 'original-session-1',
+        root_execution_id: 'original-session-1',
+        node_id: 'node-A',
+        action_type: 'stripe_action_create_payment_intent',
+        provider: 'stripe',
+        external_id: 'pi_123',
+        result_snapshot: SAMPLE_RESULT,
+        payload_hash: 'hash-original',
+      },
+    ])
+
+    const out = await checkReplay(RETRY_KEY, 'hash-different', {
+      supabase: stub.client,
+    })
+    expect(out).toEqual({ kind: 'mismatch', storedHash: 'hash-original' })
+  })
+})
+
 // ─── recordFired ────────────────────────────────────────────────────────
 
 describe('recordFired — Q4 write semantics', () => {
@@ -311,6 +524,7 @@ describe('recordFired — Q4 write semantics', () => {
     const insertedRow = stub.captured.inserts[0].row
     expect(insertedRow).toMatchObject({
       execution_session_id: KEY.executionSessionId,
+      root_execution_id: KEY.rootExecutionId,  // PR-R1a — dual-write
       node_id: KEY.nodeId,
       action_type: KEY.actionType,
       provider: 'gmail',
@@ -318,6 +532,24 @@ describe('recordFired — Q4 write semantics', () => {
       payload_hash: 'hash-1',
       result_snapshot: SAMPLE_RESULT,
     })
+  })
+
+  test('PR-R1a dual-write: a retry-context fire writes both id columns with different values', async () => {
+    const stub = makeStubSupabase()
+    const retryKey: SideEffectKey = {
+      executionSessionId: 'retry-session-2',
+      rootExecutionId: 'original-session-1',
+      nodeId: 'node-A',
+      actionType: 'stripe_action_create_payment_intent',
+    }
+    await recordFired(retryKey, SAMPLE_RESULT, 'hash-charge', {
+      supabase: stub.client,
+      provider: 'stripe',
+      externalId: 'pi_456',
+    })
+    const row = stub.captured.inserts[0].row
+    expect(row.execution_session_id).toBe('retry-session-2')
+    expect(row.root_execution_id).toBe('original-session-1')
   })
 
   test('UNIQUE-violation (23505) is swallowed as no-op (concurrent fire wins)', async () => {

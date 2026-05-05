@@ -4,7 +4,6 @@ import { createClient } from '@supabase/supabase-js'
 import crypto from 'crypto'
 import { logger } from '@/lib/utils/logger'
 import { executeWebhookWorkflow } from '@/lib/webhooks/execute'
-import { AdvancedExecutionEngine } from '@/lib/execution/advancedExecutionEngine'
 
 /**
  * Mailchimp Webhook Endpoint
@@ -222,44 +221,19 @@ async function triggerWorkflowsForEvent(
         return
       }
 
-      const executionEngine = new AdvancedExecutionEngine()
-      const executionSession = await executionEngine.createExecutionSession(
-        workflowId,
-        workflow.user_id,
-        'webhook',
-        {
-          webhookEventId: eventId,
-          inputData: payload,
-          triggerData: payload,
-        }
-      )
-
-      logger.info('[Mailchimp Webhook] Execution session created', {
-        workflowId,
-        executionSessionId: executionSession.id
-      })
-
+      // PR-V2-WEBHOOK-MAILCHIMP: route through unified webhook dispatcher.
+      // Dedup uses Mailchimp's per-event ID — Mailchimp re-sends the same
+      // eventId on retries, so this is a stable cross-retry key.
       after(async () => {
-        try {
-          await executionEngine.executeWorkflowAdvanced(
-            executionSession.id,
-            {
-              ...payload,
-              trigger: payload
-            }
-          )
-          logger.info('[Mailchimp Webhook] Workflow execution completed', {
-            workflowId,
-            executionSessionId: executionSession.id
-          })
-        } catch (execError: any) {
-          logger.error('[Mailchimp Webhook] Workflow execution failed', {
-            workflowId,
-            executionSessionId: executionSession.id,
-            error: execError?.message || 'Unknown execution error',
-            stack: execError?.stack?.split('\n').slice(0, 5).join('\n') || 'no stack',
-          })
-        }
+        await executeWebhookWorkflow({
+          workflowId,
+          userId: workflow.user_id,
+          provider: 'mailchimp',
+          triggerType,
+          triggerData: { ...payload, trigger: payload },
+          metadata: { eventId, webhookEventId: eventId },
+          dedupeKey: eventId,
+        })
       })
     } else {
       // Find all matching workflows
@@ -271,53 +245,25 @@ async function triggerWorkflowsForEvent(
 
       logger.info(`[Mailchimp Webhook] Found ${workflows?.length || 0} matching workflows`)
 
-      // Execute each matching workflow
+      // Execute each matching workflow via unified webhook dispatcher.
+      // dedupeKey is built per-(workflow, event) so distinct workflows
+      // get distinct keys for the same Mailchimp event but the SAME
+      // workflow won't double-execute on retry (the dispatcher prepends
+      // workflowId to dedupeKey internally).
       if (workflows && workflows.length > 0) {
-        const executionEngine = new AdvancedExecutionEngine()
-        const executionSessions = await Promise.all(
-          workflows.map(async workflow => {
-            return executionEngine.createExecutionSession(
-              workflow.id,
-              workflow.user_id,
-              'webhook',
-              {
-                webhookEventId: eventId,
-                inputData: payload,
-                triggerData: payload,
-              }
-            )
-          })
-        )
-
-        logger.info('[Mailchimp Webhook] Execution sessions created', {
-          count: executionSessions.length
-        })
-
-        executionSessions.forEach((session, index) => {
-          const workflow = workflows[index]
+        for (const workflow of workflows) {
           after(async () => {
-            try {
-              await executionEngine.executeWorkflowAdvanced(
-                session.id,
-                {
-                  ...payload,
-                  trigger: payload
-                }
-              )
-              logger.info('[Mailchimp Webhook] Workflow execution completed', {
-                workflowId: workflow.id,
-                executionSessionId: session.id
-              })
-            } catch (execError: any) {
-              logger.error('[Mailchimp Webhook] Workflow execution failed', {
-                workflowId: workflow.id,
-                executionSessionId: session.id,
-                error: execError?.message || 'Unknown execution error',
-                stack: execError?.stack?.split('\n').slice(0, 5).join('\n') || 'no stack',
-              })
-            }
+            await executeWebhookWorkflow({
+              workflowId: workflow.id,
+              userId: workflow.user_id,
+              provider: 'mailchimp',
+              triggerType,
+              triggerData: { ...payload, trigger: payload },
+              metadata: { eventId, webhookEventId: eventId },
+              dedupeKey: eventId,
+            })
           })
-        })
+        }
       }
     }
   } catch (error: any) {

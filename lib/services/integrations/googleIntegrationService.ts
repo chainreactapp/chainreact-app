@@ -1,4 +1,5 @@
 import { ExecutionContext } from "../workflowExecutionService"
+import { fallbackToRegistry } from "../executionHandlers/registryFallback"
 
 import { logger } from '@/lib/utils/logger'
 
@@ -30,7 +31,11 @@ export class GoogleIntegrationService {
       return await this.executeGoogleCalendarAction(node, context)
     }
 
-    throw new Error(`Unknown Google action: ${nodeType}`)
+    // PR-V2C — top-level fallback for Google node types this service
+    // doesn't recognize (e.g. google_analytics_*, google_search_console_*).
+    return await fallbackToRegistry(node, context, {
+      source: 'GoogleIntegrationService',
+    })
   }
 
   private async executeGoogleDriveAction(node: any, context: ExecutionContext) {
@@ -59,7 +64,14 @@ export class GoogleIntegrationService {
       case "google-drive:get_file": // From nodes definition
         return await this.executeGetFile(node, context)
       default:
-        throw new Error(`Google Drive action '${nodeType}' is not yet implemented`)
+        // PR-V2C — fall through to registry. Test-mode safety enforced
+        // inside the helper. NB: Drive's per-method testMode behavior is
+        // inconsistent (no early return at the method top, unlike Sheets/
+        // Docs/Calendar below), so the helper's short-circuit is the only
+        // guard for fallback-reached Drive actions in test mode.
+        return await fallbackToRegistry(node, context, {
+          source: 'GoogleIntegrationService.Drive',
+        })
     }
   }
 
@@ -78,8 +90,10 @@ export class GoogleIntegrationService {
     }
 
     // PR-C4 — engine metadata for within-session idempotency.
+    // Phase 2 — `rootExecutionId` for cross-session retry dedup.
     const meta = {
       executionSessionId: context.executionId,
+      rootExecutionId: context.rootExecutionId ?? context.executionId,
       nodeId: node.id,
       actionType: node.data?.type ?? nodeType,
       provider: 'google-sheets',
@@ -119,7 +133,13 @@ export class GoogleIntegrationService {
         return await createGoogleSpreadsheet(config, context.userId, context.data || {}, meta)
         
       default:
-        throw new Error(`Google Sheets action '${nodeType}' is not yet implemented`)
+        // PR-V2C — fall through to registry. testMode short-circuit at
+        // the top of this method already returned a mock for test runs;
+        // fallback only fires for live runs (its own short-circuit
+        // becomes a no-op).
+        return await fallbackToRegistry(node, context, {
+          source: 'GoogleIntegrationService.Sheets',
+        })
     }
   }
 
@@ -166,10 +186,16 @@ export class GoogleIntegrationService {
         if ('getGoogleDocument' in googleDocs) {
           return await googleDocs.getGoogleDocument(config, context.userId, context.data || {})
         }
-        throw new Error("Google Docs read/get action is not yet implemented")
-        
+        // PR-V2C — getGoogleDocument missing from googleDocs module; try registry.
+        return await fallbackToRegistry(node, context, {
+          source: 'GoogleIntegrationService.Docs.Read',
+        })
+
       default:
-        throw new Error(`Google Docs action '${nodeType}' is not yet implemented`)
+        // PR-V2C — fall through to registry.
+        return await fallbackToRegistry(node, context, {
+          source: 'GoogleIntegrationService.Docs',
+        })
     }
   }
 
@@ -196,8 +222,10 @@ export class GoogleIntegrationService {
     }
 
     // PR-C4 — engine metadata for within-session idempotency.
+    // Phase 2 — `rootExecutionId` for cross-session retry dedup.
     const meta = {
       executionSessionId: context.executionId,
+      rootExecutionId: context.rootExecutionId ?? context.executionId,
       nodeId: node.id,
       actionType: node.data?.type ?? nodeType,
       provider: 'google-calendar',
@@ -213,16 +241,15 @@ export class GoogleIntegrationService {
         
       case "calendar_update_event":
       case "google_calendar_action_update_event":
-        // TODO: Implement when action is available
-        throw new Error("Google Calendar update event is not yet implemented")
-        
       case "calendar_delete_event":
       case "google_calendar_action_delete_event":
-        // TODO: Implement when action is available
-        throw new Error("Google Calendar delete event is not yet implemented")
-        
       default:
-        throw new Error(`Google Calendar action '${nodeType}' is not yet implemented`)
+        // PR-V2C — fall through to registry. v1 has handlers for
+        // update/delete event etc.; this service had explicit
+        // "not yet implemented" stubs that the fallback now supersedes.
+        return await fallbackToRegistry(node, context, {
+          source: 'GoogleIntegrationService.Calendar',
+        })
     }
   }
 
@@ -262,8 +289,10 @@ export class GoogleIntegrationService {
     try {
       // Use the uploadGoogleDriveFile function we already have
       const { uploadGoogleDriveFile } = await import('@/lib/workflows/actions/googleDrive/uploadFile')
+      // Phase 2 — `rootExecutionId` for cross-session retry dedup.
       const meta = {
         executionSessionId: context.executionId,
+        rootExecutionId: context.rootExecutionId ?? context.executionId,
         nodeId: node.id,
         actionType: node.data?.type,
         provider: 'google-drive',
@@ -292,8 +321,10 @@ export class GoogleIntegrationService {
 
     // Import and use actual implementation
     const { uploadGoogleDriveFile } = await import('@/lib/workflows/actions/googleDrive/uploadFile')
+    // Phase 2 — `rootExecutionId` for cross-session retry dedup.
     const meta = {
       executionSessionId: context.executionId,
+      rootExecutionId: context.rootExecutionId ?? context.executionId,
       nodeId: node.id,
       actionType: node.data?.type,
       provider: 'google-drive',

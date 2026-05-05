@@ -2,6 +2,7 @@ import { ExecutionContext } from "../workflowExecutionService"
 import { GmailIntegrationService } from "../integrations/gmailIntegrationService"
 import { SlackIntegrationService } from "../integrations/slackIntegrationService"
 import { GoogleIntegrationService } from "../integrations/googleIntegrationService"
+import { fallbackToRegistry } from "./registryFallback"
 
 import { logger } from '@/lib/utils/logger'
 
@@ -349,8 +350,12 @@ export class IntegrationNodeHandlers {
         case 'microsoft-outlook_action_send_email': {
           const { sendOutlookEmail } = await import('@/lib/workflows/actions/microsoft-outlook')
           // PR-C4 — engine metadata for within-session idempotency.
+          // Phase 2 (v2 canonical engine plan) — `rootExecutionId` carries
+          // the retry-lineage root so Q4 + Stripe header dedupe across
+          // retries. Falls back to executionId for legacy contexts.
           const meta = {
             executionSessionId: context.executionId,
+            rootExecutionId: context.rootExecutionId ?? context.executionId,
             nodeId: node.id,
             actionType: node.data?.type ?? nodeType,
             provider: 'microsoft-outlook',
@@ -479,7 +484,10 @@ export class IntegrationNodeHandlers {
           return result
         }
         default:
-          throw new Error(`Unknown OneNote action type: ${nodeType}`)
+          // PR-V2C — fall through to registry. Test-mode safety inside helper.
+          return await fallbackToRegistry(node, context, {
+            source: 'IntegrationNodeHandlers.OneNote',
+          })
       }
     }
 
@@ -526,8 +534,15 @@ export class IntegrationNodeHandlers {
       case "dropbox_action_upload_file":
         return await this.executeDropboxUpload(node, context)
       default:
-        // For unknown integrations, return a descriptive error
-        throw new Error(`Integration type '${nodeType}' is not yet implemented. Please check if this action is available.`)
+        // PR-V2C — registry fallback. Routes node types without an explicit
+        // v2 case through the shared `executeAction` registry (the same
+        // dispatch path v1 uses). Required during the v1 → v2 cutover —
+        // without this, ~130 node types (Stripe, Shopify, GitHub, Twitter,
+        // Mailchimp, Monday.com, etc.) silently throw "not yet implemented".
+        // Test-mode safety (short-circuit) is enforced inside the helper.
+        return await fallbackToRegistry(node, context, {
+          source: 'IntegrationNodeHandlers',
+        })
     }
   }
 
@@ -750,7 +765,10 @@ export class IntegrationNodeHandlers {
         return fetchResult.output
 
       default:
-        throw new Error(`Unknown Discord action type: ${nodeType}`)
+        // PR-V2C — fall through to registry. Test-mode safety inside helper.
+        return await fallbackToRegistry(node, context, {
+          source: 'IntegrationNodeHandlers.Discord',
+        })
     }
   }
 
@@ -768,8 +786,10 @@ export class IntegrationNodeHandlers {
         const { createAirtableRecord } = await import("@/lib/workflows/actions/airtable/createRecord")
 
         // PR-C4 — engine metadata for within-session idempotency.
+        // Phase 2 — `rootExecutionId` for cross-session retry dedup.
         const airtableMeta = {
           executionSessionId: context.executionId,
+          rootExecutionId: context.rootExecutionId ?? context.executionId,
           nodeId: node.id,
           actionType: node.data?.type ?? nodeType,
           provider: 'airtable',
@@ -838,7 +858,12 @@ export class IntegrationNodeHandlers {
         return listResult.output
 
       default:
-        throw new Error(`Unknown Airtable action type: ${nodeType}`)
+        // PR-V2C — fall through to registry. Airtable has 11 actions in
+        // v1; this dispatcher explicitly covers 4. Test-mode safety
+        // inside helper.
+        return await fallbackToRegistry(node, context, {
+          source: 'IntegrationNodeHandlers.Airtable',
+        })
     }
   }
 
@@ -997,7 +1022,11 @@ export class IntegrationNodeHandlers {
         return searchResult.output
 
       default:
-        throw new Error(`Unknown Notion action type: ${nodeType}`)
+        // PR-V2C — fall through to registry. Notion has 18+ actions in
+        // v1; this dispatcher explicitly covers 9.
+        return await fallbackToRegistry(node, context, {
+          source: 'IntegrationNodeHandlers.Notion',
+        })
     }
   }
 
@@ -1087,7 +1116,11 @@ export class IntegrationNodeHandlers {
         return createBoardResult.output
 
       default:
-        throw new Error(`Unknown Trello action type: ${nodeType}`)
+        // PR-V2C — fall through to registry. Trello has 10 actions in
+        // v1; this dispatcher explicitly covers 4.
+        return await fallbackToRegistry(node, context, {
+          source: 'IntegrationNodeHandlers.Trello',
+        })
     }
   }
 
@@ -1179,7 +1212,11 @@ export class IntegrationNodeHandlers {
         return updateDealResult.output
 
       default:
-        throw new Error(`Unknown HubSpot action type: ${nodeType}`)
+        // PR-V2C — fall through to registry. HubSpot has 25+ actions in
+        // v1; this dispatcher explicitly covers 5.
+        return await fallbackToRegistry(node, context, {
+          source: 'IntegrationNodeHandlers.HubSpot',
+        })
     }
   }
 
@@ -1292,7 +1329,10 @@ export class IntegrationNodeHandlers {
         return manageDataResult.output
 
       default:
-        throw new Error(`Unknown Microsoft Excel action type: ${nodeType}`)
+        // PR-V2C — fall through to registry.
+        return await fallbackToRegistry(node, context, {
+          source: 'IntegrationNodeHandlers.Excel',
+        })
     }
   }
 

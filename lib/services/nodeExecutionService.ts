@@ -84,7 +84,46 @@ export class NodeExecutionService {
         })
       }
       
-      let nodeResult = await this.executeNodeByType(node, allNodes, connections, context)
+      // PR-V2C-AUDIT — engine-enforced pre-call gate.
+      //
+      // v2's INTERCEPT_WRITES below this line is POST-hoc result decoration.
+      // It does not block real provider calls — the audit
+      // (learning/docs/v2-testmode-audit-findings.md) found ~44 dispatch
+      // cases where test mode would fire real Stripe/Slack/Discord/HubSpot
+      // /Notion/etc. calls before the post-hoc wrapping happened.
+      //
+      // This gate refuses to invoke external-action handlers in test mode
+      // unless EXECUTE_ALL is explicitly requested. Read-only operations
+      // (fetch/get/list/search/find — see `isExternalAction`) still execute
+      // to give realistic test data, matching the existing INTERCEPT_WRITES
+      // semantics.
+      //
+      // Per-handler Q8d (`if (meta?.testMode) return ...`) remains a
+      // desirable belt-and-suspenders contract; backlog tracked in the
+      // audit findings doc above.
+      const shouldGate =
+        context.testMode &&
+        this.isExternalAction(node.data.type) &&
+        context.testModeConfig?.actionMode !== ActionTestMode.EXECUTE_ALL
+
+      let nodeResult: any
+      if (shouldGate) {
+        logger.info(
+          `🛡️ Engine pre-call gate: ${node.data.type} (test mode, no provider call)`,
+        )
+        nodeResult = {
+          success: true,
+          output: {
+            __testModePreCallGate: true,
+            simulated: true,
+            nodeType: node.data.type,
+            message: `${node.data.type} blocked by engine pre-call gate`,
+          },
+          message: `Test mode: ${node.data.type} would have executed`,
+        }
+      } else {
+        nodeResult = await this.executeNodeByType(node, allNodes, connections, context)
+      }
 
       // Enhanced test mode action interception
       if (context.testMode && context.testModeConfig) {
@@ -478,36 +517,56 @@ export class NodeExecutionService {
 
   private isExternalAction(nodeType: string): boolean {
     // Actions that would send data externally (should be intercepted in sandbox mode)
-    
+
     // Check for action keywords that indicate external operations
     const externalKeywords = [
       'send', 'create', 'upload', 'update', 'delete', 'append',
-      'write', 'post', 'publish', 'share', 'export', 'archive'
+      'write', 'post', 'publish', 'share', 'export', 'archive',
+      // PR-V2C-AUDIT — Notion's `manage_*` actions are writes.
+      // Naming convention is a v2 quirk: `manage_database` covers
+      // create/update/delete operations.
+      'manage',
     ]
-    
+
     // Check if the node type contains any external action keyword
-    const hasExternalKeyword = externalKeywords.some(keyword => 
+    const hasExternalKeyword = externalKeywords.some(keyword =>
       nodeType.toLowerCase().includes(keyword)
     )
-    
-    // Also check specific prefixes that are always external
+
+    // Also check specific prefixes that are always external. Anything in
+    // this list with a non-read-only-keyword nodeType is gated in test mode.
+    //
+    // PR-V2C-AUDIT — expanded to cover the full provider catalog discovered
+    // by the testMode audit (learning/docs/v2-testmode-audit-findings.md).
+    // The original list pre-dated providers like Notion, Airtable, HubSpot,
+    // Trello, Stripe, Shopify, Twitter, Mailchimp, etc. — those were
+    // dispatched by v2 but isExternalAction returned false, so the
+    // post-hoc INTERCEPT_WRITES wrapping was silently skipped for them.
     const externalPrefixes = [
       'gmail_action_', 'slack_', 'discord_', 'teams_',
       'google-drive:', 'google_drive_', 'google-docs:', 'google_docs_',
       'google-calendar:', 'google_calendar_', 'google-sheets:', 'google_sheets_',
-      'onedrive_', 'dropbox_', 'webhook'
+      'onedrive_', 'dropbox_', 'webhook',
+      // PR-V2C-AUDIT additions:
+      'notion_', 'airtable_', 'hubspot_', 'trello_',
+      'microsoft-onenote_', 'microsoft_onenote_',
+      'microsoft-outlook_', 'microsoft_outlook_',
+      'microsoft-excel_', 'microsoft_excel_',
+      'stripe_', 'shopify_', 'github_', 'mailchimp_',
+      'twitter_', 'facebook_', 'manychat_', 'gumroad_', 'monday_',
+      'square_', 'paypal_',
     ]
-    
-    const hasExternalPrefix = externalPrefixes.some(prefix => 
+
+    const hasExternalPrefix = externalPrefixes.some(prefix =>
       nodeType.startsWith(prefix)
     )
-    
+
     // Exclude certain read-only operations
     const readOnlyKeywords = ['fetch', 'get', 'read', 'list', 'search', 'find']
-    const isReadOnly = readOnlyKeywords.some(keyword => 
+    const isReadOnly = readOnlyKeywords.some(keyword =>
       nodeType.toLowerCase().includes(keyword)
     )
-    
+
     return (hasExternalKeyword || hasExternalPrefix) && !isReadOnly
   }
 

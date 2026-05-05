@@ -79,82 +79,112 @@ export async function sendSlackMessage(
   }
 }
 
-/**
- * Format message into Slack blocks for better formatting
- */
-function formatSlackBlocks(message: string): any[] {
-  const lines = message.split('\n')
-  const workflowName = lines.find(l => l.includes('Workflow'))?.replace(/^.*"(.*)".*$/, '$1') || 'Unknown'
-  const errorLine = lines.find(l => l.includes('Error:'))
-  const workflowId = lines.find(l => l.includes('Workflow ID:'))?.split(': ')[1]
+import type { WorkflowFailurePayload } from './workflowFailurePayload'
 
-  return [
+/**
+ * Send workflow error to Slack with humanized blocks.
+ */
+export async function sendWorkflowErrorSlack(
+  channelId: string,
+  payload: WorkflowFailurePayload,
+  userId: string
+): Promise<boolean> {
+  const fallback = `${payload.title} — workflow "${payload.workflowName}"`
+  const blocks = buildWorkflowFailureSlackBlocks(payload)
+
+  try {
+    const supabase = await createSupabaseServerClient()
+    const { data: integration, error } = await supabase
+      .from('integrations')
+      .select('credentials')
+      .eq('user_id', userId)
+      .eq('provider', 'slack')
+      .eq('status', 'connected')
+      .single()
+
+    if (error || !integration) {
+      logger.error('Slack integration not found for user:', userId)
+      return false
+    }
+    const accessToken = (integration.credentials as any)?.access_token
+    if (!accessToken) {
+      logger.error('Slack access token not found')
+      return false
+    }
+
+    const response = await fetch('https://slack.com/api/chat.postMessage', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ channel: channelId, text: fallback, blocks }),
+    })
+    const data = await response.json()
+    if (!data.ok) {
+      logger.error('Slack API error:', data.error)
+      return false
+    }
+    return true
+  } catch (err: any) {
+    logger.error('Failed to send Slack workflow error:', { error: err.message, channelId })
+    return false
+  }
+}
+
+function buildWorkflowFailureSlackBlocks(p: WorkflowFailurePayload): any[] {
+  const blocks: any[] = [
     {
       type: 'header',
-      text: {
-        type: 'plain_text',
-        text: '⚠️ Workflow Error Alert',
-        emoji: true
-      }
+      text: { type: 'plain_text', text: p.title, emoji: false },
     },
     {
       type: 'section',
-      fields: [
-        {
-          type: 'mrkdwn',
-          text: `*Workflow:*\n${workflowName}`
-        },
-        {
-          type: 'mrkdwn',
-          text: `*Time:*\n${new Date().toLocaleString()}`
-        }
-      ]
+      text: { type: 'mrkdwn', text: p.description },
     },
-    {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `*Error:*\n\`\`\`${errorLine || message}\`\`\``
-      }
-    },
-    ...(workflowId ? [{
+  ]
+
+  if (p.hint) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `_${p.hint}_` }],
+    })
+  }
+
+  blocks.push({
+    type: 'section',
+    fields: [
+      { type: 'mrkdwn', text: `*Workflow:*\n${p.workflowName}` },
+      ...(p.failedStepName
+        ? [{ type: 'mrkdwn', text: `*Failed step:*\n${p.failedStepName}` }]
+        : []),
+    ],
+  })
+
+  if (p.cta) {
+    blocks.push({
       type: 'actions',
       elements: [
         {
           type: 'button',
-          text: {
-            type: 'plain_text',
-            text: 'View Workflow',
-            emoji: true
-          },
-          url: `https://chainreact.app/workflows/builder/${workflowId}`,
-          style: 'primary'
-        }
-      ]
-    }] : [])
-  ]
-}
+          text: { type: 'plain_text', text: p.cta.label, emoji: false },
+          url: p.cta.url,
+          style: 'primary',
+        },
+      ],
+    })
+  }
 
-/**
- * Send workflow error to Slack with formatted blocks
- */
-export async function sendWorkflowErrorSlack(
-  channelId: string,
-  workflowName: string,
-  workflowId: string,
-  error: string,
-  userId: string,
-  executionId?: string
-): Promise<boolean> {
-  const message = `
-Workflow "${workflowName}" failed
+  if (p.technicalDetails) {
+    // Slack mrkdwn code blocks; truncate to keep messages skimmable
+    const truncated = p.technicalDetails.length > 500
+      ? `${p.technicalDetails.slice(0, 500)}…`
+      : p.technicalDetails
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `*Technical details:*\n\`\`\`${truncated}\`\`\`` }],
+    })
+  }
 
-Error: ${error}
-
-Workflow ID: ${workflowId}
-${executionId ? `Execution ID: ${executionId}` : ''}
-Time: ${new Date().toLocaleString()}
-  `.trim()
-
-  return sendSlackMessage(channelId, message, userId)
+  return blocks
 }

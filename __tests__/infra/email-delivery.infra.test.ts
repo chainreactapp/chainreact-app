@@ -125,6 +125,222 @@ describe('lib/notifications/email — Resend payload construction', () => {
     expect(capturedPayload.html).toContain('plain alert text')
     expect(capturedPayload.html).toContain('<!DOCTYPE html>')
   })
+
+  // ─── sendWorkflowErrorEmail — humanized failure template ────────────
+  //
+  // The new humanized email is the user's first contact with a workflow
+  // failure for any push channel they've configured. It must:
+  //   - Surface the classified title in the subject and the HTML hero
+  //   - Render the description, hint, failed-step label, and CTA button
+  //   - Include the raw technical details inside a collapsed <details>
+  //     so support / power users can copy them
+  //   - Drop sections cleanly when classification fields are absent
+  //   - Color the alert card by severity ('error' red vs 'warning' amber)
+  //   - HTML-escape every classification field to neutralize XSS from
+  //     attacker-controlled error messages
+
+  describe('sendWorkflowErrorEmail — humanized failure payload', () => {
+    function fullPayload(overrides: any = {}): any {
+      return {
+        subject: 'Reconnect Gmail: Daily ingest',
+        title: 'Reconnect Gmail',
+        description: 'Your Gmail connection expired or was revoked.',
+        hint: 'Reconnect Gmail, then retry the workflow.',
+        cta: {
+          label: 'Reconnect Gmail',
+          url: 'https://app.test/integrations',
+        },
+        severity: 'error',
+        workflowId: 'wf_1',
+        workflowName: 'Daily ingest',
+        executionId: 'exec_1',
+        technicalDetails: '401 Unauthorized: Invalid Credentials',
+        failedStepName: 'Send confirmation email',
+        ...overrides,
+      }
+    }
+
+    test('full payload — all sections rendered in plain text and HTML', async () => {
+      jest.resetModules()
+      process.env.RESEND_API_KEY = 'test-resend-key'
+      const { sendWorkflowErrorEmail } = await import('@/lib/notifications/email')
+
+      const ok = await sendWorkflowErrorEmail('ops@chainreact.test', fullPayload())
+      expect(ok).toBe(true)
+      expect(capturedPayload).toBeTruthy()
+
+      // Subject = humanized title : workflow name
+      expect(capturedPayload.subject).toBe('Reconnect Gmail: Daily ingest')
+
+      // Plain-text body has every section in order
+      expect(capturedPayload.text).toContain('Reconnect Gmail — workflow "Daily ingest"')
+      expect(capturedPayload.text).toContain('Your Gmail connection expired or was revoked.')
+      expect(capturedPayload.text).toContain('Reconnect Gmail, then retry the workflow.')
+      expect(capturedPayload.text).toContain(
+        'Reconnect Gmail: https://app.test/integrations',
+      )
+      expect(capturedPayload.text).toContain('Technical details:')
+      expect(capturedPayload.text).toContain('401 Unauthorized: Invalid Credentials')
+
+      // HTML carries the same content, plus the structural pieces:
+      // accent label, hero h1, description paragraph, failed-step block,
+      // hint italic, CTA button (anchor with the CTA url), workflow + exec
+      // metadata footer, collapsed Technical details <details>.
+      const html = capturedPayload.html as string
+      expect(html).toContain('Workflow failed')
+      expect(html).toContain('<h1')
+      expect(html).toContain('Reconnect Gmail')
+      expect(html).toContain('Your Gmail connection expired or was revoked.')
+      expect(html).toContain('Failed step:')
+      expect(html).toContain('Send confirmation email')
+      expect(html).toContain('Reconnect Gmail, then retry the workflow.')
+      expect(html).toContain('href="https://app.test/integrations"')
+      expect(html).toContain('Daily ingest')
+      expect(html).toContain('Execution ID:')
+      expect(html).toContain('exec_1')
+      expect(html).toContain('<details')
+      expect(html).toContain('Technical details')
+      expect(html).toContain('401 Unauthorized: Invalid Credentials')
+    })
+
+    test("severity 'error' uses red accent palette", async () => {
+      jest.resetModules()
+      process.env.RESEND_API_KEY = 'test-resend-key'
+      const { sendWorkflowErrorEmail } = await import('@/lib/notifications/email')
+
+      await sendWorkflowErrorEmail('ops@chainreact.test', fullPayload({ severity: 'error' }))
+      const html = capturedPayload.html as string
+      expect(html).toContain('#dc2626') // red accent
+      expect(html).toContain('#fef2f2') // red accent bg
+      expect(html).not.toContain('#d97706') // no amber
+    })
+
+    test("severity 'warning' uses amber accent palette", async () => {
+      jest.resetModules()
+      process.env.RESEND_API_KEY = 'test-resend-key'
+      const { sendWorkflowErrorEmail } = await import('@/lib/notifications/email')
+
+      await sendWorkflowErrorEmail(
+        'ops@chainreact.test',
+        fullPayload({
+          severity: 'warning',
+          subject: 'Duplicate run with different inputs: Daily ingest',
+          title: 'Duplicate run with different inputs',
+          cta: null,
+        }),
+      )
+      const html = capturedPayload.html as string
+      expect(html).toContain('#d97706') // amber accent
+      expect(html).toContain('#fffbeb') // amber accent bg
+      expect(html).not.toContain('#dc2626') // no red
+    })
+
+    test('cta=null — no anchor button rendered', async () => {
+      jest.resetModules()
+      process.env.RESEND_API_KEY = 'test-resend-key'
+      const { sendWorkflowErrorEmail } = await import('@/lib/notifications/email')
+
+      await sendWorkflowErrorEmail('ops@chainreact.test', fullPayload({ cta: null }))
+
+      // Plain text drops the "<label>: <url>" line entirely
+      expect(capturedPayload.text).not.toMatch(/https?:\/\/app\.test\/integrations/)
+      // HTML has no anchor with the integrations URL
+      const html = capturedPayload.html as string
+      expect(html).not.toContain('href="https://app.test/integrations"')
+    })
+
+    test('hint=null — italic hint paragraph is omitted from HTML', async () => {
+      jest.resetModules()
+      process.env.RESEND_API_KEY = 'test-resend-key'
+      const { sendWorkflowErrorEmail } = await import('@/lib/notifications/email')
+
+      await sendWorkflowErrorEmail('ops@chainreact.test', fullPayload({ hint: null }))
+
+      expect(capturedPayload.text).not.toContain('Reconnect Gmail, then retry')
+      // The HTML rule for the hint paragraph uses font-style: italic. Ensure
+      // the specific copy is gone.
+      const html = capturedPayload.html as string
+      expect(html).not.toContain('Reconnect Gmail, then retry the workflow.')
+    })
+
+    test('technicalDetails=null — collapsed Technical Details block omitted', async () => {
+      jest.resetModules()
+      process.env.RESEND_API_KEY = 'test-resend-key'
+      const { sendWorkflowErrorEmail } = await import('@/lib/notifications/email')
+
+      await sendWorkflowErrorEmail(
+        'ops@chainreact.test',
+        fullPayload({ technicalDetails: null }),
+      )
+
+      expect(capturedPayload.text).not.toContain('Technical details:')
+      const html = capturedPayload.html as string
+      expect(html).not.toContain('<details')
+      expect(html).not.toContain('Technical details</summary>')
+    })
+
+    test('failedStepName=null — Failed step block omitted', async () => {
+      jest.resetModules()
+      process.env.RESEND_API_KEY = 'test-resend-key'
+      const { sendWorkflowErrorEmail } = await import('@/lib/notifications/email')
+
+      await sendWorkflowErrorEmail(
+        'ops@chainreact.test',
+        fullPayload({ failedStepName: null }),
+      )
+      const html = capturedPayload.html as string
+      expect(html).not.toContain('Failed step:')
+    })
+
+    test('executionId=null — Execution ID line omitted from HTML metadata', async () => {
+      jest.resetModules()
+      process.env.RESEND_API_KEY = 'test-resend-key'
+      const { sendWorkflowErrorEmail } = await import('@/lib/notifications/email')
+
+      await sendWorkflowErrorEmail(
+        'ops@chainreact.test',
+        fullPayload({ executionId: null }),
+      )
+      const html = capturedPayload.html as string
+      expect(html).not.toContain('Execution ID:')
+    })
+
+    test('escapes HTML in classification fields (XSS guard)', async () => {
+      // An attacker-controlled provider error string must not be able to
+      // inject script tags / break out of the alert-card div. Every
+      // user-supplied field in renderWorkflowErrorEmailHtml goes through
+      // escapeHtml.
+      jest.resetModules()
+      process.env.RESEND_API_KEY = 'test-resend-key'
+      const { sendWorkflowErrorEmail } = await import('@/lib/notifications/email')
+
+      const malicious = '<script>alert("xss")</script>'
+      const maliciousUrl = 'https://evil.test/?x=<script>alert(1)</script>'
+
+      await sendWorkflowErrorEmail(
+        'ops@chainreact.test',
+        fullPayload({
+          title: malicious,
+          description: malicious,
+          hint: malicious,
+          failedStepName: malicious,
+          workflowName: malicious,
+          executionId: malicious,
+          technicalDetails: malicious,
+          cta: { label: malicious, url: maliciousUrl },
+        }),
+      )
+
+      const html = capturedPayload.html as string
+      // The literal <script> tag must never appear in rendered HTML.
+      expect(html).not.toContain('<script>alert("xss")</script>')
+      expect(html).not.toContain('<script>alert(1)</script>')
+      // The escaped form should appear instead (everywhere the field
+      // is rendered — title, description, hint, failed-step, workflowName,
+      // executionId, technicalDetails, cta label/url).
+      expect(html).toContain('&lt;script&gt;')
+    })
+  })
 })
 
 // ─── B. MailHog harness richer-capture contract ─────────────────────

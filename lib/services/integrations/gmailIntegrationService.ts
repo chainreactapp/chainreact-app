@@ -1,4 +1,5 @@
 import { ExecutionContext } from "../workflowExecutionService"
+import { fallbackToRegistry } from "../executionHandlers/registryFallback"
 
 import { logger } from '@/lib/utils/logger'
 
@@ -32,7 +33,14 @@ export class GmailIntegrationService {
       case "gmail_action_delete":
         return await this.executeDelete(node, context)
       default:
-        throw new Error(`Unknown Gmail action: ${nodeType}`)
+        // PR-V2C — fall through to the shared registry instead of throwing.
+        // Gmail has 15+ action types; this service explicitly handles 9.
+        // The remaining types (create_draft, advanced_search, attachment
+        // handlers, etc.) live in the v1 registry. Test-mode safety
+        // short-circuit enforced inside the helper.
+        return await fallbackToRegistry(node, context, {
+          source: 'GmailIntegrationService',
+        })
     }
   }
 
@@ -104,8 +112,10 @@ export class GmailIntegrationService {
     const { sendGmailEmail } = await import('@/lib/workflows/actions/gmail/sendEmail')
 
     // PR-C4 — thread engine metadata for within-session idempotency.
+    // Phase 2 — `rootExecutionId` for cross-session retry dedup.
     const meta = {
       executionSessionId: context.executionId,
+      rootExecutionId: context.rootExecutionId ?? context.executionId,
       nodeId: node.id,
       actionType: node.data?.type,
       provider: 'gmail',

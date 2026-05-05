@@ -691,12 +691,19 @@ export async function executeAction({ node, input, userId, workflowId, testMode,
     userId
   }
 
-  // PR-C4 — engine-thread metadata for within-session idempotency. Handlers
-  // that opt in (those updated under PR-C4) read `params.meta` to build
-  // their `(executionSessionId, nodeId, actionType)` idempotency key. Older
-  // handlers that don't read `meta` ignore this field.
+  // PR-C4 (+ PR-R1a) — engine-thread metadata for cross-session idempotency.
+  // Handlers that opt in (those updated under PR-C4) read `params.meta` to
+  // build their `(rootExecutionId, nodeId, actionType)` idempotency key.
+  // Older handlers that don't read `meta` ignore this field.
+  //
+  // `rootExecutionId` is the retry-lineage root (PR-R1a). Equals
+  // `executionSessionId` for fresh runs; equals the originating run's
+  // session id on retries/resumes. Falls back to `executionSessionId` in
+  // the builder when callers (e.g. webhook trigger paths) haven't been
+  // updated to thread it.
   const handlerMeta = {
     executionSessionId: input?.executionId,
+    rootExecutionId: input?.rootExecutionId,
     nodeId: node.id,
     actionType: type,
     testMode,

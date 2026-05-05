@@ -474,6 +474,7 @@ export function WorkflowBuilderV2({ flowId, initialRevision, initialStatus }: Wo
   const pathname = usePathname()
   const promptParam = searchParams?.get("prompt") ?? searchParams?.get("initialPrompt") ?? null
   const openPanelParam = searchParams?.get("openPanel") === "true"
+  const historyExecutionParam = searchParams?.get("historyExecution") ?? null
 
   // Store router and searchParams in refs to avoid useEffect dependency loops
   // These hooks return new object instances every render, causing infinite loops
@@ -7691,12 +7692,25 @@ export function WorkflowBuilderV2({ flowId, initialRevision, initialStatus }: Wo
       ? (runId: string) => actions.refreshRun(runId)
       : undefined,
     activeRunId: flowState?.lastRunId,
+    pendingHistoryExecutionId: historyExecutionParam,
+    onPendingHistoryConsumed: () => {
+      // Strip the deep-link query param from the URL once the dialog has
+      // taken the user into the detail view, so a refresh / dialog-close
+      // cycle doesn't reopen indefinitely.
+      const params = new URLSearchParams(searchParamsRef.current?.toString() || "")
+      if (params.has("historyExecution")) {
+        params.delete("historyExecution")
+        const qs = params.toString()
+        const target = qs ? `${pathname}?${qs}` : pathname || "/"
+        routerRef.current.replace(target, { scroll: false })
+      }
+    },
     onGenerateApiKey: hasPublishedRevision ? handleGenerateApiKey : undefined,
     canGenerateApiKey: hasPublishedRevision,
     onRecenterView: handleRecenterView,
     onToggleViewLock: handleToggleViewLock,
     isViewLocked,
-  }), [actions, builder, comingSoon, flowId, flowState?.hasUnsavedChanges, flowState?.isSaving, flowState?.isUpdatingStatus, flowState?.lastRunId, flowState?.revisionId, flowState?.workflowStatus, handleGenerateApiKey, handleNameChange, handleOpenTestDialog, handleToggleLiveWithValidation, handleRecenterView, handleToggleViewLock, hasPlaceholders, hasPublishedRevision, isViewLocked, nameDirty, persistName, workflowName])
+  }), [actions, builder, comingSoon, flowId, flowState?.hasUnsavedChanges, flowState?.isSaving, flowState?.isUpdatingStatus, flowState?.lastRunId, flowState?.revisionId, flowState?.workflowStatus, handleGenerateApiKey, handleNameChange, handleOpenTestDialog, handleToggleLiveWithValidation, handleRecenterView, handleToggleViewLock, hasPlaceholders, hasPublishedRevision, isViewLocked, nameDirty, persistName, workflowName, historyExecutionParam, pathname])
 
   // Derive active execution node name from flow test status
   const activeExecutionNodeName = flowTestStatus?.currentNodeLabel ?? null

@@ -8,11 +8,28 @@
  * Includes built-in deduplication to prevent duplicate workflow runs
  * when providers retry webhook deliveries.
  *
- * Creates a trackable execution session via AdvancedExecutionEngine.
+ * Phase 3 (PR-V2-WEBHOOKS): when the workflow owner has
+ * `user_profiles.opt_in_v2_execution = true` AND
+ * `FEATURE_FLAGS.V2_LIVE_EXECUTION` is on, this dispatcher routes the run
+ * through `WorkflowExecutionService` (v2). Otherwise it falls through to
+ * the legacy `AdvancedExecutionEngine` (v1) path.
+ *
+ * Critical rollout guardrail: once v2 has been elected for a run, the
+ * dispatcher does NOT silently fall back to v1 if v2 fails. Failures
+ * surface to the caller as `{ success: false, error }`. This prevents
+ * accidental masking of v2 bugs during staged rollout.
  */
 
 import { AdvancedExecutionEngine } from '@/lib/execution/advancedExecutionEngine'
+import { decideV2LiveDispatch } from '@/lib/execution/v2LiveExecutionDispatch'
+import { FEATURE_FLAGS } from '@/lib/featureFlags'
+import { createAdminClient } from '@/lib/supabase/admin'
 import { logger } from '@/lib/utils/logger'
+
+// `WorkflowExecutionService` is imported lazily inside `executeWebhookWorkflow`
+// when the dispatch elects v2. Eager import would pull `server-only` and an
+// eager Supabase client into every consumer of this module — the v1 default
+// path doesn't need v2's transitive graph.
 
 export interface WebhookExecutionParams {
   workflowId: string
@@ -149,7 +166,107 @@ export async function executeWebhookWorkflow(
     }
   }
 
-  // ── Execute Workflow ──
+  // ── Phase 3 (PR-V2-WEBHOOKS) — dispatch decision ──
+  //
+  // Look up the workflow row + opt-in once per webhook fire. Failures
+  // here fall through to v1 (conservative — opt-in is a positive
+  // signal, not a default). One DB query per webhook is acceptable;
+  // webhook latency is already async.
+  const adminSupabase = createAdminClient()
+  let workflowRow: any = null
+  let userOptedIntoV2Execution = false
+  try {
+    const { data: wfRow } = await adminSupabase
+      .from('workflows')
+      .select('id, name, user_id, status, workspace_id, workspace_type, billing_scope_type, billing_scope_id')
+      .eq('id', workflowId)
+      .maybeSingle()
+    workflowRow = wfRow
+    if (workflowRow?.user_id) {
+      const { data: profile } = await adminSupabase
+        .from('user_profiles')
+        .select('opt_in_v2_execution')
+        .eq('id', workflowRow.user_id)
+        .maybeSingle()
+      userOptedIntoV2Execution = !!(profile as any)?.opt_in_v2_execution
+    }
+  } catch (lookupError: any) {
+    logger.warn('[Webhook Execute] workflow/opt-in lookup failed; defaulting to v1 dispatch', {
+      workflowId,
+      provider,
+      error: lookupError?.message,
+    })
+  }
+
+  const v2Dispatch = decideV2LiveDispatch({
+    executionMode: 'webhook',
+    flagEnabled: FEATURE_FLAGS.V2_LIVE_EXECUTION,
+    userOptedIn: userOptedIntoV2Execution,
+  })
+  logger.info('[Webhook Execute] Engine dispatch', {
+    workflowId,
+    provider,
+    triggerType,
+    ownerUserId: workflowRow?.user_id,
+    ...v2Dispatch.log,
+  })
+
+  // ── v2 path ──
+  //
+  // No fallback to v1 from here. If v2 throws or returns billingFailed,
+  // we surface that as the result and STOP. Falling back would mask v2
+  // bugs and double-execute the workflow on a partial v2 success.
+  if (v2Dispatch.useV2 && workflowRow) {
+    try {
+      // Lazy import — v2 service pulls in `server-only` + an eager
+      // Supabase client at module load, which the default v1 path
+      // shouldn't pay for. Only loaded when v2 is actually elected.
+      const { WorkflowExecutionService } = await import('@/lib/services/workflowExecutionService')
+      const v2Service = new WorkflowExecutionService()
+      const v2Result: any = await v2Service.executeWorkflow(
+        workflowRow,
+        triggerData,
+        userId,
+        false, // testMode — webhooks are always live
+        undefined, // workflowData — let v2 load from normalized tables
+        false, // skipTriggers — webhooks include trigger data
+        undefined, // testModeConfig
+        adminSupabase,
+        { billingEventType: 'workflow_execution_webhook', source: 'webhook' },
+      )
+
+      if (v2Result?.billingFailed === true) {
+        const errorMsg = v2Result.billingOutcome?.error ?? 'Billing rejected webhook execution.'
+        logger.warn(`[Webhook Execute] v2 billing rejected workflow ${workflowId}`, {
+          provider,
+          triggerType,
+          billingKind: v2Result.billingOutcome?.kind,
+        })
+        return { success: false, error: errorMsg }
+      }
+
+      logger.info(`[Webhook Execute] Workflow ${workflowId} executed successfully via v2`, {
+        provider,
+        triggerType,
+        sessionId: v2Result?.executionId,
+      })
+      return {
+        success: !!v2Result?.success,
+        sessionId: v2Result?.executionId,
+      }
+    } catch (v2Error: any) {
+      // No v1 fallback — surface the v2 error directly. Phase 5 stage
+      // rollout depends on this signal being visible.
+      logger.error(`[Webhook Execute] v2 execution failed for ${workflowId} (NO v1 fallback)`, {
+        provider,
+        triggerType,
+        error: v2Error?.message,
+      })
+      return { success: false, error: v2Error?.message ?? 'v2 execution failed' }
+    }
+  }
+
+  // ── v1 path (default) ──
   try {
     const executionEngine = new AdvancedExecutionEngine()
 

@@ -8,6 +8,29 @@
 2. All one-time migration/fix scripts should be placed here IMMEDIATELY after creating them
 3. Once a script has been run successfully, it stays here until periodic cleanup
 4. Scripts in this folder should NOT be referenced in package.json or production workflows
+5. **Every script must start with a `RAN:` header marking when it was successfully executed.** Without it, the next cleanup pass cannot tell whether the script was executed or abandoned.
+
+## RAN-header convention
+
+Right after running a script successfully, prepend a one-line header
+recording the date and a short note. The exact comment syntax depends on
+the script language:
+
+```ts
+// RAN: 2026-05-04 — verified resume-lineage migration on prod
+```
+
+```sql
+-- RAN: 2026-05-04 — applied via supabase db push
+```
+
+```js
+// RAN: 2026-05-04 — fix applied to 12 affected rows
+```
+
+If a script has been edited and re-run, append a second `RAN:` line — do
+not overwrite the original. A script with no `RAN:` header is presumed
+**not yet executed** and must not be deleted during cleanup.
 
 ## Types of Scripts That Belong Here
 
@@ -46,13 +69,18 @@ del scripts\trash\*.js scripts\trash\*.ts scripts\trash\*.cjs scripts\trash\*.mj
 
 ### Before Deleting - Quick Checklist:
 
-✅ Script has been successfully executed
+✅ Script has a `RAN:` header (see "RAN-header convention" above)
 ✅ Not referenced anywhere in the codebase
 ✅ Not documented as a recurring utility
 ✅ More than 1 week old (or confirmed one-time use)
 
-**If unsure, delete it anyway.** Git preserves history if needed later.
+**If a script has no `RAN:` header, do NOT delete it without confirming with the script's author** — it may not have been executed yet. Git preserves history once a script has been removed.
 
 ---
 
-**Last Cleanup:** January 2026 - Removed 71 obsolete scripts
+## Cleanup History
+
+| Date | What was removed |
+|---|---|
+| January 2026 | 71 obsolete scripts |
+| 2026-05-04 | 12 files: 3 PNG screenshots + 9 one-off scripts (check-migration-state, check-subscription-prices, deduct-tasks-rpc-baseline.sql, dump-deduct-tasks-rpc, push-overage-pack-migrations, reconcile-entitlements, test-create-workflow, verify-billing-schema, verify-resume-lineage). Most pre-dated the RAN-header convention; verify-resume-lineage was confirmed run in-session for resume-lineage Phase 0. |

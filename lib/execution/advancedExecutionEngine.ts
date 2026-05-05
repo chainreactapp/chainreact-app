@@ -1,9 +1,14 @@
+import { randomUUID } from "crypto"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { executeAction } from "@/lib/workflows/executeNode"
 import { mapWorkflowData, evaluateExpression, evaluateCondition } from "./variableResolver"
 import { ExecutionProgressTracker } from "./executionProgressTracker"
 import { logInfo, logError, logSuccess, logWarning } from "@/lib/logging/backendLogger"
 import { sendWorkflowErrorNotifications, extractErrorMessage } from "@/lib/notifications/errorHandler"
+import {
+  computeWorkflowDefinitionHash,
+  resolveRootExecutionId,
+} from "./sessionLineage"
 
 import { logger } from '@/lib/utils/logger'
 
@@ -80,7 +85,41 @@ export class AdvancedExecutionEngine {
     sessionType: ExecutionSession["session_type"] = "manual",
     context: any = {},
   ): Promise<ExecutionSession> {
+    // PR-R1a — generate the session id client-side so `root_execution_id`
+    // can be set to `id` in the same INSERT (one round-trip, atomic).
+    // The DB column has a `gen_random_uuid()` default; supplying the id
+    // explicitly overrides it.
+    const sessionId = randomUUID()
+
+    // PR-R1a — resolve retry-lineage root + workflow definition fingerprint.
+    // The actual decision logic lives in `./sessionLineage.ts` so it can
+    // be unit-tested without the engine's transitive module graph.
+    const rootExecutionId = await resolveRootExecutionId({
+      newSessionId: sessionId,
+      retryOf: context?.retryOf,
+      lookupOriginalRoot: async (id: string) => {
+        const { data, error } = await this.supabase
+          .from("workflow_execution_sessions")
+          .select("root_execution_id")
+          .eq("id", id)
+          .maybeSingle()
+        // Cast: supabase auto-generated types lag the live schema until the
+        // type-codegen step is run. The column was added in
+        // 20260507000000_add_root_to_session_side_effects.sql and exists at
+        // runtime. Same pattern as the rest of this file.
+        return {
+          root: ((data as any)?.root_execution_id) ?? null,
+          error: error ? { message: error.message } : null,
+        }
+      },
+    })
+
+    const workflowDefinitionHash = computeWorkflowDefinitionHash(
+      context?.workflowData,
+    )
+
     const insertPayload: Record<string, any> = {
+      id: sessionId,
       workflow_id: workflowId,
       user_id: userId,
       session_type: sessionType,
@@ -88,6 +127,8 @@ export class AdvancedExecutionEngine {
       input_data: context?.inputData ?? null,
       status: "pending",
       started_at: new Date().toISOString(),
+      root_execution_id: rootExecutionId,
+      workflow_definition_hash: workflowDefinitionHash,
     }
 
     // Stamp billing scope from canonical workflow scope if provided
@@ -98,12 +139,14 @@ export class AdvancedExecutionEngine {
 
     const { data, error } = await this.supabase
       .from("workflow_execution_sessions")
-      .insert(insertPayload)
+      .insert(insertPayload as any)
       .select()
       .single()
 
     if (error) throw error
-    return data
+    // Two-step cast: supabase auto-generated types don't fully overlap with
+    // ExecutionSession (parallel_branches, etc.). Runtime shape is correct.
+    return data as unknown as ExecutionSession
   }
 
   async executeWorkflowAdvanced(
@@ -1093,6 +1136,13 @@ export class AdvancedExecutionEngine {
         ...(previousResults || {}), // Spread previous results at top level for variable resolution
         trigger: trigger || context.trigger, // Ensure trigger data is available
         executionId: context.session?.id,
+        // PR-R1a — retry-lineage root for cross-session Q4 idempotency.
+        // For fresh runs, equals session id. For retries, points at the
+        // originating run so handler-level dedup keys (and Stripe headers)
+        // align with the original. Falls back to session id when the
+        // session row predates Phase 0.
+        rootExecutionId:
+          (context.session as any)?.root_execution_id ?? context.session?.id,
         workflowId: context.workflow?.id,
         nodeId: node.id,
         testMode: context.testMode || false
