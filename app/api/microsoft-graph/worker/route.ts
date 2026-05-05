@@ -1217,32 +1217,43 @@ async function emitWorkflowTrigger(event: any, userId: string, accessToken?: str
           continue
         }
 
-        const executionEngine = new (await import('@/lib/execution/advancedExecutionEngine')).AdvancedExecutionEngine()
-
-        logger.info('🚀 Creating execution session for workflow:', workflow.id, 'userId:', userId)
-
-        // Create execution session properly
-        const executionSession = await executionEngine.createExecutionSession(
-          workflow.id,
-          userId, // Pass the correct userId
-          'webhook',
-          {
-            inputData: {
-              ...event,
-              source: 'microsoft-graph-worker',
-              timestamp: new Date().toISOString()
-            },
-            eventUniqueKey // Store this for future deduplication
-          }
-        )
-
-        logger.info('📤 Executing workflow with session:', executionSession.id)
-
-        // Execute the workflow with the session
-        await executionEngine.executeWorkflowAdvanced(executionSession.id, {
+        // PR-V2-WEBHOOK-MS-GRAPH: route through unified webhook dispatcher.
+        // Dedup uses eventUniqueKey (workflow+event+type+action) — stable
+        // across MS Graph retries of the same notification. Layered with
+        // the existing 60s session-history check above (kept for parity).
+        const { executeWebhookWorkflow } = await import('@/lib/webhooks/execute')
+        const triggerData = {
           ...event,
           source: 'microsoft-graph-worker',
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+        }
+
+        logger.info('🚀 Dispatching execution for workflow:', workflow.id, 'userId:', userId)
+
+        const dispatchResult = await executeWebhookWorkflow({
+          workflowId: workflow.id,
+          userId,
+          provider: 'microsoft-graph',
+          triggerType: `microsoft_graph_${event.type ?? 'event'}_${event.action ?? 'unknown'}`,
+          triggerData,
+          metadata: {
+            eventUniqueKey,
+            eventId: event.id,
+            eventType: event.type,
+            eventAction: event.action,
+            source: 'microsoft-graph-worker',
+          },
+          dedupeKey: eventUniqueKey,
+        })
+
+        if (!dispatchResult.success) {
+          throw new Error(dispatchResult.error || 'ms-graph dispatch failed')
+        }
+
+        logger.info('📤 Executed workflow', {
+          workflowId: workflow.id,
+          sessionId: dispatchResult.sessionId,
+          duplicate: dispatchResult.duplicate,
         })
       }
     } catch (error) {
