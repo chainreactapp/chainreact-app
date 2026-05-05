@@ -13,54 +13,6 @@ function getOAuthRedirectUri(provider: string): string {
   return `${baseUrl}/api/integrations/${provider}/callback`
 }
 
-export interface ScopeValidationResult {
-  provider: string
-  valid: boolean
-  missing: string[]
-  granted: string[]
-  status: "valid" | "invalid" | "partial"
-  lastChecked: string
-}
-
-export async function validateIntegrationScopes(
-  userId: string,
-  provider: string,
-  grantedScopes: string[],
-): Promise<ScopeValidationResult> {
-  // For Discord, use the updated required scopes
-  let validation: {
-    valid: boolean
-    missing: string[]
-    granted: string[]
-    status: "valid" | "invalid" | "partial"
-  }
-  if (provider === "discord") {
-    const requiredScopes = ["identify", "guilds", "guilds.join", "messages.read"]
-    const missing = requiredScopes.filter((scope) => !grantedScopes.includes(scope))
-    validation = {
-      valid: missing.length === 0,
-      missing,
-      granted: grantedScopes.filter((scope) => requiredScopes.includes(scope)),
-      status: (missing.length === 0
-        ? "valid"
-        : missing.length === requiredScopes.length
-          ? "invalid"
-          : "partial"),
-    }
-  } else {
-    validation = validateScopes(provider, grantedScopes)
-  }
-
-  return {
-    provider,
-    valid: validation.valid,
-    missing: validation.missing,
-    granted: validation.granted,
-    status: validation.status,
-    lastChecked: new Date().toISOString(),
-  }
-}
-
 export function generateReconnectionUrl(provider: string, state?: string): string {
   if (provider === "discord") {
     // Updated Discord scopes
