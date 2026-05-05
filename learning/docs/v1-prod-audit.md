@@ -9,6 +9,10 @@
 - **2026-05-04:** §4 Q1 answered. PR-V2C shipped `lib/services/executionHandlers/registryFallback.ts` — v2 routes unknown node types through v1's `executeAction` registry. The "apparent gap" reading wins; consolidation effort returns to the original 10-14 day estimate.
 - **2026-05-04:** PR-V2C-AUDIT shipped (engine-level testMode pre-call gate). Closed the test-mode safety gap that PR-V2C surfaced.
 - **2026-05-04:** Phase 2 shipped (v2 lineage threading). v2 now writes `root_execution_id` + `workflow_definition_hash` on session insert; all 7 v2 meta-construction sites carry `rootExecutionId`. Q4 idempotency now works end-to-end on v2.
+- **2026-05-04:** Phase 3 first four slices shipped (FLAG / BILLING / WEBHOOKS / CRON). Live + sequential + scheduled + webhook execution can now route through v2 behind `ENABLE_V2_LIVE_EXECUTION` + `user_profiles.opt_in_v2_execution`. Default-off; webhook entry paths via the unified dispatcher migrate automatically.
+- **2026-05-04:** §4 Q2 + Q3 answered. Prod query `SELECT COUNT(*) FROM workflow_compositions` returned **`relation does not exist`**. The table was never materialized in production. v1's `executeSubWorkflows` (advancedExecutionEngine.ts:379) silently fails on every call (`{ data: null, error: ... }` from supabase) → confirms the audit's "dead code" classification. **Resolution:** safe to delete `executeSubWorkflows` + `enableSubWorkflows` flag in Phase 5 stage 5 alongside v1 deletion. No v2 sub-workflow story needed pre-launch.
+- **2026-05-04:** §4 Q4 answered. Discord gateway (`lib/integrations/discordGateway.ts:1104-1120`) has **no dedup at the workflow-execution call site** — `executeWorkflowAdvanced` is invoked directly without an event-id check. Discord's own RESUME protocol prevents protocol-level duplicates in normal single-instance operation, but real risk exists for: (a) multi-instance deployments without singleton lock, (b) rare Discord API retries, (c) crashes mid-handler before `this.sequence` advances → RESUME re-delivers. **Resolution:** when this entry path migrates (`PR-V2-WEBHOOK-DISCORD-GATEWAY`), use the unified dispatcher's `dedupeKey` derived from `guildId + member.user.id + joined_at` to dedupe within the existing 5-minute TTL window. Bug exists but is bounded; not blocking pre-launch.
+- **2026-05-04:** §4 Q5 answered. Four files reference `live_execution_events`: (1) v1 writer in `advancedExecutionEngine.ts:1283-1300` — goes away with v1 deletion; (2) `lib/collaboration/realTimeCollaboration.ts:248` realtime subscription — `handleExecutionEvent` is a no-op `logger.info`, no field-specific reads; (3) `lib/testing/workflowTesting.ts:325` test framework — audit-classified deprecate (not prod); (4) `lib/services/userDeletionService.ts:45` GDPR sweep — deletes by `user_id` only, schema-agnostic. **Resolution:** no active UI consumer depends on `live_execution_events` schema. v2 doesn't write to this table (uses `executionHistoryService` + its own `ExecutionProgressTracker`). Safe to drop the writer when v1 is deleted in stage 5; the realtime subscription becomes inert (already only logs).
 
 ## Executive summary — read this before anything else
 
@@ -110,21 +114,17 @@ The audit's most consequential finding. Agent 3 inventoried v1's registry and v2
 
 ✅ **RESOLVED 2026-05-04 — yes.** PR-V2C added `lib/services/executionHandlers/registryFallback.ts`. Every `default:` branch across v2's dispatchers now routes unknown node types through v1's `executeAction`. The "apparent gap" reading wins; consolidation returns to the 10-14 day estimate.
 
-## 4. Open questions
+## 4. Open questions — ALL RESOLVED 2026-05-04
 
 | # | Question | Status |
 |---|---|---|
-| 1 | Does v2 have a fallback to v1's registry? | ✅ Resolved — yes (PR-V2C, 2026-05-04). |
-| 2 | Sub-workflow status. Prod query: `SELECT COUNT(*) FROM workflow_compositions`. | 🔍 Open. |
-| 3 | `workflow_compositions` table contents (same query). | 🔍 Open. |
-| 4 | Discord gateway dedup on reconnect (entry #13). | 🔍 Open. |
-| 5 | `live_execution_events` UI consumers — confirm no v1-only fields read. | 🔍 Open. |
+| 1 | Does v2 have a fallback to v1's registry? | ✅ Resolved — yes (PR-V2C). |
+| 2 | Sub-workflow status. Prod query: `SELECT COUNT(*) FROM workflow_compositions`. | ✅ Resolved — table doesn't exist in prod. |
+| 3 | `workflow_compositions` table contents. | ✅ Resolved — table doesn't exist; sub-workflow code is dead. |
+| 4 | Discord gateway dedup on reconnect (entry #13). | ✅ Resolved — no dedup today; bounded risk; addressed in PR-V2-WEBHOOK-DISCORD-GATEWAY. |
+| 5 | `live_execution_events` UI consumers — confirm no v1-only fields read. | ✅ Resolved — no UI consumer reads v1-only fields; safe to drop with v1. |
 
-**Q2-Q5 are not blocking Phase 3.** They're sequencing constraints for individual sub-PRs:
-
-- Q2/Q3 → blocks the sub-workflow port path; if compositions table is empty in prod, deprecate.
-- Q4 → blocks the Discord gateway entry-path port (PR-V2-WEBHOOKS).
-- Q5 → blocks the v1-deletion PR (Phase 5 stage 5).
+See "Resolutions log" at the top of this doc for the full findings on each.
 
 ## 5. Effort estimate — REVISED, conditional on §4 outcome
 
