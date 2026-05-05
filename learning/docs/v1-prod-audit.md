@@ -36,7 +36,7 @@ The audit found three things, two of which were expected and **one of which mate
 | # | Entry path | Trigger | Billing gate | Dedup | `retryOf` | Classification |
 |---|---|---|---|---|---|---|
 | 1 | [app/api/workflows/execute/route.ts:508](../../app/api/workflows/execute/route.ts) | Manual API / scheduled trigger | ✓ | N/A | ✓ | ⚠ Port |
-| 2 | [app/api/workflow-webhooks/[workflowId]/route.ts:295](../../app/api/workflow-webhooks/[workflowId]/route.ts) | Per-workflow webhook | ❌ | None | ❌ | ⚠ Port |
+| 2 | [app/api/workflow-webhooks/[workflowId]/route.ts](../../app/api/workflow-webhooks/[workflowId]/route.ts) | Per-workflow webhook | ✓ via #3 | ✓ via #3 (auto-derived) | ❌ | ✓ Migrated 2026-05-04 (PR-V2-WEBHOOK-PER-WORKFLOW) |
 | 3 | [lib/webhooks/execute.ts:154](../../lib/webhooks/execute.ts) | Unified webhook dispatcher | ❌ | ✓ in-memory cache | ❌ | ⚠ Port |
 | 4 | [lib/webhooks/gmail-processor.ts:1576](../../lib/webhooks/gmail-processor.ts) | Gmail push notification | ❌ | ✓ custom map (no TTL — leak risk) | ❌ | ⚠ Port |
 | 5 | [lib/webhooks/google-processor.ts](../../lib/webhooks/google-processor.ts) (5 entry points) | Calendar/Drive/Sheets webhooks | ❌ | ✓ custom maps (no TTL) | ❌ | ⚠ Port |
