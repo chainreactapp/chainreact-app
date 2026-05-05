@@ -123,40 +123,6 @@ export class WebhookManager {
   }
 
   /**
-   * Process incoming webhook
-   */
-  async processWebhook(
-    webhookId: string,
-    payload: any,
-    headers: Record<string, string>
-  ): Promise<void> {
-    // Get webhook config
-    const { data: webhook } = await this.supabase
-      .from('webhook_configs')
-      .select('*')
-      .eq('id', webhookId)
-      .single()
-
-    if (!webhook) {
-      throw new Error('Webhook not found')
-    }
-
-    // Validate webhook signature if secret is configured
-    if (webhook.secret && !this.validateWebhookSignature(payload, headers, webhook.secret)) {
-      throw new Error('Invalid webhook signature')
-    }
-
-    // Transform payload based on provider
-    const transformedPayload = await this.transformPayload(webhook.provider_id, webhook.trigger_type, payload)
-
-    // Execute workflow
-    await this.executeWorkflow(webhook.workflow_id, transformedPayload)
-
-    // Update webhook stats
-    await this.updateWebhookStats(webhookId, true)
-  }
-
-  /**
    * Get all webhooks for a user
    */
   async getUserWebhooks(userId: string): Promise<WebhookConfig[]> {
@@ -452,32 +418,6 @@ export class WebhookManager {
   ): Promise<void> {
     // Implementation depends on the provider
     logger.info(`Unregistering webhook from ${providerId} for ${triggerType}`)
-  }
-
-  /**
-   * Execute workflow.
-   *
-   * PR-V2-WEBHOOK-MANAGER: routes through the unified webhook dispatcher
-   * so v1/v2 dispatch + billing + dedup live in lib/webhooks/execute.ts.
-   *
-   * Note: the parent `processWebhook` method on this class has zero
-   * callers in the codebase (verified via grep) — this entry path is
-   * legacy / dead. The migration brings it to parity with the other
-   * webhook entry paths so any future re-activation lands on v2 by
-   * default once Phase 5 stage 3 flips.
-   */
-  private async executeWorkflow(workflowId: string, payload: any): Promise<void> {
-    const { executeWebhookWorkflow } = await import('@/lib/webhooks/execute')
-    await executeWebhookWorkflow({
-      workflowId,
-      userId: payload.userId || 'system',
-      provider: 'webhook',
-      triggerType: 'legacy_webhook_manager',
-      triggerData: payload,
-      metadata: {
-        source: 'webhookManager.executeWorkflow',
-      },
-    })
   }
 
   /**
