@@ -14,10 +14,16 @@ import { AlertTriangle, CheckCircle2, ExternalLink, Loader2, RefreshCw } from "l
 import { cn } from "@/lib/utils"
 import { getProviderDisplayName, getProviderIcon } from "@/lib/workflows/ai-agent/providerDisambiguation"
 
-// Providers that don't need OAuth connection
+// Built-in providers that don't need OAuth connection. Sourced from a
+// grep of `providerId:` across lib/workflows/nodes/providers/ — only the
+// IDs that actually appear in node schemas are listed.
 const CONNECTION_EXEMPT_PROVIDERS = [
-  'logic', 'mapper', 'core', 'manual', 'schedule', 'delay', 'filter',
-  'ai', 'ai_agent', 'ai_router', 'webhook', 'http', 'utility', 'transformer'
+  'ai',          // AI Agent / AI Router (platform-managed keys)
+  'ask-human',   // HITL Conversation
+  'automation',  // Manual Trigger, Wait-for-Event
+  'logic',       // if/router/loop/delay/http_request
+  'utility',     // built-in utility nodes
+  'webhook',     // built-in webhook trigger (HMAC-secured, no OAuth)
 ]
 
 interface DisconnectedIntegration {
