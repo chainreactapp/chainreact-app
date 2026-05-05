@@ -47,7 +47,7 @@ The audit found three things, two of which were expected and **one of which mate
 | 10 | [app/api/webhooks/mailchimp/route.ts](../../app/api/webhooks/mailchimp/route.ts) (2 entry points) | Mailchimp events | ❌ | None | ❌ | ⚠ Port |
 | 11 | [app/api/integration-webhooks/[provider]/route.ts:149](../../app/api/integration-webhooks/[provider]/route.ts) | Generic provider webhook | ❌ | None | ❌ | ⚠ Port |
 | 12 | [lib/webhooks/dropboxTriggerHandler.ts](../../lib/webhooks/dropboxTriggerHandler.ts) | Dropbox webhook | ✓ via #3 | ✓ via #3 (`cursor \|\| requestId`) | ❌ | ✓ Migrated 2026-05-04 (PR-V2-WEBHOOK-DROPBOX) |
-| 13 | [lib/integrations/discordGateway.ts:1104](../../lib/integrations/discordGateway.ts) | Discord gateway WS event | ❌ | None | ❌ | ⚠ Port |
+| 13 | [lib/integrations/discordGateway.ts](../../lib/integrations/discordGateway.ts) | Discord gateway WS event | ✓ via #3 | ✓ via #3 (`${guildId}:${memberId}:${joined_at}`) | ❌ | ✓ Migrated 2026-05-04 (PR-V2-WEBHOOK-DISCORD-GATEWAY) |
 | 14 | `app/api/cron/execute-scheduled-triggers/route.ts` | Scheduled cron | ✓ via #1 | N/A | ✓ via #1 | ✓ Covered |
 | 15 | [lib/testing/workflowTesting.ts:51](../../lib/testing/workflowTesting.ts) | Test framework | — | — | — | ❌ Deprecate (not prod) |
 | 16 | [lib/webhooks/webhookManager.ts](../../lib/webhooks/webhookManager.ts) | Legacy webhook manager | ✓ via #3 | ✓ via #3 (auto-derived) | ❌ | ✓ Migrated 2026-05-04 (PR-V2-WEBHOOK-MANAGER) — note: parent `processWebhook` has 0 callers, dead code |
