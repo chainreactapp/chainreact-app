@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { useWorkflowTestStore } from "@/stores/workflowTestStore"
 import { useIntegrationStore } from "@/stores/integrationStore"
-import { isConnectedStatus } from "@/lib/integrations/connectionStatus"
+import { isConnectedStatus, isIntegrationRequired } from "@/lib/integrations/connectionStatus"
 import { NodeContextMenu } from "./NodeContextMenu"
 
 import { logger } from '@/lib/utils/logger'
@@ -148,7 +148,11 @@ const DEFAULT_SLACK_SECTION_STATE = SLACK_CONFIG_SECTIONS.reduce<Record<string, 
   return acc
 }, {})
 
-const INTERNAL_PROVIDER_IDS = new Set(['logic', 'core', 'manual', 'schedule', 'ai', 'utility', 'openai', 'anthropic', 'google', 'automation', 'ask-human'])
+// Built-in node providerIds that render the node component's lucide icon
+// instead of a `/integrations/<providerId>.svg`. This is a visual choice —
+// most of these have SVGs, but built-ins use the icon defined on their
+// node component for consistency. 'automation' additionally lacks an SVG.
+const LOGO_SUPPRESSED_PROVIDER_IDS = new Set(['ai', 'ask-human', 'automation', 'logic', 'utility'])
 const DEFAULT_PATH_COLORS = ['#2563EB', '#EA580C', '#059669', '#9333EA', '#BE123C', '#14B8A6']
 const ELSE_HANDLE_COLOR = '#64748B'
 
@@ -537,7 +541,7 @@ function CustomNode({ id, data, selected }: NodeProps) {
   const { integrations } = useIntegrationStore()
   const isIntegrationDisconnected = (() => {
     // Skip check for system/internal node types
-    if (!providerId || INTERNAL_PROVIDER_IDS.has(providerId)) {
+    if (!providerId || !isIntegrationRequired(providerId)) {
       return false
     }
 
@@ -1632,7 +1636,7 @@ function CustomNode({ id, data, selected }: NodeProps) {
                 <div className="flex items-center justify-center opacity-30">
                   {type === 'chain_placeholder' ? (
                     <Layers className="h-7 w-7 text-muted-foreground flex-shrink-0" />
-                  ) : providerId && !logoLoadFailed && !INTERNAL_PROVIDER_IDS.has(providerId) ? (
+                  ) : providerId && !logoLoadFailed && !LOGO_SUPPRESSED_PROVIDER_IDS.has(providerId) ? (
                     <img
                       src={`/integrations/${providerId}.svg`}
                       alt={`${title || ''} logo`}
@@ -2059,7 +2063,7 @@ function CustomNode({ id, data, selected }: NodeProps) {
             <div className="flex items-center justify-center">
               {type === 'chain_placeholder' ? (
                 <Layers className="h-7 w-7 text-muted-foreground flex-shrink-0" />
-              ) : providerId && !logoLoadFailed && !INTERNAL_PROVIDER_IDS.has(providerId) ? (
+              ) : providerId && !logoLoadFailed && !LOGO_SUPPRESSED_PROVIDER_IDS.has(providerId) ? (
                 <img
                   src={`/integrations/${providerId}.svg`}
                   alt={`${title || ''} logo`}
