@@ -455,22 +455,29 @@ export class WebhookManager {
   }
 
   /**
-   * Execute workflow
+   * Execute workflow.
+   *
+   * PR-V2-WEBHOOK-MANAGER: routes through the unified webhook dispatcher
+   * so v1/v2 dispatch + billing + dedup live in lib/webhooks/execute.ts.
+   *
+   * Note: the parent `processWebhook` method on this class has zero
+   * callers in the codebase (verified via grep) — this entry path is
+   * legacy / dead. The migration brings it to parity with the other
+   * webhook entry paths so any future re-activation lands on v2 by
+   * default once Phase 5 stage 3 flips.
    */
   private async executeWorkflow(workflowId: string, payload: any): Promise<void> {
-    // Import and use the execution engine
-    const { AdvancedExecutionEngine } = await import('@/lib/execution/advancedExecutionEngine')
-    
-    const executionEngine = new AdvancedExecutionEngine()
-    const executionSession = await executionEngine.createExecutionSession(
+    const { executeWebhookWorkflow } = await import('@/lib/webhooks/execute')
+    await executeWebhookWorkflow({
       workflowId,
-      payload.userId || 'system',
-      'webhook',
-      { inputData: payload }
-    )
-
-    // Execute asynchronously
-    executionEngine.executeWorkflowAdvanced(executionSession.id, payload)
+      userId: payload.userId || 'system',
+      provider: 'webhook',
+      triggerType: 'legacy_webhook_manager',
+      triggerData: payload,
+      metadata: {
+        source: 'webhookManager.executeWorkflow',
+      },
+    })
   }
 
   /**
