@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto"
 import { createSupabaseRouteHandlerClient } from "@/utils/supabase/server"
 import { createDataFlowManager } from "@/lib/workflows/dataFlowContext"
 import { NodeExecutionService } from "./nodeExecutionService"
@@ -6,6 +7,12 @@ import { ExecutionProgressTracker } from "@/lib/execution/executionProgressTrack
 import { TestModeConfig, TriggerTestMode, ActionTestMode } from "./testMode/types"
 import { classifyExecutionFailure } from "@/lib/workflows/errors/classifyExecutionFailure"
 import { notifyWorkflowFailure } from "@/lib/notifications/errorHandler"
+import {
+  computeWorkflowDefinitionHash,
+  resolveRootExecutionId,
+} from "@/lib/execution/sessionLineage"
+import { runBillingGate, type BillingGateOutcome } from "@/lib/billing/executionBillingGate"
+import type { BillingEventType } from "@/lib/workflows/taskDeduction"
 
 import { logger } from '@/lib/utils/logger'
 import {
@@ -30,6 +37,40 @@ export interface ExecutionContext {
   interceptedActions?: any[]
   executionHistoryId?: string
   executionId?: string
+  // Phase 2 (v2 canonical engine plan) — retry-lineage root mirroring
+  // PR-R1a on v1. Q4 idempotency keys + Stripe Idempotency-Key headers
+  // resolve from this so retries dedupe across sessions. Fresh runs:
+  // equals executionId. Retries: equals original.root_execution_id.
+  // Plan: learning/docs/v2-canonical-execution-engine-plan.md (Phase 2).
+  rootExecutionId?: string
+}
+
+/**
+ * Engine-internal options for `executeWorkflow`. Use this for execution
+ * metadata that must NOT mix into trigger data — billing event type,
+ * source attribution, etc. Trigger-data fields (like `__retryOf`, which
+ * predates this options bag) stay in `inputData` for backward compat
+ * but new metadata SHOULD land here.
+ *
+ * Plan: learning/docs/v2-canonical-execution-engine-plan.md
+ */
+export interface ExecutionOptions {
+  /**
+   * `task_billing_events.event_type` written by the v2 billing gate.
+   * Default `'workflow_execution'`. Pass distinct values from each
+   * entry path so layered ledger rows separate cleanly:
+   *   - manual route → `'workflow_execution'` (default)
+   *   - webhook dispatcher → `'workflow_execution_webhook'`
+   *   - scheduled cron → `'workflow_execution_scheduled'`
+   *   - resume Phase 2+ → `'workflow_execution_resume'`
+   */
+  billingEventType?: BillingEventType
+  /**
+   * Free-form attribution string written into the deduction's `source`
+   * field. Distinct from billingEventType — this is for analytics,
+   * billingEventType is for ledger separation. Default `'execution'`.
+   */
+  source?: string
 }
 
 export class WorkflowExecutionService {
@@ -47,7 +88,8 @@ export class WorkflowExecutionService {
     workflowData?: any,
     skipTriggers: boolean = false,
     testModeConfig?: TestModeConfig,
-    supabaseClient?: any
+    supabaseClient?: any,
+    executionOptions?: ExecutionOptions,
   ) {
     logger.info("🚀 Starting workflow execution service", {
       testMode,
@@ -234,17 +276,67 @@ export class WorkflowExecutionService {
       }
     }
 
+    // Phase 2 (v2 canonical engine plan) — engine-level metadata rides
+    // along inside `inputData` under a `__retryOf` key. Avoids growing
+    // the positional signature; mirrors v1's `context` bag pattern at
+    // app/api/workflows/execute/route.ts where retryOf travels alongside
+    // inputData. Extract and strip before inputData flows to handlers
+    // (it would otherwise leak as a magic field on every node's input).
+    let retryOf: string | undefined
+    let cleanInputData: any = inputData
+    if (inputData && typeof inputData === 'object' && !Array.isArray(inputData) && '__retryOf' in inputData) {
+      const { __retryOf, ...rest } = inputData as Record<string, any>
+      retryOf = typeof __retryOf === 'string' && __retryOf.length > 0 ? __retryOf : undefined
+      cleanInputData = rest
+    }
+
+    // Phase 2 — generate the session id client-side so `root_execution_id`
+    // can be set to `id` in the same INSERT (one round-trip, atomic).
+    // The DB column has a `gen_random_uuid()` default; supplying the id
+    // explicitly overrides it. Mirrors v1's PR-R1a path.
+    const sessionId = randomUUID()
+
+    // Phase 2 — resolve retry-lineage root + workflow definition fingerprint.
+    // Decision logic lives in `lib/execution/sessionLineage.ts` (engine-
+    // agnostic, shared with v1). Fresh runs: root === sessionId. Retries:
+    // root inherits from original.root_execution_id so Q4 idempotency keys
+    // and Stripe Idempotency-Key headers align across attempts.
+    const rootExecutionId = await resolveRootExecutionId({
+      newSessionId: sessionId,
+      retryOf,
+      lookupOriginalRoot: async (id: string) => {
+        const { data, error } = await supabase
+          .from("workflow_execution_sessions")
+          .select("root_execution_id")
+          .eq("id", id)
+          .maybeSingle()
+        // Cast: supabase auto-generated types lag the live schema until
+        // the type-codegen step is run. Same pattern as v1.
+        return {
+          root: ((data as any)?.root_execution_id) ?? null,
+          error: error ? { message: error.message } : null,
+        }
+      },
+    })
+
+    const workflowDefinitionHash = computeWorkflowDefinitionHash(
+      workflowData ?? workflow,
+    )
+
     // Create UUID-based execution record in workflow_execution_sessions table
     // This is required for HITL which references this table
     const { data: executionRecord, error: execError } = await supabase
       .from("workflow_execution_sessions")
       .insert({
+        id: sessionId,
         workflow_id: workflow.id,
         user_id: userId,
         status: "running",
-        input_data: inputData ?? {},
+        input_data: cleanInputData ?? {},
         started_at: new Date().toISOString(),
-      })
+        root_execution_id: rootExecutionId,
+        workflow_definition_hash: workflowDefinitionHash,
+      } as any)
       .select()
       .single()
 
@@ -265,7 +357,7 @@ export class WorkflowExecutionService {
       executionHistoryId = await executionHistoryService.startExecution(
         executionId,
         testMode,
-        inputData
+        cleanInputData
       )
     } catch (error) {
       logger.error('Failed to start execution history tracking:', error)
@@ -275,7 +367,7 @@ export class WorkflowExecutionService {
     // Initialize execution context
     const executionContext = await this.createExecutionContext(
       workflow,
-      inputData,
+      cleanInputData,
       userId,
       testMode,
       supabase,
@@ -285,6 +377,8 @@ export class WorkflowExecutionService {
     // Add execution tracking to context
     executionContext.executionHistoryId = executionHistoryId || undefined
     executionContext.executionId = executionId
+    // Phase 2 — Q4 idempotency root for cross-session retry dedup.
+    executionContext.rootExecutionId = rootExecutionId
 
     // Execute from each starting node
     const results = []
@@ -307,9 +401,95 @@ export class WorkflowExecutionService {
       })
     }
 
-    // Tasks are deducted upfront by the calling route before execution starts
-    // (v1 conservative upfront reservation model). No post-execution deduction
-    // happens here.
+    // Phase 3 (PR-V2-BILLING) — billing gate.
+    //
+    // v2 self-bills before any handler fires. Sandbox / test runs short-
+    // circuit at the gate (`isTestMode: true`). On non-`ok`/`skipped`
+    // outcomes, the session is marked failed and the call returns early
+    // with `{ success: false, billingFailed: true, billingOutcome }` so
+    // the caller (route) can map to 402 / 503.
+    //
+    // The session UUID is the deduction idempotency key. UNIQUE
+    // `(user_id, execution_id, event_type)` on `task_billing_events`
+    // means future entry paths (resume / webhook / scheduled) layer on
+    // top with their own event_type without colliding.
+    let v2BillingOutcome: BillingGateOutcome | null = null
+    try {
+      const actionNodes = nodes.filter((n: any) => !n.data?.isTrigger)
+      v2BillingOutcome = await runBillingGate({
+        workflow,
+        actionNodes,
+        edges: validConnections,
+        executionSessionId: executionId,
+        retryOf,
+        isTestMode: testMode,
+        // Phase 3 — caller-supplied billing event type via executionOptions.
+        // Default `'workflow_execution'` preserves the manual-route shape
+        // for callers that haven't migrated. Webhook/scheduled/resume
+        // entry paths pass distinct values so ledger rows separate cleanly.
+        eventType: executionOptions?.billingEventType ?? 'workflow_execution',
+      })
+
+      if (
+        v2BillingOutcome.kind === 'insufficient_balance' ||
+        v2BillingOutcome.kind === 'subscription_inactive' ||
+        v2BillingOutcome.kind === 'billing_unavailable'
+      ) {
+        // Mark the session failed; release progress tracker; return early.
+        const billingErrorMessage = v2BillingOutcome.error ?? 'Billing gate rejected execution'
+        await supabase
+          .from('workflow_execution_sessions')
+          .update({
+            status: 'failed',
+            completed_at: new Date().toISOString(),
+            execution_time_ms: Date.now() - new Date(executionRecord.started_at).getTime(),
+            error_message: billingErrorMessage,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', executionId)
+
+        await progressTracker.complete(false, billingErrorMessage)
+
+        if (executionHistoryId) {
+          try {
+            await executionHistoryService.completeExecution(
+              executionHistoryId,
+              'failed',
+              [],
+              billingErrorMessage,
+            )
+          } catch (historyError) {
+            logger.error('Failed to complete execution history on billing rejection:', historyError)
+          }
+        }
+
+        return {
+          success: false,
+          billingFailed: true,
+          billingOutcome: v2BillingOutcome,
+          executionId,
+          executionHistoryId,
+        }
+      }
+    } catch (billingGateError) {
+      // The helper itself does not throw for billing failures (those are
+      // returned as outcomes). A throw here means an unexpected error in
+      // the gate orchestration. Treat as billing_unavailable — fail closed.
+      logger.error('[WorkflowExecutionService] Billing gate threw unexpectedly', {
+        executionId,
+        error: billingGateError instanceof Error ? billingGateError.message : String(billingGateError),
+      })
+      return {
+        success: false,
+        billingFailed: true,
+        billingOutcome: {
+          kind: 'billing_unavailable',
+          error: 'Billing system temporarily unavailable. Please retry.',
+        },
+        executionId,
+        executionHistoryId,
+      }
+    }
 
     try {
     for (const startNode of startingNodes) {

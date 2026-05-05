@@ -85,7 +85,11 @@ export async function GET(request: NextRequest) {
         body: JSON.stringify({
           workflowId: scheduled.workflow_id,
           testMode: false,
-          executionMode: 'live',
+          // PR-V2-CRON — distinct executionMode so the engine-dispatch
+          // log distinguishes scheduled-cron traffic from manual /api/
+          // workflows/execute calls. The execute route's v1-fork
+          // predicate recognizes 'scheduled' as a live-eligible mode.
+          executionMode: 'scheduled',
           skipTriggers: true,
           inputData,
         })

@@ -350,8 +350,12 @@ export class IntegrationNodeHandlers {
         case 'microsoft-outlook_action_send_email': {
           const { sendOutlookEmail } = await import('@/lib/workflows/actions/microsoft-outlook')
           // PR-C4 — engine metadata for within-session idempotency.
+          // Phase 2 (v2 canonical engine plan) — `rootExecutionId` carries
+          // the retry-lineage root so Q4 + Stripe header dedupe across
+          // retries. Falls back to executionId for legacy contexts.
           const meta = {
             executionSessionId: context.executionId,
+            rootExecutionId: context.rootExecutionId ?? context.executionId,
             nodeId: node.id,
             actionType: node.data?.type ?? nodeType,
             provider: 'microsoft-outlook',
@@ -782,8 +786,10 @@ export class IntegrationNodeHandlers {
         const { createAirtableRecord } = await import("@/lib/workflows/actions/airtable/createRecord")
 
         // PR-C4 — engine metadata for within-session idempotency.
+        // Phase 2 — `rootExecutionId` for cross-session retry dedup.
         const airtableMeta = {
           executionSessionId: context.executionId,
+          rootExecutionId: context.rootExecutionId ?? context.executionId,
           nodeId: node.id,
           actionType: node.data?.type ?? nodeType,
           provider: 'airtable',

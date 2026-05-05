@@ -5,6 +5,9 @@ import { WorkflowExecutionService } from "@/lib/services/workflowExecutionServic
 import { trackBetaTesterActivity } from "@/lib/utils/beta-tester-tracking"
 import { sendWorkflowErrorNotifications, extractErrorMessage } from '@/lib/notifications/errorHandler'
 import { checkRateLimit, RateLimitPresets } from '@/lib/utils/rate-limit'
+import { FEATURE_FLAGS } from '@/lib/featureFlags'
+import { decideV2LiveDispatch } from '@/lib/execution/v2LiveExecutionDispatch'
+import { runBillingGate } from '@/lib/billing/executionBillingGate'
 
 import { logger } from '@/lib/utils/logger'
 
@@ -392,120 +395,104 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Billing target: resolved from canonical billing scope.
-    // The authenticated userId is used for access control and audit trail only.
-    const { resolveBillingScope } = await import('@/lib/billing/resolveBillingScope')
-    const { scopeToBillingUser } = await import('@/lib/billing/scopeToBillingUser')
-    const billingScope = resolveBillingScope(workflow)
-    const billingUserId = await scopeToBillingUser(billingScope)
-    logger.info('[Execute Route] Billing scope resolved', {
-      workflowId,
-      scopeType: billingScope.scopeType,
-      scopeId: billingScope.scopeId,
-      billingUserId,
-    })
-
-    // Atomic task deduction: check balance + reserve tasks in one transaction (only for live/non-test mode)
-    // This replaces the old pre-check + post-deduct pattern. Tasks are reserved upfront (conservative estimation).
-    let taskDeductionResult: any = null
-    if (!effectiveTestMode) {
-      try {
-        const { deductTasksAtomic } = require('@/lib/workflows/taskDeduction')
-        const actionNodes = nodes.filter((n: any) => !n.data?.isTrigger)
-
-        if (actionNodes.length > 0) {
-          const deductionSource = retryOf ? 'retry' : 'execution'
-          const deductionMetadata: Record<string, unknown> = retryOf
-            ? { is_retry: true, original_execution_id: retryOf }
-            : {}
-
-          taskDeductionResult = await deductTasksAtomic(
-            billingUserId,
-            actionNodes,
-            edges,
-            `exec_${workflowId}_${Date.now()}`,
-            false,
-            { workflowId, source: deductionSource, metadata: deductionMetadata }
-          )
-
-          if (taskDeductionResult.resultType === 'insufficient_balance' || taskDeductionResult.resultType === 'subscription_inactive') {
-            logger.warn('[Execute Route] Task deduction rejected', {
-              userId,
-              workflowId,
-              resultType: taskDeductionResult.resultType,
-              error: taskDeductionResult.error
-            })
-
-            // Fire-and-forget auto-buy when feature flag is on AND user opted in.
-            // Does NOT unblock the in-flight request — user retries after the webhook credits balance.
-            const { FEATURE_FLAGS } = await import('@/lib/featureFlags')
-            let autoBuyHint: { triggered: boolean; code?: string } | undefined
-            if (FEATURE_FLAGS.TASK_PACKS && taskDeductionResult.resultType === 'insufficient_balance') {
-              const { triggerAutoBuyIfEnabled } = await import('@/lib/billing/auto-buy')
-              triggerAutoBuyIfEnabled(billingUserId)
-                .then((result) => {
-                  if (result.ok) {
-                    logger.info('[Execute Route] Auto-buy succeeded after 402', {
-                      userId: billingUserId,
-                      newBalance: result.newBalance,
-                    })
-                  } else {
-                    logger.warn('[Execute Route] Auto-buy did not succeed', {
-                      userId: billingUserId,
-                      code: result.code,
-                    })
-                  }
-                })
-                .catch((err) => {
-                  logger.error('[Execute Route] Auto-buy threw unexpectedly', {
-                    userId: billingUserId,
-                    error: err?.message,
-                  })
-                })
-              autoBuyHint = { triggered: true }
-            }
-
-            return errorResponse(
-              taskDeductionResult.error,
-              402,
-              {
-                tasksNeeded: taskDeductionResult.tasksDeducted || 0,
-                remaining: taskDeductionResult.newBalance,
-                ...(autoBuyHint ? { autoBuy: autoBuyHint } : {}),
-              }
-            )
-          }
-
-          if (taskDeductionResult.resultType === 'billing_unavailable') {
-            logger.error('[Execute Route] Billing system unavailable', {
-              userId,
-              workflowId,
-              error: taskDeductionResult.error
-            })
-            return errorResponse(
-              taskDeductionResult.error,
-              503
-            )
-          }
-        }
-      } catch (deductionError) {
-        // Fail closed — do not allow execution if billing fails
-        logger.error('[Execute Route] Task deduction failed (blocking execution)', {
-          userId,
-          workflowId,
-          error: deductionError instanceof Error ? deductionError.message : String(deductionError)
-        })
-        return errorResponse('Billing system temporarily unavailable. Please retry.', 503)
-      }
-    }
-
     // Execute the workflow using the new service or advanced engine based on mode
     logger.info("Starting workflow execution with effectiveTestMode:", effectiveTestMode, "executionMode:", executionMode)
 
-    // Use advanced execution engine for live mode to enable parallel processing
-    if (executionMode === 'live' || executionMode === 'sequential') {
+    // Phase 3 (PR-V2-FLAG) — staged-rollout dispatch decision.
+    // Look up the workflow owner's opt-in once, compute the dispatch via the
+    // pure helper, and log the decision exactly once per request. Sandbox
+    // runs hit this too so the rollout dashboard sees every workflow with
+    // engine attribution. On any opt-in lookup error, fall through to v1
+    // (kill-switch semantics — opt-in is a positive signal, not a default).
+    let userOptedIntoV2Execution = false
+    if (workflow.user_id) {
+      try {
+        const { data: ownerProfile } = await supabase
+          .from('user_profiles')
+          .select('opt_in_v2_execution')
+          .eq('id', workflow.user_id)
+          .maybeSingle()
+        userOptedIntoV2Execution = !!(ownerProfile as any)?.opt_in_v2_execution
+      } catch (optInLookupError: any) {
+        logger.warn('[Execute Route] opt_in_v2_execution lookup failed; defaulting to v1 dispatch', {
+          workflowId,
+          error: optInLookupError?.message,
+        })
+      }
+    }
+
+    const v2Dispatch = decideV2LiveDispatch({
+      executionMode: executionMode ?? (effectiveTestMode ? 'sandbox' : 'live'),
+      flagEnabled: FEATURE_FLAGS.V2_LIVE_EXECUTION,
+      userOptedIn: userOptedIntoV2Execution,
+    })
+    logger.info('[Execute Route] Engine dispatch', {
+      workflowId,
+      ownerUserId: workflow.user_id,
+      ...v2Dispatch.log,
+    })
+
+    // Phase 3 (PR-V2-BILLING) — billing gate.
+    //
+    // Route runs the gate ONLY when the run is going to v1
+    // (`!v2Dispatch.useV2`). v2 self-bills inside `WorkflowExecutionService`
+    // using the session UUID as the idempotency key. Sandbox / test runs
+    // skip billing entirely (effectiveTestMode is true).
+    //
+    // The previous synthetic key `exec_${workflowId}_${Date.now()}` is
+    // preserved on the v1 path to keep ledger reconciliation against
+    // existing data; v2 uses real session ids.
+    if (!effectiveTestMode && !v2Dispatch.useV2) {
+      const actionNodes = nodes.filter((n: any) => !n.data?.isTrigger)
+      const v1BillingKey = `exec_${workflowId}_${Date.now()}`
+      const billingOutcome = await runBillingGate({
+        workflow,
+        actionNodes,
+        edges,
+        executionSessionId: v1BillingKey,
+        retryOf,
+        isTestMode: false,
+        eventType: 'workflow_execution',
+      })
+
+      if (billingOutcome.kind === 'insufficient_balance') {
+        return errorResponse(billingOutcome.error, 402, {
+          tasksNeeded: billingOutcome.tasksNeeded,
+          remaining: billingOutcome.remaining,
+          ...(billingOutcome.autoBuyTriggered ? { autoBuy: { triggered: true } } : {}),
+        })
+      }
+      if (billingOutcome.kind === 'subscription_inactive') {
+        return errorResponse(billingOutcome.error, 402)
+      }
+      if (billingOutcome.kind === 'billing_unavailable') {
+        return errorResponse(billingOutcome.error, 503)
+      }
+      // 'ok' or 'skipped' — proceed.
+    }
+
+    // v1 path — runs when v2 dispatch did NOT elect v2 AND this is a
+    // live-eligible mode (sandbox always uses v2). PR-V2-CRON expanded
+    // the predicate to include 'scheduled' (cron-driven) and 'webhook'
+    // (forward-looking for direct-caller webhook ports) so non-opted-in
+    // users on those modes don't fall to v2 and double-charge — the
+    // route bills first, then v2 would bill again with a different key.
+    const isV1EligibleMode =
+      executionMode === 'live' ||
+      executionMode === 'sequential' ||
+      executionMode === 'scheduled' ||
+      executionMode === 'webhook'
+    if (isV1EligibleMode && !v2Dispatch.useV2) {
       const { AdvancedExecutionEngine } = require("@/lib/execution/advancedExecutionEngine")
       const executionEngine = new AdvancedExecutionEngine()
+
+      // Resolve canonical billing scope for the v1 session-creation stamp.
+      // PR-V2-BILLING removed the route-level scope resolution from the
+      // gate (the helper now resolves internally). v1's
+      // `createExecutionSession` still needs the scope object to write
+      // `billing_scope_*` columns on the session row, so resolve here.
+      const { resolveBillingScope } = await import('@/lib/billing/resolveBillingScope')
+      const billingScope = resolveBillingScope(workflow)
 
       // Create execution session — stamp with canonical billing scope and
       // (PR-R1a) retry-lineage root + workflow definition hash for resume.
@@ -560,7 +547,9 @@ export async function POST(request: NextRequest) {
       return jsonResponse(advancedResponsePayload)
     }
 
-    // Use standard service for sandbox mode (intercepted actions)
+    // v2 path — covers (a) live / sequential when the dispatch elected v2,
+    // and (b) sandbox runs (existing v2 path; unaffected by flag/opt-in).
+    // PR-V2-FLAG only adds case (a); case (b) is the pre-existing behavior.
     const workflowExecutionService = new WorkflowExecutionService()
 
     // Pass filtered workflow data with correct property names
@@ -582,6 +571,17 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Phase 3 (PR-V2-FLAG) — when the dispatch elects v2 for a live/sequential
+    // run AND retryOf is present, pack it into inputData.__retryOf so v2's
+    // engine resolves the retry-lineage root (Phase 2 plumbing). v2 strips
+    // the field before persistence; sandbox paths see no change.
+    if (v2Dispatch.useV2 && retryOf) {
+      effectiveInputData = {
+        ...(effectiveInputData ?? {}),
+        __retryOf: retryOf,
+      }
+    }
+
     const executionResult = await workflowExecutionService.executeWorkflow(
       workflow,
       effectiveInputData,
@@ -591,6 +591,35 @@ export async function POST(request: NextRequest) {
       skipTriggers,
       testModeConfig // Pass enhanced test mode config
     )
+
+    // Phase 3 (PR-V2-BILLING) — v2 self-bills inside executeWorkflow.
+    // When the gate inside v2 fails, v2 returns
+    //   { success: false, billingFailed: true, billingOutcome: { kind, ... } }
+    // and skips all node execution. Map the outcome to the same HTTP
+    // shape the route uses for v1 (402 / 503) so callers don't notice
+    // which engine ran.
+    if (
+      executionResult &&
+      typeof executionResult === 'object' &&
+      (executionResult as any).billingFailed === true
+    ) {
+      const v2Outcome = (executionResult as any).billingOutcome
+      if (v2Outcome?.kind === 'insufficient_balance') {
+        return errorResponse(v2Outcome.error, 402, {
+          tasksNeeded: v2Outcome.tasksNeeded,
+          remaining: v2Outcome.remaining,
+          ...(v2Outcome.autoBuyTriggered ? { autoBuy: { triggered: true } } : {}),
+        })
+      }
+      if (v2Outcome?.kind === 'subscription_inactive') {
+        return errorResponse(v2Outcome.error, 402)
+      }
+      if (v2Outcome?.kind === 'billing_unavailable') {
+        return errorResponse(v2Outcome.error, 503)
+      }
+      // Defensive — shouldn't hit but don't 200 a billing-failed run.
+      return errorResponse('Billing system temporarily unavailable. Please retry.', 503)
+    }
 
     const isPaused = typeof executionResult === 'object' && executionResult !== null && 'paused' in executionResult && (executionResult as any).paused
 
@@ -616,6 +645,16 @@ export async function POST(request: NextRequest) {
       } else {
         responsePayload.results = executionResult
       }
+    }
+
+    // Phase 3 (PR-V2-FLAG) — when v2 ran a live/sequential workflow, mirror
+    // v1's response shape so consumers don't break. v2 returns
+    // `executionId`; v1 returned `sessionId`. Spread already happened
+    // above, so `sessionId` mapping + `executionMode` are added on top.
+    if (v2Dispatch.useV2) {
+      const v2ExecutionId = (executionResult as any)?.executionId
+      if (v2ExecutionId) responsePayload.sessionId = v2ExecutionId
+      responsePayload.executionMode = executionMode
     }
 
     // Track beta tester activity

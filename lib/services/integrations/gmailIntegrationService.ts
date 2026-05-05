@@ -112,8 +112,10 @@ export class GmailIntegrationService {
     const { sendGmailEmail } = await import('@/lib/workflows/actions/gmail/sendEmail')
 
     // PR-C4 — thread engine metadata for within-session idempotency.
+    // Phase 2 — `rootExecutionId` for cross-session retry dedup.
     const meta = {
       executionSessionId: context.executionId,
+      rootExecutionId: context.rootExecutionId ?? context.executionId,
       nodeId: node.id,
       actionType: node.data?.type,
       provider: 'gmail',

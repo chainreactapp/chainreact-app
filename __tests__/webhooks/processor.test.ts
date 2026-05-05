@@ -21,6 +21,23 @@ jest.mock('@/lib/execution/advancedExecutionEngine', () => ({
   })),
 }))
 
+// PR-V2-WEBHOOKS — stub the admin client so the dispatcher's
+// workflow/opt-in lookups don't crash. These tests pin v1 behavior;
+// opt-in defaults false → dispatch elects v1. v2 path is never
+// reached, so `WorkflowExecutionService` is never lazy-imported.
+jest.mock('@/lib/supabase/admin', () => ({
+  createAdminClient: jest.fn(() => ({
+    from: () => {
+      const builder: any = {
+        select: () => builder,
+        eq: () => builder,
+        maybeSingle: async () => ({ data: null, error: null }),
+      }
+      return builder
+    },
+  })),
+}))
+
 const mockLogWebhookEvent = jest.fn()
 jest.mock('@/lib/webhooks/event-logger', () => ({
   logWebhookEvent: (...args: any[]) => mockLogWebhookEvent(...args),

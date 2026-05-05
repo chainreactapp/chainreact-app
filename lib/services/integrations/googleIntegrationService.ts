@@ -90,8 +90,10 @@ export class GoogleIntegrationService {
     }
 
     // PR-C4 — engine metadata for within-session idempotency.
+    // Phase 2 — `rootExecutionId` for cross-session retry dedup.
     const meta = {
       executionSessionId: context.executionId,
+      rootExecutionId: context.rootExecutionId ?? context.executionId,
       nodeId: node.id,
       actionType: node.data?.type ?? nodeType,
       provider: 'google-sheets',
@@ -220,8 +222,10 @@ export class GoogleIntegrationService {
     }
 
     // PR-C4 — engine metadata for within-session idempotency.
+    // Phase 2 — `rootExecutionId` for cross-session retry dedup.
     const meta = {
       executionSessionId: context.executionId,
+      rootExecutionId: context.rootExecutionId ?? context.executionId,
       nodeId: node.id,
       actionType: node.data?.type ?? nodeType,
       provider: 'google-calendar',
@@ -285,8 +289,10 @@ export class GoogleIntegrationService {
     try {
       // Use the uploadGoogleDriveFile function we already have
       const { uploadGoogleDriveFile } = await import('@/lib/workflows/actions/googleDrive/uploadFile')
+      // Phase 2 — `rootExecutionId` for cross-session retry dedup.
       const meta = {
         executionSessionId: context.executionId,
+        rootExecutionId: context.rootExecutionId ?? context.executionId,
         nodeId: node.id,
         actionType: node.data?.type,
         provider: 'google-drive',
@@ -315,8 +321,10 @@ export class GoogleIntegrationService {
 
     // Import and use actual implementation
     const { uploadGoogleDriveFile } = await import('@/lib/workflows/actions/googleDrive/uploadFile')
+    // Phase 2 — `rootExecutionId` for cross-session retry dedup.
     const meta = {
       executionSessionId: context.executionId,
+      rootExecutionId: context.rootExecutionId ?? context.executionId,
       nodeId: node.id,
       actionType: node.data?.type,
       provider: 'google-drive',

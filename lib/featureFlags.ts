@@ -55,6 +55,27 @@ export const FEATURE_FLAGS = {
    * Rollout: super_admin → 1% → 10% → 100% → drop Q4 read-fallback.
    */
   RESUME_FROM_FAILED_NODE: process.env.ENABLE_RESUME_FROM_FAILED_NODE === 'true',
+
+  /**
+   * When true AND the workflow owner has `user_profiles.opt_in_v2_execution = true`,
+   * live (`executionMode === 'live' / 'sequential'`) workflow executions go
+   * through v2 (`WorkflowExecutionService`) instead of v1
+   * (`AdvancedExecutionEngine`). Both gates must be true; either alone keeps
+   * the run on v1.
+   *
+   * Sandbox / test-mode runs are unaffected — they always go through v2's
+   * sandbox path, regardless of this flag.
+   *
+   * Default false (kill-switch via env). Per-user opt-in via the column gates
+   * which users actually see v2 even when the flag is on.
+   *
+   * Decision logic + structured log live in
+   * `lib/execution/v2LiveExecutionDispatch.ts`.
+   *
+   * Plan: learning/docs/v2-canonical-execution-engine-plan.md (Phase 3).
+   * Rollout: super_admin opt-in → selected workflows → global flag flip → delete v1.
+   */
+  V2_LIVE_EXECUTION: process.env.ENABLE_V2_LIVE_EXECUTION === 'true',
 } as const
 
 /**

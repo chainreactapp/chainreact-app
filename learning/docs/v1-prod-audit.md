@@ -1,8 +1,14 @@
 # v1 Production Audit — Phase 1 of v2 Canonical Engine Consolidation
 
-**Status:** Phase 1 audit. Read-only research. No code changed.
+**Status:** Phase 1 audit complete. Headline question answered (see §4). Subsequent phases consume this doc as input. Section 7's "do NOT start Phase 2" guidance is **superseded** — Phase 2 shipped 2026-05-04 once PR-V2C confirmed the registry fallback works.
 
 **Companion to:** [v2-canonical-execution-engine-plan.md](./v2-canonical-execution-engine-plan.md)
+
+## Resolutions log (post-audit)
+
+- **2026-05-04:** §4 Q1 answered. PR-V2C shipped `lib/services/executionHandlers/registryFallback.ts` — v2 routes unknown node types through v1's `executeAction` registry. The "apparent gap" reading wins; consolidation effort returns to the original 10-14 day estimate.
+- **2026-05-04:** PR-V2C-AUDIT shipped (engine-level testMode pre-call gate). Closed the test-mode safety gap that PR-V2C surfaced.
+- **2026-05-04:** Phase 2 shipped (v2 lineage threading). v2 now writes `root_execution_id` + `workflow_definition_hash` on session insert; all 7 v2 meta-construction sites carry `rootExecutionId`. Q4 idempotency now works end-to-end on v2.
 
 ## Executive summary — read this before anything else
 
@@ -102,26 +108,23 @@ The audit's most consequential finding. Agent 3 inventoried v1's registry and v2
 
 **Does v2's `integrationHandlers.ts` have a fallback that routes unknown node types through the v1 registry?**
 
-If **yes** → the apparent gap is mostly an explicit-routing optimization in v2; the actual handler functions are reused. The consolidation is a 10-14 day project as originally estimated.
+✅ **RESOLVED 2026-05-04 — yes.** PR-V2C added `lib/services/executionHandlers/registryFallback.ts`. Every `default:` branch across v2's dispatchers now routes unknown node types through v1's `executeAction`. The "apparent gap" reading wins; consolidation returns to the 10-14 day estimate.
 
-If **no** → v2 silently fails on ~130 node types; the consolidation is a 6-8 week porting marathon, possibly more.
+## 4. Open questions
 
-This is the single biggest unknown in the project. Phase 1 cannot ship a defensible plan until this is resolved.
+| # | Question | Status |
+|---|---|---|
+| 1 | Does v2 have a fallback to v1's registry? | ✅ Resolved — yes (PR-V2C, 2026-05-04). |
+| 2 | Sub-workflow status. Prod query: `SELECT COUNT(*) FROM workflow_compositions`. | 🔍 Open. |
+| 3 | `workflow_compositions` table contents (same query). | 🔍 Open. |
+| 4 | Discord gateway dedup on reconnect (entry #13). | 🔍 Open. |
+| 5 | `live_execution_events` UI consumers — confirm no v1-only fields read. | 🔍 Open. |
 
-## 4. Open questions to resolve before Phase 2 begins
+**Q2-Q5 are not blocking Phase 3.** They're sequencing constraints for individual sub-PRs:
 
-1. 🚨 **The integrationHandlers fallback question.** Read `integrationHandlers.ts` end-to-end and confirm:
-   - Is there a `default:` case in the top-level switch that delegates to the v1 registry's `executeAction`?
-   - For "service-delegated" providers (Gmail, Google, Slack), what does the service actually do — does it cover all node types or just an enumerated subset?
-   - For providers with zero explicit cases (Stripe, Shopify, etc.), what happens at runtime if a workflow fires one in test mode? Throw? Silent return? Mock?
-
-2. **Sub-workflow status.** Query production: `SELECT COUNT(*) FROM workflow_compositions`. If empty, deprecate. If not empty, design a v2 sub-workflow story before Phase 3.
-
-3. **`workflow_compositions` table contents.** Same query result also reveals whether the compositions table is a feature or a leftover from earlier work.
-
-4. **Discord gateway path (entry #13).** Discord WS events may produce duplicate executions on reconnect. Confirm or refute via the codebase. If real, dedup is required for v2.
-
-5. **`live_execution_events` UI consumers.** Both engines write to this table; both readers (front-end and admin debug panel) should keep working. Quick grep to confirm no v1-only fields are read.
+- Q2/Q3 → blocks the sub-workflow port path; if compositions table is empty in prod, deprecate.
+- Q4 → blocks the Discord gateway entry-path port (PR-V2-WEBHOOKS).
+- Q5 → blocks the v1-deletion PR (Phase 5 stage 5).
 
 ## 5. Effort estimate — REVISED, conditional on §4 outcome
 
@@ -141,13 +144,8 @@ The original plan's 10-14 day estimate assumed best case. If the worst case hold
 4. **`stripe-integration`, `mailchimp`, generic webhooks: no event-id dedup.** Provider retries cause duplicate executions. Fix during port.
 5. **`AdvancedExecutionEngine.executeParallelBranches` and `executeSubWorkflows` are dead code.** Delete.
 
-## 7. Recommended next step
+## 7. Recommended next step — SUPERSEDED
 
-**Do NOT start Phase 2 (v2 lineage threading) until §4 question 1 is answered.** The whole project plan rests on whether the node-type gap is real or apparent. Resolving it is a 30-minute read of `integrationHandlers.ts` end-to-end plus the integration services it delegates to.
+The original recommendation ("do NOT start Phase 2 until §4 Q1 is answered") was discharged on 2026-05-04. PR-V2C confirmed the registry fallback exists; Phase 2 then shipped. **The project is on the original 10-14 day estimate.**
 
-If the gap is real, we should re-discuss the project scope with the user — six weeks of porting before the v2 cutover may not be worth it pre-launch. Options to surface in that conversation:
-- **Stay on v1.** Build the missing v2 features (execution_steps, HITL, error classification) on v1 instead. Reverses the original Option B → Option A decision.
-- **Postpone consolidation.** Ship pre-launch on v1; consolidate post-launch when there's time for a 6-week port.
-- **Trim the node catalog.** Decide which providers are truly launch-critical, deprecate the rest, port only what's left.
-
-If the gap is apparent (registry fallback exists), proceed to Phase 2 as originally planned.
+Current next step: **Phase 3 — port live execution to v2 behind a feature flag.** First slice is PR-V2-FLAG (feature flag + opt-in column + route dispatch, no behavior change). See [v2-canonical-execution-engine-plan.md](./v2-canonical-execution-engine-plan.md) Phase 3 for the full slice breakdown.

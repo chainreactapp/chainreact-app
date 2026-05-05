@@ -235,7 +235,10 @@ export async function POST(request: NextRequest) {
         options
       })
 
-      // Resolve canonical billing scope from workflow
+      // Resolve canonical billing scope from workflow (used by the
+      // session insert below; the runBillingGate helper resolves it
+      // again internally so this route stays the single source of truth
+      // for the session row's billing_scope_* columns).
       const { resolveBillingScope } = await import('@/lib/billing/resolveBillingScope')
       const billingScope = resolveBillingScope(workflow)
 
@@ -259,54 +262,36 @@ export async function POST(request: NextRequest) {
         // Continue anyway - non-HITL workflows don't need this
       }
 
-      // Billing target: resolved from canonical billing scope
-      const { scopeToBillingUser } = await import('@/lib/billing/scopeToBillingUser')
-      const billingUserId = await scopeToBillingUser(billingScope)
+      // Phase 3 (PR-V2-BILLING) — billing gate via shared helper.
+      // execute-stream is v1-only (HITL stream). Always bills via the
+      // helper. Failures get surfaced as SSE error events instead of
+      // HTTP responses (the writer is already streaming).
+      const { runBillingGate } = await import('@/lib/billing/executionBillingGate')
+      const actionNodes = workflowNodes.filter((n: any) => !n.data?.isTrigger)
+      const billingOutcome = await runBillingGate({
+        workflow,
+        actionNodes,
+        edges: workflowConnections,
+        executionSessionId: executionId,
+        retryOf,
+        isTestMode: false,
+        eventType: 'workflow_execution',
+      })
 
-      // Atomic task deduction: reserve tasks upfront before execution
-      try {
-        const { deductTasksAtomic } = await import('@/lib/workflows/taskDeduction')
-        const actionNodes = workflowNodes.filter((n: any) => !n.data?.isTrigger)
-
-        if (actionNodes.length > 0) {
-          const deductionSource = retryOf ? 'retry' : 'execution'
-          const deductionMetadata: Record<string, unknown> = retryOf
-            ? { is_retry: true, original_execution_id: retryOf }
-            : {}
-
-          const deductionResult = await deductTasksAtomic(
-            billingUserId,
-            actionNodes,
-            workflowConnections,
-            executionId,
-            false,
-            { workflowId, source: deductionSource, metadata: deductionMetadata }
-          )
-
-          if (!deductionResult.applied && deductionResult.resultType !== 'idempotent_replay' && deductionResult.resultType !== 'deducted') {
-            // Billing failure — send error event and abort
-            await sendEvent({
-              type: 'workflow_failed',
-              error: deductionResult.error || 'Task limit reached.',
-              timestamp: Date.now()
-            })
-            await writer.close()
-            return
-          }
-        }
-      } catch (deductionError) {
-        logger.error('[ExecuteStream] Task deduction failed (blocking execution)', {
-          executionId,
-          error: deductionError instanceof Error ? deductionError.message : String(deductionError)
-        })
+      if (
+        billingOutcome.kind === 'insufficient_balance' ||
+        billingOutcome.kind === 'subscription_inactive' ||
+        billingOutcome.kind === 'billing_unavailable'
+      ) {
         await sendEvent({
           type: 'workflow_failed',
-          error: 'Billing system temporarily unavailable. Please retry.',
-          timestamp: Date.now()
+          error: billingOutcome.error,
+          timestamp: Date.now(),
         })
         await writer.close()
         return
       }
+      // 'ok' or 'skipped' — proceed with execution.
 
       // Send workflow_started event with executionId so frontend can poll for resume
       await sendEvent({

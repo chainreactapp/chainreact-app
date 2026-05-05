@@ -34,6 +34,31 @@ export type TaskDeductionResultType =
   | 'subscription_inactive'
   | 'billing_unavailable'
 
+/**
+ * Billing event types written into `task_billing_events.event_type`.
+ * UNIQUE `(user_id, execution_id, event_type)` means distinct event types
+ * with the same execution id produce separate ledger rows — important for
+ * future paths (resume / webhook / scheduled) that may layer on top of an
+ * original execution without colliding.
+ *
+ * Today only `'workflow_execution'` is in use. The other values are
+ * reserved for upcoming PRs:
+ *   - `'workflow_execution_resume'` — Phase 2+ of resume project (D4 in
+ *     [safe-resume-from-failed-node-implementation-plan.md](../../learning/docs/safe-resume-from-failed-node-implementation-plan.md))
+ *   - `'workflow_execution_webhook'` — PR-V2-WEBHOOKS, when 13 webhook
+ *     entry paths migrate from v1 (which bypasses billing today) to v2.
+ *   - `'workflow_execution_scheduled'` — PR-V2-CRON.
+ *   - `'workflow_execution_retry'` — reserved; today retries write
+ *     `'workflow_execution'` with `metadata.is_retry = true` and that
+ *     stays unchanged unless explicitly migrated.
+ */
+export type BillingEventType =
+  | 'workflow_execution'
+  | 'workflow_execution_retry'
+  | 'workflow_execution_resume'
+  | 'workflow_execution_webhook'
+  | 'workflow_execution_scheduled'
+
 export interface TaskDeductionResult {
   tasksDeducted: number
   newBalance: number | null
@@ -81,6 +106,13 @@ export async function deductTasksAtomic(
     workflowId?: string
     source?: string
     metadata?: Record<string, unknown>
+    /**
+     * `task_billing_events.event_type`. Default `'workflow_execution'`
+     * preserves pre-PR-V2-BILLING behavior. Future paths (resume / webhook
+     * / scheduled) pass their own type so distinct ledger rows separate
+     * the original run from layered billing — see `BillingEventType`.
+     */
+    eventType?: BillingEventType
   }
 ): Promise<TaskDeductionResult> {
   if (isTestMode) {
@@ -119,7 +151,7 @@ export async function deductTasksAtomic(
       p_user_id: userId,
       p_amount: totalCost,
       p_execution_id: executionSessionId,
-      p_event_type: 'workflow_execution',
+      p_event_type: options?.eventType ?? 'workflow_execution',
       p_node_breakdown: breakdown,
       p_workflow_id: options?.workflowId,
       p_source: options?.source ?? 'execute_route'
@@ -247,6 +279,7 @@ export async function deductTasksAtomic(
       .update({ metadata: JSON.parse(JSON.stringify(billingMetadata)) })
       .eq('execution_id', executionSessionId)
       .eq('user_id', userId)
+      .eq('event_type', options?.eventType ?? 'workflow_execution')
 
     const metadataDuration = Date.now() - metadataStartTime
     if (metaError) {

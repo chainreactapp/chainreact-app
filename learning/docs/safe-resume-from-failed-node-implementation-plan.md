@@ -49,6 +49,16 @@ All work gated behind feature flag `ENABLE_RESUME_FROM_FAILED_NODE`
   this doc. Test inventory consolidated into existing test files.
   PR-R1b is now observation-gated on `q4_lineage_fallback_hit` log
   reaching zero.
+- 2026-05-04: **v2 lineage threading shipped (Phase 2 of v2 canonical
+  engine plan, not this plan's Phase 2).** PR-R1a's lineage helpers +
+  schema were always engine-agnostic; v2 now writes the same columns
+  on session insert and threads `rootExecutionId` through all 7 of
+  its meta-construction sites. Tests at
+  [`__tests__/workflows/v2-q4-lineage.test.ts`](../../__tests__/workflows/v2-q4-lineage.test.ts).
+  This unblocks the future v2-targeted resume work — when this plan's
+  Phase 2 resumes, both schema and lineage threading are already in
+  place on v2, so `seedNodeOutputs` + `executionEngine.resumeFromFailedNode`
+  build on a working foundation.
 
 ## Context
 

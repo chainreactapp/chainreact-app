@@ -76,6 +76,139 @@ in place; further resume work paused pending v2 cutover.
   1178 tests pass overall. Findings doc:
   [v2-testmode-audit-findings.md](./v2-testmode-audit-findings.md).
   Per-handler Q8d remains backlog for defense-in-depth.
+- 2026-05-04: **PR-V2-CRON shipped (Phase 3 fourth slice — scheduled
+  triggers).** The audit classified scheduled cron as "✓ Covered via
+  manual route" since `app/api/cron/execute-scheduled-triggers/route.ts`
+  POSTs to `/api/workflows/execute`. PR-V2-CRON tightens this:
+  (1) cron now passes `executionMode: 'scheduled'` instead of `'live'`,
+  so engine-dispatch logs distinguish scheduled traffic from manual on
+  the rollout dashboard;
+  (2) execute route's v1-fork predicate at the live/sequential branch
+  was extended from `executionMode === 'live' || executionMode === 'sequential'`
+  to also recognize `'scheduled'` and `'webhook'`. **Bug fix half:**
+  without the predicate fix, non-opted-in users with `'scheduled'`
+  workflows would fall to the v2 catch-all path, AND the route had
+  already billed (different idempotency key from v2's session UUID)
+  → double-charge. Now scheduled / webhook modes correctly fork to v1
+  when opt-in is false. Default behavior preserved — cron still runs
+  on v1 by default. The `'webhook'` predicate inclusion is forward-
+  looking for direct-caller webhook ports (PR-V2-WEBHOOK-{name}). 7
+  tests at [`v2-cron-dispatch.test.ts`](../../__tests__/workflows/v2-cron-dispatch.test.ts).
+  1980 tests pass across 113 suites; no regressions.
+- 2026-05-04: **PR-V2-WEBHOOKS shipped (Phase 3 third slice — unified
+  webhook dispatcher on v2).** `lib/webhooks/execute.ts:executeWebhookWorkflow`
+  — the unified entry point used by `lib/webhooks/processor.ts` + 8
+  provider routes (Teams, Shopify, Facebook, GitHub, Gumroad, HubSpot,
+  Mailchimp, Microsoft Graph, Monday) — now routes through v2
+  (`WorkflowExecutionService`) when both `ENABLE_V2_LIVE_EXECUTION` and
+  the workflow owner's `user_profiles.opt_in_v2_execution` are true.
+  Otherwise falls through to v1 unchanged. v2 path passes
+  `executionOptions: { billingEventType: 'workflow_execution_webhook',
+  source: 'webhook' }` so webhook executions produce distinct ledger
+  rows. **Decision (architectural):** added an explicit 9th
+  `executionOptions: ExecutionOptions` parameter to `executeWorkflow`
+  for execution metadata instead of packing into `inputData`. The
+  `__retryOf` pattern from Phase 2 stays grandfathered for backward
+  compat; new internal metadata lands in `executionOptions`.
+  **Critical rollout guardrail (no-v1-fallback):** once v2 has been
+  elected, the dispatcher does NOT silently fall back to v1 if v2
+  throws or returns `billingFailed: true` — failures surface as
+  `{ success: false, error }` so Phase 5 stages see v2 bugs visibly.
+  v2 service is lazy-imported (`await import('@/lib/services/...')`)
+  inside the dispatch path so v1-only consumers don't pay v2's
+  `server-only` + eager-Supabase-client import cost. Dispatch helper
+  extended to recognize `'webhook'` and `'scheduled'` as live-eligible
+  modes (forward-looking for PR-V2-CRON). 13 webhook dispatch tests
+  + 3 no-v1-fallback guardrail tests + 6 helper-mode-gating tests.
+  1973 tests pass across 112 suites; no regressions. **Out of scope
+  for this PR — follow-up work:** 10 direct `AdvancedExecutionEngine`
+  callers that bypass the unified dispatcher (Gmail processor, Google
+  processors ×5, Stripe-integration webhook, Dropbox, Microsoft Graph
+  worker, Discord invite tracker, Discord gateway, dropboxTriggerHandler,
+  workflowManager, workflow-webhooks/[workflowId]/route,
+  workflow/[provider]/route). Each migrates in its own PR-V2-WEBHOOK-{name}.
+- 2026-05-04: **PR-V2-BILLING shipped (Phase 3 second slice — billing
+  gate lift).** New helper [`lib/billing/executionBillingGate.ts`](../../lib/billing/executionBillingGate.ts)
+  (`runBillingGate(input): BillingGateOutcome`) wraps billing-scope
+  resolution + atomic deduction + auto-buy fire-and-forget into a
+  pure-data discriminated-union return. **Required `eventType`
+  parameter** typed as `BillingEventType` union; today's callers all
+  pass `'workflow_execution'` explicitly, future paths (resume / webhook
+  / scheduled) opt into their own values so distinct ledger rows
+  separate layered billing on the same execution. `deductTasksAtomic`
+  signature extended with optional `options.eventType` (default
+  `'workflow_execution'` preserves pre-PR behavior); the metadata-update
+  query also filters on `event_type` so distinct event types don't
+  smash each other's metadata. **Architecture (Option C):** route runs
+  the gate ONLY for v1 path; v2 self-bills inside
+  `WorkflowExecutionService.executeWorkflow` using the session UUID as
+  the deduction key. v2 returns `{ success: false, billingFailed: true,
+  billingOutcome }` on failure; route maps to 402 / 503 in the same
+  shape v1 produces. `app/api/workflows/execute-stream/route.ts` (HITL
+  stream, v1-only) also refactored to use the helper. Webhook entry
+  paths still call v1 directly; once PR-V2-WEBHOOKS migrates them,
+  they'll automatically get billing for free — closes the audit's
+  pre-existing "webhooks bypass billing" bug. 14 helper tests at
+  [`__tests__/billing/executionBillingGate.test.ts`](../../__tests__/billing/executionBillingGate.test.ts)
+  + 10 v2-side parity tests at
+  [`__tests__/workflows/v2-billing-gate.test.ts`](../../__tests__/workflows/v2-billing-gate.test.ts).
+  Existing `billing-gate.test.ts` updated: structural test now asserts
+  `runBillingGate` runs before engine execution in both routes plus
+  v2's executeWorkflow (replaces the prior `deductTasksAtomic` direct
+  check; per-result-type behavior covered by helper-level tests).
+  1954 tests pass across 111 suites; no regressions.
+- 2026-05-04: **PR-V2-FLAG shipped (Phase 3 first slice — engine
+  dispatch).** Adds `FEATURE_FLAGS.V2_LIVE_EXECUTION` (env-controlled
+  kill switch) + `user_profiles.opt_in_v2_execution boolean NOT NULL
+  DEFAULT false` (per-user opt-in). New pure helper
+  [`lib/execution/v2LiveExecutionDispatch.ts`](../../lib/execution/v2LiveExecutionDispatch.ts)
+  computes the dispatch decision and a structured log payload
+  (`executionEngine: 'v1' | 'v2'`, `executionMode`,
+  `v2LiveExecutionEnabled`, `userOptedIntoV2Execution`) so rollout
+  dashboards can attribute every workflow run to an engine. Route at
+  [`app/api/workflows/execute/route.ts`](../../app/api/workflows/execute/route.ts)
+  looks up opt-in once, calls the helper, logs once, and forks the
+  live/sequential branch on `useV2`. Sandbox runs hit the helper too
+  (so the log covers them) but always report
+  `executionEngine: 'v2'` since sandbox runs v2's existing sandbox
+  path. Conservative fall-through to v1 on any opt-in lookup error.
+  Migration `20260508000000_add_opt_in_v2_execution_to_user_profiles.sql`
+  is **not yet applied to prod** — file created, push deferred until
+  staged-rollout starts. v2 result-shape mapping (`executionId`
+  → `sessionId`) keeps response payload backward-compatible with
+  consumers built against v1's shape. 15 tests at
+  [`v2-live-dispatch.test.ts`](../../__tests__/workflows/v2-live-dispatch.test.ts)
+  cover live × sequential × sandbox × flag × opt-in combinations
+  plus the log shape contract. 1929 tests pass across 109 suites; no
+  regressions. Default behavior unchanged — flag defaults false, no
+  user has the column set, so 100% of live traffic continues on v1.
+- 2026-05-04: **Phase 2 shipped (v2 lineage threading).** Mirrors PR-R1a
+  on the v2 side. `WorkflowExecutionService.executeWorkflow` now
+  generates the session UUID client-side via `randomUUID()` and writes
+  both `root_execution_id` and `workflow_definition_hash` on session
+  insert (reuses the engine-agnostic helpers in
+  [`lib/execution/sessionLineage.ts`](../../lib/execution/sessionLineage.ts)).
+  `ExecutionContext` extended with `rootExecutionId?: string`. All 7
+  v2 meta-construction sites — `integrationHandlers.ts` (×2),
+  `gmailIntegrationService.ts` (×1), `googleIntegrationService.ts`
+  (×4: Sheets, Calendar, Drive create, Drive upload) — now thread
+  `rootExecutionId: context.rootExecutionId ?? context.executionId`
+  into handler `meta`. The brief listed the 2 sites in
+  `integrationHandlers.ts`; the 5 per-service sites were discovered
+  during the audit and threaded in the same PR. **Decision:** `retryOf`
+  rides into `executeWorkflow` inside `inputData.__retryOf` rather
+  than a 9th positional param (mirrors v1's context-bag pattern at
+  the route layer; extracted + stripped before persistence so engine
+  metadata never leaks to handlers). `registryFallback.ts` cleanup:
+  `(context as any).rootExecutionId` cast removed since the field is
+  now properly typed. 15 parity tests at
+  [`v2-q4-lineage.test.ts`](../../__tests__/workflows/v2-q4-lineage.test.ts)
+  cover (a) session-insert lineage columns, (b)
+  `ExecutionContext.rootExecutionId` population through the engine,
+  (c) all 7 meta sites, (d) fallback semantics for legacy contexts
+  without lineage. 1914 tests pass across 108 suites; no regressions.
+  Forward-looking — v2 sees zero prod traffic today, so lineage gets
+  real exercise once Phase 3 ports live execution to v2.
 
 ## Context
 
@@ -219,6 +352,8 @@ v1 / 🔍 needs design.
 
 ## Phase 2 — Add v2 lineage threading
 
+**Status: SHIPPED 2026-05-04.** See revisions log for the full summary.
+
 **Goal:** close the v2 Q4 idempotency gap so retries on v2 dedupe like
 they do on v1. Required even before Phase 3 because Phase 4's parity
 tests will compare retry behavior on both engines.
@@ -242,7 +377,9 @@ tests will compare retry behavior on both engines.
 ### Phase exit
 
 v2 retry pair dedupes correctly. `q4_lineage_fallback_hit` log silent on
-v2 paths.
+v2 paths. **Met as of 2026-05-04** — observation gate trivially holds
+because v2 carries 0 prod retries; the field becomes load-bearing once
+Phase 3 ports live traffic.
 
 ## Phase 3 — Port live execution to v2 behind a feature flag
 

@@ -81,14 +81,14 @@ export async function fallbackToRegistry(
     input: {
       ...(context.data || {}),
       executionId: context.executionId,
-      // PR-R1a + PR-V2C — thread retry-lineage root through the
-      // fallback so Q4 dedup keys + Stripe Idempotency-Key headers
-      // align across retries. v2's `ExecutionContext` does not yet
-      // carry `rootExecutionId` (separate Phase-2 commit). Until then,
-      // the cast falls back to executionId, matching the
-      // session=root semantics PR-R1a established for fresh runs.
-      rootExecutionId:
-        (context as any).rootExecutionId ?? context.executionId,
+      // PR-R1a + PR-V2C + Phase 2 — retry-lineage root threaded
+      // through the fallback so Q4 dedup keys + Stripe Idempotency-Key
+      // headers align across retries. `ExecutionContext.rootExecutionId`
+      // is now declared (Phase 2 of the v2 canonical engine plan); the
+      // `?? context.executionId` fallback preserves the session=root
+      // semantics for legacy contexts that build a context manually
+      // without lineage (direct unit tests, alt entry paths).
+      rootExecutionId: context.rootExecutionId ?? context.executionId,
       workflowId: context.workflowId,
       nodeId: node?.id,
       testMode: false,

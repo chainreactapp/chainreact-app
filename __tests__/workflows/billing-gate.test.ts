@@ -45,10 +45,18 @@ const mockRpc = jest.fn()
 // hanging or throwing.
 const postSuccessUpdate = jest.fn().mockResolvedValue({ error: null })
 const postSuccessEq = jest.fn().mockResolvedValue({ error: null })
+// Mock chain mirrors the production update path:
+//   .from('task_billing_events').update(...).eq('execution_id', ...)
+//     .eq('user_id', ...).eq('event_type', ...)
+// PR-V2-BILLING added the trailing .eq('event_type', ...) so distinct
+// event types (workflow_execution / _resume / _webhook / _scheduled)
+// don't smash each other's metadata.
 const billingEventsUpdateChain: any = {
   update: jest.fn().mockReturnValue({
     eq: jest.fn().mockReturnValue({
-      eq: jest.fn().mockResolvedValue({ error: null }),
+      eq: jest.fn().mockReturnValue({
+        eq: jest.fn().mockResolvedValue({ error: null }),
+      }),
     }),
   }),
 }
@@ -225,28 +233,47 @@ describe('Q8c — billing gate is upstream-only', () => {
   // future refactor removes or reorders the deduction call relative to
   // the executeWorkflow / AdvancedExecutionEngine entry point, the test
   // catches it. Brittle by design — that's the point.
-  describe('routes structurally invoke deductTasksAtomic before executing the workflow', () => {
+  describe('routes structurally invoke runBillingGate before executing the workflow', () => {
+    // Updated 2026-05-04 (PR-V2-BILLING) — the route now goes through
+    // `runBillingGate` from `lib/billing/executionBillingGate.ts` instead
+    // of calling `deductTasksAtomic` directly. The helper internally calls
+    // deductTasksAtomic, so per-result-type behavior (covered above)
+    // remains unchanged. Helper-level coverage:
+    // `__tests__/billing/executionBillingGate.test.ts`. v2-side coverage:
+    // `__tests__/workflows/v2-billing-gate.test.ts`.
+
     function readRouteSource(rel: string): string {
       const abs = path.resolve(process.cwd(), rel)
       return fs.readFileSync(abs, 'utf8')
     }
 
-    test('app/api/workflows/execute/route.ts calls deductTasksAtomic before executeWorkflow', () => {
+    test('app/api/workflows/execute/route.ts calls runBillingGate before executeWorkflow / AdvancedExecutionEngine', () => {
       const src = readRouteSource('app/api/workflows/execute/route.ts')
-      const deductIdx = src.indexOf('deductTasksAtomic(')
+      const gateIdx = src.indexOf('runBillingGate(')
       const executeIdx = src.search(/executeWorkflow\(|AdvancedExecutionEngine|workflowExecutionService\./)
-      expect(deductIdx).toBeGreaterThan(-1)
+      expect(gateIdx).toBeGreaterThan(-1)
       expect(executeIdx).toBeGreaterThan(-1)
-      expect(deductIdx).toBeLessThan(executeIdx)
+      expect(gateIdx).toBeLessThan(executeIdx)
     })
 
-    test('app/api/workflows/execute-stream/route.ts calls deductTasksAtomic before execute*', () => {
+    test('app/api/workflows/execute-stream/route.ts calls runBillingGate before execute*', () => {
       const src = readRouteSource('app/api/workflows/execute-stream/route.ts')
-      const deductIdx = src.indexOf('deductTasksAtomic(')
+      const gateIdx = src.indexOf('runBillingGate(')
       const executeIdx = src.search(/executeWorkflow\(|AdvancedExecutionEngine|workflowExecutionService\./)
-      expect(deductIdx).toBeGreaterThan(-1)
+      expect(gateIdx).toBeGreaterThan(-1)
       expect(executeIdx).toBeGreaterThan(-1)
-      expect(deductIdx).toBeLessThan(executeIdx)
+      expect(gateIdx).toBeLessThan(executeIdx)
+    })
+
+    test('lib/services/workflowExecutionService.ts calls runBillingGate before NodeExecutionService.executeNode', () => {
+      // PR-V2-BILLING — v2 self-bills inside executeWorkflow. The gate
+      // call must come before any node dispatch.
+      const src = readRouteSource('lib/services/workflowExecutionService.ts')
+      const gateIdx = src.indexOf('runBillingGate(')
+      const nodeExecIdx = src.search(/nodeExecutionService\.executeNode\(/)
+      expect(gateIdx).toBeGreaterThan(-1)
+      expect(nodeExecIdx).toBeGreaterThan(-1)
+      expect(gateIdx).toBeLessThan(nodeExecIdx)
     })
 
     test('execute route returns a non-2xx response on insufficient_balance (fail-closed branch present)', () => {
