@@ -11,6 +11,23 @@ in place; further resume work paused pending v2 cutover.
 
 ## Revisions log
 
+- 2026-05-05: **Phase 4 shipped — parity test suite.** `__tests__/parity/` (5 files, 18 tests) covers v1↔v2 dispatch parity for representative scenarios. Tests mock at the handler-class boundary (v1: `executeAction` from `lib/workflows/executeNode`; v2: `IntegrationNodeHandlers.execute` + `ActionNodeHandlers.execute`) so both engines' graph traversal runs end-to-end while we capture per-node dispatch shape. Scenarios shipped:
+  - **`linear-single-action.parity.test.ts`** (3 tests) — trigger → action: both engines dispatch the action node with same (nodeId, nodeType, userId).
+  - **`multi-step-chain.parity.test.ts`** (3 tests) — trigger → action1 → action2: both visit action nodes in the same topological order.
+  - **`branching.parity.test.ts`** (3 tests) — trigger → (A, B): both dispatch BOTH branch action nodes (set equality; v1 BFS / v2 DFS may differ in order, accepted).
+  - **`retry-lineage.parity.test.ts`** (5 tests) — original + retry: both engines pass `rootExecutionId === original.root_execution_id` to the dispatcher on retry, so Q4 idempotency keys align across attempts on both engines.
+  - **`testmode.parity.test.ts`** (4 tests) — v2's engine-level pre-call gate (PR-V2C-AUDIT) blocks external-action handler dispatch in test mode; mirrored against v1's non-test-mode dispatch as a sanity contrast.
+  
+  **Accepted asymmetries (per resolved decisions):**
+  - v1 doesn't write `execution_steps`; v2 does. Test files don't assert on `execution_steps` shape — that's a v2-only audit table that closes the gap automatically when v1 is deleted in stage 5.
+  - v1 doesn't compute `error_classification`; v2 does. Same.
+  - v1's `executeAction` includes a separate trigger code path; v2's `nodeExecutionService.executeNode` calls handler dispatch for triggers via the registry-fallback path. Tests filter on trigger node types before comparing (action-only assertions).
+  - v1 resolves `{{...}}` references inside handlers via soft `resolveValue`; v2 strictly pre-resolves at the engine boundary (Q2 contract). Tests compare structural equivalence (which nodes dispatch, in what order), not resolved config values.
+  - v1's testMode flag flows through a separate code path (route layer constructs a context-bag with testMode set; engine's `createExecutionSession` + `executeWorkflowAdvanced` doesn't propagate testMode). The v2 testMode test pins v2's engine-level guarantee and notes this asymmetry.
+  
+  **Coverage gap (deliberate):** SDK-boundary parity (Stripe SDK, Slack SDK, Anthropic, OpenAI, etc.) was deemed lower-leverage than handler-layer parity. The handler modules are the SAME on both engines, so equivalent dispatch implies equivalent SDK behavior. SDK-level integration tests live separately in `__tests__/nodes/` etc.
+  
+  **Phase 4 status: complete. Phase 5 (staged rollout) is unblocked.** Default behavior remains unchanged — flag defaults false, no users opted in, all parity coverage validates that turning the flag on later won't regress observable execution.
 - 2026-05-04: **PR-V2-WEBHOOK-DISCORD-INVITE shipped (first of 10 direct-caller migrations).** Migrated [`lib/services/discordInviteTracker.ts`](../../lib/services/discordInviteTracker.ts) — Discord member-join entry path — off direct `AdvancedExecutionEngine` instantiation onto the unified webhook dispatcher (`executeWebhookWorkflow`). Chose **Option B (delegation)** over Option A (inline-replicated dispatch): replaces the in-place `new AdvancedExecutionEngine() / createExecutionSession / executeWorkflowAdvanced` block with one call to the unified dispatcher, so v1/v2 dispatch + billing + dedup all live in one file. Extracted `dispatchMemberJoinWorkflow(workflow, member, triggerData, inviteCode)` at module scope so the dispatch path is testable without standing up the singleton's Discord client. **Audit Q4 dedup gap closed for this entry path:** dedupeKey = `${guildId}:${memberId}:${joinedAtISO}` with fallback chain `member.joinedAt?.toISOString() → triggerData.timestamp → 'unknown'`. 9 tests at [`__tests__/services/discordInviteTracker-v2-dispatch.test.ts`](../../__tests__/services/discordInviteTracker-v2-dispatch.test.ts) (dispatch contract / dedupeKey fallback chain / error handling preserves loop). No new TypeScript errors introduced — 2 pre-existing remain at shifted lines. **Note:** the file is dormant in production today (no `.initialize()` callers in the repo); migration future-proofs it for re-activation. Validates the migration template for the remaining 9 direct-caller PRs, with the explicit precedent that delegation-to-dispatcher is preferred when the caller fits the "this is webhook-triggered execution" shape.
 - 2026-05-04: project approved with decisions:
   - **Billing gate** lifts into `WorkflowExecutionService` (or a shared
@@ -445,6 +462,8 @@ Internal-flag-on traffic runs end-to-end on v2. v1 still runs for
 everyone else. No behavior regressions visible to internal users.
 
 ## Phase 4 — Parity tests
+
+**Status: SHIPPED 2026-05-05.** See revisions log for the per-scenario summary. 5 test files, 18 tests, all green. Default behavior unchanged.
 
 **Goal:** programmatic proof that the same workflow on v1 and v2
 produces equivalent observable behavior. Required before any rollout
