@@ -1,104 +1,22 @@
 /**
- * Contract: pre-Run "Connect Your Accounts" dialog correctness.
+ * Contract: `getDisconnectedIntegrations` — the pre-Run "Connect Your
+ * Accounts" dialog's helper that walks a workflow's nodes and returns
+ * the third-party providers the user hasn't connected.
  *
- * Source files exercised:
- *   - stores/integrationStore.ts (`isConnectedStatus`,
- *     `CONNECTED_INTEGRATION_STATUSES`)
- *   - components/workflows/builder/DisconnectedIntegrationsDialog.tsx
- *     (`getDisconnectedIntegrations`)
+ * Source: components/workflows/builder/disconnectedIntegrations.ts
  *
- * Background: regression of 2026-05-05 — the dialog narrowly checked
- * `'connected' || 'authorized'`, which falsely flagged providers
- * stored with `'active'` (and other valid synonyms the integration
- * store accepts) as disconnected. Separately, the
- * CONNECTION_EXEMPT_PROVIDERS list omitted built-in providers
- * (`'automation'`, `'ask-human'`), causing Manual Trigger / HITL
- * nodes to ask for OAuth that doesn't exist.
- *
- * This file pins both fixes:
- *   - isConnectedStatus accepts the full canonical set; rejects others.
- *   - getDisconnectedIntegrations skips built-in providers regardless
- *     of integration list contents.
- *   - getDisconnectedIntegrations does NOT flag third-party providers
- *     whose integration row uses any of the canonical "connected"
- *     synonyms.
+ * The underlying primitives (`isConnectedStatus`,
+ * `isIntegrationRequired`, `CONNECTION_EXEMPT_PROVIDERS`,
+ * `CONNECTED_INTEGRATION_STATUSES`) are tested in
+ * `__tests__/integrations/connectionStatus.test.ts`. This file pins
+ * the dialog-helper-specific behavior on top of those primitives.
  */
 
 jest.mock('@/lib/utils/logger', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
 }))
 
-// The pure helper lives in `./disconnectedIntegrations.ts` (no React).
-// The store import IS pulled in transitively, but only for the
-// `isConnectedStatus` function — no zustand subscription happens at
-// module load. We still mock the store path defensively in case
-// something deep in the store's transitive imports tries to talk to
-// Supabase at module-init time.
-jest.mock('@/stores/integrationStore', () => {
-  const actual = jest.requireActual('@/stores/integrationStore')
-  return {
-    ...actual,
-    useIntegrationStore: jest.fn(),
-  }
-})
-
-import {
-  isConnectedStatus,
-  CONNECTED_INTEGRATION_STATUSES,
-} from '@/stores/integrationStore'
 import { getDisconnectedIntegrations } from '@/components/workflows/builder/disconnectedIntegrations'
-
-// ─── isConnectedStatus ──────────────────────────────────────────────────
-
-describe('isConnectedStatus', () => {
-  test('active => connected', () => {
-    expect(isConnectedStatus('active')).toBe(true)
-  })
-
-  test('valid => connected', () => {
-    expect(isConnectedStatus('valid')).toBe(true)
-  })
-
-  test('connected => connected (the canonical baseline)', () => {
-    expect(isConnectedStatus('connected')).toBe(true)
-  })
-
-  test('authorized / ok / ready => connected (all canonical synonyms)', () => {
-    expect(isConnectedStatus('authorized')).toBe(true)
-    expect(isConnectedStatus('ok')).toBe(true)
-    expect(isConnectedStatus('ready')).toBe(true)
-  })
-
-  test('case-insensitive — uppercase value still resolves', () => {
-    expect(isConnectedStatus('ACTIVE')).toBe(true)
-    expect(isConnectedStatus('Connected')).toBe(true)
-  })
-
-  test('expired => disconnected', () => {
-    expect(isConnectedStatus('expired')).toBe(false)
-  })
-
-  test('undefined => disconnected', () => {
-    expect(isConnectedStatus(undefined)).toBe(false)
-  })
-
-  test('null / empty string => disconnected', () => {
-    expect(isConnectedStatus(null)).toBe(false)
-    expect(isConnectedStatus('')).toBe(false)
-  })
-
-  test('any other status (needs_reauthorization, error, disconnected) => disconnected', () => {
-    expect(isConnectedStatus('needs_reauthorization')).toBe(false)
-    expect(isConnectedStatus('error')).toBe(false)
-    expect(isConnectedStatus('disconnected')).toBe(false)
-  })
-
-  test('CONNECTED_INTEGRATION_STATUSES exports the exact canonical set', () => {
-    expect([...CONNECTED_INTEGRATION_STATUSES].sort()).toEqual(
-      ['active', 'authorized', 'connected', 'ok', 'ready', 'valid'],
-    )
-  })
-})
 
 // ─── getDisconnectedIntegrations — built-in exemptions ──────────────────
 

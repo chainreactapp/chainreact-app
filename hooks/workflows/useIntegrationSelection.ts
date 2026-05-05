@@ -3,6 +3,7 @@ import { ALL_NODE_COMPONENTS, NodeComponent } from '@/lib/workflows/nodes'
 import { INTEGRATION_CONFIGS } from '@/lib/integrations/availableIntegrations'
 import { useIntegrationStore } from '@/stores/integrationStore'
 import { useAuthStore } from '@/stores/authStore'
+import { isConnectedStatus, isIntegrationRequired } from '@/lib/integrations/connectionStatus'
 
 import { logger } from '@/lib/utils/logger'
 import { isProfileAdmin } from '@/lib/types/admin'
@@ -161,16 +162,11 @@ export function useIntegrationSelection() {
   }, [getIntegrationsFromNodes])
 
   const isIntegrationConnected = useCallback((integrationId: string): boolean => {
-    // Special integrations that don't require connection
-    if (['schedule', 'ai', 'core', 'logic', 'manual'].includes(integrationId)) {
+    // Built-in providers (Manual Trigger, HITL, Logic, AI Agent, etc.)
+    // never need a connection — short-circuit to true. Source of truth
+    // for "what's a built-in" lives in lib/integrations/connectionStatus.
+    if (!isIntegrationRequired(integrationId)) {
       return true
-    }
-
-    // Use storeIntegrations from the subscribed hook (line 20) - reactive to store changes
-    // Helper to check if status means connected
-    const isConnectedStatus = (status?: string) => {
-      const v = (status || '').toLowerCase()
-      return v === 'connected' || v === 'authorized' || v === 'active' || v === 'valid' || v === 'ok' || v === 'ready'
     }
 
     // Check for Microsoft services - each service needs its own connection

@@ -53,37 +53,17 @@ export interface Integration {
   [key: string]: any
 }
 
-/**
- * Status values that mean "this integration is currently usable for execution."
- *
- * Different code paths in `lib/integrations/` and `app/api/integrations/`
- * write either `'connected'`, `'authorized'`, or `'active'` to the column.
- * Older code may also persist `'valid'`, `'ok'`, or `'ready'`. All six are
- * treated as connected.
- *
- * Anything outside this list (`'expired'`, `'needs_reauthorization'`,
- * `'disconnected'`, `'error'`, etc.) is NOT connected.
- *
- * Single source of truth — UI consumers MUST import `isConnectedStatus`
- * rather than duplicating a narrower set of checks. The
- * "Connect Your Accounts" dialog regression of 2026-05-05 came from
- * checking only `'connected' || 'authorized'` and missing `'active'`.
- */
-export const CONNECTED_INTEGRATION_STATUSES = [
-  'connected',
-  'authorized',
-  'active',
-  'valid',
-  'ok',
-  'ready',
-] as const
-
-export type ConnectedIntegrationStatus = (typeof CONNECTED_INTEGRATION_STATUSES)[number]
-
-export function isConnectedStatus(status?: string | null): boolean {
-  if (!status) return false
-  return (CONNECTED_INTEGRATION_STATUSES as readonly string[]).includes(status.toLowerCase())
-}
+// Canonical helpers live in lib/integrations/connectionStatus.ts so
+// they can be consumed from server-side code without dragging zustand
+// into the bundle. Re-exported here for backward compatibility — older
+// imports of `isConnectedStatus` / `CONNECTED_INTEGRATION_STATUSES`
+// from this file continue to work.
+import {
+  CONNECTED_INTEGRATION_STATUSES,
+  isConnectedStatus,
+  type ConnectedIntegrationStatus,
+} from "@/lib/integrations/connectionStatus"
+export { CONNECTED_INTEGRATION_STATUSES, isConnectedStatus, type ConnectedIntegrationStatus }
 
 
 export interface IntegrationStore {

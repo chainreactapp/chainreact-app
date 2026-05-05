@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { useWorkflowTestStore } from "@/stores/workflowTestStore"
 import { useIntegrationStore } from "@/stores/integrationStore"
+import { isConnectedStatus } from "@/lib/integrations/connectionStatus"
 import { NodeContextMenu } from "./NodeContextMenu"
 
 import { logger } from '@/lib/utils/logger'
@@ -561,9 +562,12 @@ function CustomNode({ id, data, selected }: NodeProps) {
       providersToCheck.push(alternateProvider)
     }
 
-    // Check if any matching integration is connected
+    // Check if any matching integration is connected. Use the canonical
+    // `isConnectedStatus` predicate from lib/integrations/connectionStatus
+    // — the narrow `status === 'connected'` check this replaced wrongly
+    // flagged Slack as disconnected when its row used `'active'`.
     const isConnected = integrations.some(
-      integration => providersToCheck.includes(integration.provider) && integration.status === 'connected'
+      integration => providersToCheck.includes(integration.provider) && isConnectedStatus(integration.status)
     )
 
     return !isConnected

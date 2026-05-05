@@ -1,34 +1,23 @@
 /**
- * Pure helpers for the "Connect Your Accounts" dialog.
+ * Pure helper for the "Connect Your Accounts" dialog —
+ * `getDisconnectedIntegrations` walks a workflow's nodes and returns
+ * the third-party providers the current user hasn't connected yet.
  *
- * Extracted from `DisconnectedIntegrationsDialog.tsx` so the logic can be
- * unit-tested without pulling React / Radix / zustand into the test
- * runner. The component imports `CONNECTION_EXEMPT_PROVIDERS` and
- * `getDisconnectedIntegrations` from this file; tests import the same
- * symbols and exercise them directly.
+ * Lives outside `DisconnectedIntegrationsDialog.tsx` so unit tests can
+ * load it without pulling React / Radix / zustand through Jest's
+ * transform path.
  *
- * Source of truth for "is this status connected?" lives in
- * `stores/integrationStore.ts` (`isConnectedStatus`). Do not duplicate
- * a narrower set of values here — the regression of 2026-05-05 came
- * from exactly that mistake.
+ * Both connection predicates (`isConnectedStatus` and
+ * `isIntegrationRequired`) come from `lib/integrations/connectionStatus`
+ * — that's the single source of truth. Do not duplicate either one
+ * here.
  */
 
-import { isConnectedStatus } from "@/stores/integrationStore"
+import {
+  isConnectedStatus,
+  isIntegrationRequired,
+} from "@/lib/integrations/connectionStatus"
 import { getProviderDisplayName } from "@/lib/workflows/ai-agent/providerDisambiguation"
-
-/**
- * Built-in providers that don't need OAuth connection. Sourced from a
- * grep of `providerId:` across `lib/workflows/nodes/providers/` — only
- * the IDs that actually appear in node schemas are listed.
- */
-export const CONNECTION_EXEMPT_PROVIDERS = [
-  "ai", // AI Agent / AI Router (platform-managed keys)
-  "ask-human", // HITL Conversation
-  "automation", // Manual Trigger, Wait-for-Event
-  "logic", // if/router/loop/delay/http_request
-  "utility", // built-in utility nodes
-  "webhook", // built-in webhook trigger (HMAC-secured, no OAuth)
-] as const
 
 export interface DisconnectedIntegration {
   providerId: string
@@ -52,8 +41,7 @@ export function getDisconnectedIntegrations(
 
   for (const node of nodes) {
     const providerId = node?.data?.providerId
-    if (!providerId) continue
-    if ((CONNECTION_EXEMPT_PROVIDERS as readonly string[]).includes(providerId)) continue
+    if (!isIntegrationRequired(providerId)) continue
 
     providerCounts.set(providerId, (providerCounts.get(providerId) || 0) + 1)
   }
@@ -73,3 +61,11 @@ export function getDisconnectedIntegrations(
 
   return disconnected
 }
+
+/**
+ * Re-exported from the canonical module so legacy imports of
+ * `CONNECTION_EXEMPT_PROVIDERS` from this file continue to work.
+ * New code should import from `@/lib/integrations/connectionStatus`
+ * directly.
+ */
+export { CONNECTION_EXEMPT_PROVIDERS } from "@/lib/integrations/connectionStatus"
