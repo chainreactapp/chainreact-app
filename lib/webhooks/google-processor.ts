@@ -1,5 +1,6 @@
 import { createSupabaseServiceClient } from '@/utils/supabase/server'
 import { AdvancedExecutionEngine } from '@/lib/execution/advancedExecutionEngine'
+import { executeWebhookWorkflow } from '@/lib/webhooks/execute'
 import { google } from 'googleapis'
 import { getDecryptedAccessToken } from '@/lib/workflows/actions/core/getDecryptedAccessToken'
 
@@ -1832,7 +1833,10 @@ async function triggerMatchingCalendarWorkflows(changeType: CalendarChangeType, 
           markCalendarEventProcessed(workflow.id, eventId, changeType, calendarUpdatedAt)
         }
 
-        const executionEngine = new AdvancedExecutionEngine()
+        // PR-V2-WEBHOOK-GOOGLE: route through unified webhook dispatcher.
+        // Local processedCalendarEvents map preserved for rollback-on-error
+        // semantic (catch block deletes the key); pass `skipDedup: true`
+        // so the dispatcher cache doesn't interfere.
         const nodeCount = workflowWithGraph.nodes.length
         const connectionCount = workflowWithGraph.connections.length
         calendarInfo('Dispatching workflow execution', {
@@ -1846,25 +1850,25 @@ async function triggerMatchingCalendarWorkflows(changeType: CalendarChangeType, 
           eventId,
           payloadKeys: Object.keys(triggerPayload || {})
         })
-        const executionSession = await executionEngine.createExecutionSession(
-          workflow.id,
-          workflow.user_id,
-          'webhook',
-          {
-            inputData: triggerPayload,
-            webhookEvent: {
-              provider: 'google-calendar',
-              changeType,
-              metadata,
-              event: calendarEvent
-            }
-          }
-        )
-
-        await executionEngine.executeWorkflowAdvanced(executionSession.id, triggerPayload)
+        const dispatchResult = await executeWebhookWorkflow({
+          workflowId: workflow.id,
+          userId: workflow.user_id,
+          provider: 'google-calendar',
+          triggerType: `google_calendar_trigger_${changeType}`,
+          triggerData: triggerPayload,
+          metadata: {
+            changeType,
+            eventId,
+            ...metadata,
+          },
+          skipDedup: true,
+        })
+        if (!dispatchResult.success) {
+          throw new Error(dispatchResult.error || 'calendar dispatch failed')
+        }
         calendarInfo('Workflow execution started', {
           workflowId: workflow.id,
-          executionSessionId: executionSession.id
+          executionSessionId: dispatchResult.sessionId
         })
 
       } catch (workflowError) {
@@ -2119,26 +2123,27 @@ async function triggerMatchingDriveWorkflows(changeType: DriveChangeType, driveI
         console.log(`[Google Drive] Executing workflow ${workflow.id} for ${changeType} on ${resourceId}`)
         markDriveChangeProcessed(workflow.id, resourceId, changeType, lastUpdated)
 
-        const executionEngine = new AdvancedExecutionEngine()
-        const executionSession = await executionEngine.createExecutionSession(
-          workflow.id,
-          workflow.user_id,
-          'webhook',
-          {
-            inputData: triggerPayload,
-            webhookEvent: {
-              provider: 'google-drive',
-              changeType,
-              metadata,
-              event: drivePayload
-            }
-          }
-        )
-
-        await executionEngine.executeWorkflowAdvanced(executionSession.id, triggerPayload)
+        // PR-V2-WEBHOOK-GOOGLE: route through unified dispatcher; local
+        // processedDriveChanges preserved for rollback-on-error.
+        const dispatchResult = await executeWebhookWorkflow({
+          workflowId: workflow.id,
+          userId: workflow.user_id,
+          provider: 'google-drive',
+          triggerType: `google_drive_trigger_${changeType}`,
+          triggerData: triggerPayload,
+          metadata: {
+            changeType,
+            resourceId,
+            ...metadata,
+          },
+          skipDedup: true,
+        })
+        if (!dispatchResult.success) {
+          throw new Error(dispatchResult.error || 'drive dispatch failed')
+        }
         logger.info('[Google Drive] Workflow execution started', {
           workflowId: workflow.id,
-          executionSessionId: executionSession.id,
+          executionSessionId: dispatchResult.sessionId,
           changeType
         })
 
@@ -2469,26 +2474,27 @@ async function triggerMatchingSheetsWorkflows(changeType: SheetsChangeType, chan
       try {
         markSheetsChangeProcessed(dedupeKey, eventTimestamp, dedupeSignature)
 
-        const executionEngine = new AdvancedExecutionEngine()
-        const executionSession = await executionEngine.createExecutionSession(
-          workflow.id,
-          workflow.user_id,
-          'webhook',
-          {
-            inputData: triggerPayload,
-            webhookEvent: {
-              provider: 'google-sheets',
-              changeType,
-              metadata,
-              event: triggerPayload
-            }
-          }
-        )
-
-        await executionEngine.executeWorkflowAdvanced(executionSession.id, triggerPayload)
+        // PR-V2-WEBHOOK-GOOGLE: route through unified dispatcher; local
+        // processedSheetsChanges preserved for rollback-on-error.
+        const dispatchResult = await executeWebhookWorkflow({
+          workflowId: workflow.id,
+          userId: workflow.user_id,
+          provider: 'google-sheets',
+          triggerType: `google_sheets_trigger_${changeType}`,
+          triggerData: triggerPayload,
+          metadata: {
+            changeType,
+            spreadsheetId,
+            ...metadata,
+          },
+          skipDedup: true,
+        })
+        if (!dispatchResult.success) {
+          throw new Error(dispatchResult.error || 'sheets dispatch failed')
+        }
         logger.info('[Google Sheets] Workflow execution started', {
           workflowId: workflow.id,
-          executionSessionId: executionSession.id,
+          executionSessionId: dispatchResult.sessionId,
           changeType
         })
 
@@ -2566,32 +2572,28 @@ async function triggerDocsWorkflowsFromDriveChange(driveFile: any, metadata: any
             continue
           }
 
-          const engine = new AdvancedExecutionEngine()
-          const session = await engine.createExecutionSession(
-            wf.id,
-            wf.user_id,
-            'webhook',
-            {
-              inputData: {
-                provider: 'google-docs',
-                changeType: isNewItem ? 'document_created' : 'document_updated',
-                document: docEventPayload,
-                metadata
-              },
-              webhookEvent: {
-                provider: 'google-docs',
-                changeType: isNewItem ? 'document_created' : 'document_updated',
-                metadata,
-                event: docEventPayload
-              }
-            }
-          )
-
-          await engine.executeWorkflowAdvanced(session.id, {
+          // PR-V2-WEBHOOK-GOOGLE: route through unified dispatcher.
+          // No local dedup at this site — let the dispatcher's auto-
+          // derivation pick up document.id / driveFile.id when present.
+          const docsChangeType = isNewItem ? 'document_created' : 'document_updated'
+          const docsTriggerData = {
             provider: 'google-docs',
-            changeType: isNewItem ? 'document_created' : 'document_updated',
+            changeType: docsChangeType,
             document: docEventPayload,
-            metadata
+            metadata,
+          }
+          await executeWebhookWorkflow({
+            workflowId: wf.id,
+            userId: wf.user_id,
+            provider: 'google-docs',
+            triggerType: `google_docs_trigger_${docsChangeType}`,
+            triggerData: docsTriggerData,
+            metadata: {
+              changeType: docsChangeType,
+              documentId: driveFile?.id,
+              ...metadata,
+            },
+            dedupeKey: driveFile?.id ? `${driveFile.id}:${docsChangeType}` : undefined,
           })
         }
       }
