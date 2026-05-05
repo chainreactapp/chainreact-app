@@ -53,6 +53,38 @@ export interface Integration {
   [key: string]: any
 }
 
+/**
+ * Status values that mean "this integration is currently usable for execution."
+ *
+ * Different code paths in `lib/integrations/` and `app/api/integrations/`
+ * write either `'connected'`, `'authorized'`, or `'active'` to the column.
+ * Older code may also persist `'valid'`, `'ok'`, or `'ready'`. All six are
+ * treated as connected.
+ *
+ * Anything outside this list (`'expired'`, `'needs_reauthorization'`,
+ * `'disconnected'`, `'error'`, etc.) is NOT connected.
+ *
+ * Single source of truth — UI consumers MUST import `isConnectedStatus`
+ * rather than duplicating a narrower set of checks. The
+ * "Connect Your Accounts" dialog regression of 2026-05-05 came from
+ * checking only `'connected' || 'authorized'` and missing `'active'`.
+ */
+export const CONNECTED_INTEGRATION_STATUSES = [
+  'connected',
+  'authorized',
+  'active',
+  'valid',
+  'ok',
+  'ready',
+] as const
+
+export type ConnectedIntegrationStatus = (typeof CONNECTED_INTEGRATION_STATUSES)[number]
+
+export function isConnectedStatus(status?: string | null): boolean {
+  if (!status) return false
+  return (CONNECTED_INTEGRATION_STATUSES as readonly string[]).includes(status.toLowerCase())
+}
+
 
 export interface IntegrationStore {
   integrations: Integration[]
@@ -1101,11 +1133,6 @@ export const useIntegrationStore = create<IntegrationStore>()(
 
     getConnectedProviders: () => {
       const { integrations } = get()
-
-      const isConnectedStatus = (status?: string) => {
-        const v = (status || '').toLowerCase()
-        return v === 'connected' || v === 'authorized' || v === 'active' || v === 'valid' || v === 'ok' || v === 'ready'
-      }
 
       // Debug log (commented out to reduce console noise)
       // logger.debug('🔍 [getConnectedProviders] Checking integrations:', {
