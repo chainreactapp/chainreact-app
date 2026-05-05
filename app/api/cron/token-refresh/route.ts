@@ -393,7 +393,7 @@ export async function GET(request: NextRequest) {
           const { error: updateError } = await supabase
             .from("integrations")
             .update({
-              consecutive_failures: supabase.rpc("increment", { row_id: integration.id, field: "consecutive_failures" }),
+              consecutive_failures: (integration.consecutive_failures || 0) + 1,
               disconnect_reason: `Unexpected error: ${error.message}`,
               last_failure_at: now.toISOString(),
               // Only update status if we've hit too many consecutive failures
