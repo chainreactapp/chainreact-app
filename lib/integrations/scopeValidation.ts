@@ -6,6 +6,7 @@ import {
   isKnownProvider,
 } from "./integrationScopes"
 import { getBaseUrl } from "@/lib/utils/getBaseUrl"
+import { CONNECTED_STATUSES_LIST } from "./connectionStatus"
 
 import { logger } from '@/lib/utils/logger'
 
@@ -84,7 +85,7 @@ export async function validateAllUserIntegrations(userId: string): Promise<Scope
     .from("integrations")
     .select("*")
     .eq("user_id", userId)
-    .eq("status", "connected")
+    .in("status", CONNECTED_STATUSES_LIST)
 
   if (!integrations) return []
 
@@ -328,7 +329,7 @@ export async function validateAllIntegrations(userId: string): Promise<any[]> {
     .from("integrations")
     .select("*")
     .eq("user_id", userId)
-    .eq("status", "connected")
+    .in("status", CONNECTED_STATUSES_LIST)
 
   if (error || !integrations) {
     throw new Error(`Failed to fetch integrations: ${error?.message || "Unknown error"}`)

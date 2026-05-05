@@ -6,6 +6,7 @@
 
 import { createSupabaseServiceClient } from '@/utils/supabase/server'
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 interface OneNotePollingConfig {
   notebookId: string
@@ -31,7 +32,7 @@ async function getOneNoteAccessToken(userId: string): Promise<string | null> {
       .select('access_token')
       .eq('user_id', userId)
       .eq('provider', provider)
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .maybeSingle()
 
     if (integration?.access_token) {

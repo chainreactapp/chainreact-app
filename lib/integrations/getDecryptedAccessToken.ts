@@ -1,6 +1,7 @@
 import { createAdminClient } from "@/lib/supabase/admin"
 import { decrypt } from "@/lib/security/encryption"
 import { refreshIntegrationToken } from "./refreshToken"
+import { CONNECTED_STATUSES_LIST } from "./connectionStatus"
 
 import { logger } from '@/lib/utils/logger'
 
@@ -20,7 +21,7 @@ export async function getDecryptedAccessToken(
     .select("*")
     .eq("user_id", userId)
     .eq("provider", provider)
-    .eq("status", "connected")
+    .in("status", CONNECTED_STATUSES_LIST)
     .single()
   
   if (error || !data) {
@@ -74,7 +75,7 @@ export async function getIntegrationCredentials(
       .select("metadata")
       .eq("user_id", userId)
       .eq("provider", provider)
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
     
     if (error || !data) {

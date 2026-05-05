@@ -6,6 +6,7 @@ import { logInfo, logError, logSuccess, logWarning } from '@/lib/logging/backend
 import { getAnthropicClient } from '@/lib/ai/anthropic-client'
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 interface GmailNotification {
   emailAddress: string
@@ -1245,7 +1246,7 @@ async function triggerMatchingGmailWorkflows(event: GmailWebhookEvent): Promise<
               .select('*')
               .eq('user_id', userId)
               .eq('provider', 'gmail')
-              .eq('status', 'connected')
+              .in('status', CONNECTED_STATUSES_LIST)
               .single()
 
             if (integration) {

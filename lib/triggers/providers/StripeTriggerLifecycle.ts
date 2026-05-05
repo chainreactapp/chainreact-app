@@ -16,6 +16,7 @@ import {
 
 import { logger } from '@/lib/utils/logger'
 import { getWebhookBaseUrl } from '@/lib/utils/getBaseUrl'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 // Helper to create supabase client inside handlers
 const getSupabase = () => createClient(
@@ -63,7 +64,7 @@ export class StripeTriggerLifecycle implements TriggerLifecycle {
       .eq('id', integrationId)
       .eq('provider', 'stripe')
       .eq('user_id', userId)
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     if (error || !data) {

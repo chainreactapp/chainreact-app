@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "../connectionStatus"
 
 // Helper to create supabase client inside handlers
 const getSupabase = () => createClient(
@@ -72,7 +73,7 @@ export async function verifyAirtableRecord(
       .select('access_token, status')
       .eq('user_id', userId)
       .eq('provider', 'airtable')
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single();
 
     if (integrationError || !integration) {

@@ -4,6 +4,7 @@
 
 import { logger } from '@/lib/utils/logger'
 import { createSupabaseServerClient } from '@/utils/supabase/server'
+import { CONNECTED_STATUSES_LIST } from '@/lib/integrations/connectionStatus'
 
 interface SlackMessage {
   channel: string
@@ -28,7 +29,7 @@ export async function sendSlackMessage(
       .select('credentials')
       .eq('user_id', userId)
       .eq('provider', 'slack')
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     if (error || !integration) {
@@ -99,7 +100,7 @@ export async function sendWorkflowErrorSlack(
       .select('credentials')
       .eq('user_id', userId)
       .eq('provider', 'slack')
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     if (error || !integration) {

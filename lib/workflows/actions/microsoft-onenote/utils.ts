@@ -3,6 +3,7 @@
  */
 
 import { createSupabaseServiceClient } from '@/utils/supabase/server'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 /**
  * Get Microsoft Graph access token for OneNote integration
@@ -23,7 +24,7 @@ export async function getOneNoteAccessToken(userId: string): Promise<string> {
       .select('*')
       .eq('user_id', userId)
       .eq('provider', provider)
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .maybeSingle()
 
     if (integration && integration.access_token) {

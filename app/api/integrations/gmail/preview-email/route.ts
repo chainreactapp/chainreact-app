@@ -5,6 +5,7 @@ import { decryptToken } from "@/lib/integrations/tokenUtils"
 import { google } from 'googleapis'
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 export async function POST(request: NextRequest) {
   try {
@@ -25,7 +26,7 @@ export async function POST(request: NextRequest) {
       .select('*')
       .eq('provider', 'gmail')
       .eq('user_id', user.id)
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     if (integrationError || !integration) {

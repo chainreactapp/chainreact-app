@@ -4,6 +4,7 @@
  */
 
 import { createSupabaseServiceClient } from '@/utils/supabase/server'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 export interface DiscordInteractionButton {
   label: string
@@ -30,7 +31,7 @@ export async function sendDiscordHITLWithButtons(
     .select('credentials')
     .eq('user_id', userId)
     .eq('provider', 'discord')
-    .eq('status', 'connected')
+    .in('status', CONNECTED_STATUSES_LIST)
     .single()
 
   if (!integration) {
@@ -108,7 +109,7 @@ export async function updateDiscordMessage(
     .select('credentials')
     .eq('user_id', userId)
     .eq('provider', 'discord')
-    .eq('status', 'connected')
+    .in('status', CONNECTED_STATUSES_LIST)
     .single()
 
   if (!integration) return false
@@ -161,7 +162,7 @@ export async function sendDiscordFollowUp(
     .select('credentials')
     .eq('user_id', userId)
     .eq('provider', 'discord')
-    .eq('status', 'connected')
+    .in('status', CONNECTED_STATUSES_LIST)
     .single()
 
   if (!integration) return { success: false }

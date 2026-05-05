@@ -6,6 +6,7 @@ import { handleCorsPreFlight, addCorsHeaders } from '@/lib/utils/cors'
 import { decryptResourceData } from '@/lib/utils/encryptionCertificate'
 import { decrypt } from '@/lib/security/encryption'
 import { executeWebhookWorkflow } from '@/lib/webhooks/execute'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 // Helper to create supabase client inside handlers
 const getSupabase = () => createAdminClient()
@@ -335,7 +336,7 @@ async function fetchMessageDetails(
       .select('access_token')
       .eq('user_id', workflow.user_id)
       .eq('provider', 'teams')
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration || !integration.access_token) return null
@@ -506,7 +507,7 @@ async function processLifecycleNotification(notification: any) {
           .select('access_token')
           .eq('user_id', triggerResource.user_id)
           .eq('provider', 'teams')
-          .eq('status', 'connected')
+          .in('status', CONNECTED_STATUSES_LIST)
           .single()
 
         if (integration && integration.access_token) {

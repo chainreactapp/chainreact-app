@@ -4,6 +4,7 @@ import { decrypt } from "@/lib/security/encryption"
 import { FileStorageService } from "@/lib/storage/fileStorage"
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 interface DropboxUploadConfig {
   fileName: string
@@ -39,7 +40,7 @@ export async function uploadDropboxFile(
       .select('*')
       .eq('user_id', userId)
       .eq('provider', 'dropbox')
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     if (integrationError || !integration) {

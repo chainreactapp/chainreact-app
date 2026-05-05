@@ -4,6 +4,7 @@ import { createSupabaseRouteHandlerClient } from "@/utils/supabase/server"
 import { cookies } from "next/headers"
 
 import { logger } from '@/lib/utils/logger'
+import { isConnectedStatus } from "@/lib/integrations/connectionStatus"
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
@@ -78,7 +79,7 @@ export async function GET() {
     const successfulExecutions = executions.filter((e: any) => e.status === 'completed').length
     const totalExecutionTime = executions.reduce((sum: number, e: any) => sum + (e.execution_time_ms || 0), 0)
     const hoursSaved = Math.round(totalExecutionTime / (1000 * 60 * 60) * 10) / 10 // Rough estimate
-    const connectedIntegrations = integrations.filter((i: any) => i.status === 'connected').length
+    const connectedIntegrations = integrations.filter((i: any) => isConnectedStatus(i.status)).length
 
     // Process chart data
     const chartData = [

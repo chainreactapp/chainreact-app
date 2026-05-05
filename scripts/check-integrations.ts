@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js"
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 // Environment variables
 const supabaseUrl = process.env.SUPABASE_URL
@@ -25,7 +26,7 @@ async function checkIntegrations(userId: string) {
     .from("integrations")
     .select("*")
     .eq("user_id", userId)
-    .eq("status", "connected")
+    .in("status", CONNECTED_STATUSES_LIST)
 
   if (error) {
     console.error("Error fetching integrations:", error)

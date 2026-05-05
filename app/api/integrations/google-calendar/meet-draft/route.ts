@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { jsonResponse, errorResponse, successResponse } from '@/lib/utils/api-response'
 import { createSupabaseRouteHandlerClient } from "@/utils/supabase/server"
 import { cookies } from "next/headers"
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 export async function POST(req: Request) {
   cookies()
@@ -21,7 +22,7 @@ export async function POST(req: Request) {
     .select("*")
     .eq("user_id", user.id)
     .eq("provider", "google-calendar")
-    .eq("status", "connected")
+    .in("status", CONNECTED_STATUSES_LIST)
     .single()
 
   if (error || !integration) {
@@ -86,7 +87,7 @@ export async function DELETE(req: Request) {
     .select("*")
     .eq("user_id", user.id)
     .eq("provider", "google-calendar")
-    .eq("status", "connected")
+    .in("status", CONNECTED_STATUSES_LIST)
     .single()
 
   if (error || !integration) {

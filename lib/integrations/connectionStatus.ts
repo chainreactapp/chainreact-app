@@ -53,6 +53,22 @@ export function isConnectedStatus(status?: string | null): boolean {
   return (CONNECTED_INTEGRATION_STATUSES as readonly string[]).includes(status.toLowerCase())
 }
 
+/**
+ * Mutable `string[]` copy of `CONNECTED_INTEGRATION_STATUSES` for use
+ * with Supabase's `.in('status', ...)` filter. The readonly tuple type
+ * doesn't satisfy Supabase's filter parameter (which expects
+ * `string[]`), so a pre-cast list avoids `[...CONNECTED_INTEGRATION_STATUSES]`
+ * at every call site and gives us one canonical reference for server-
+ * side queries.
+ *
+ * Server-side query pattern:
+ *   .from('integrations').in('status', CONNECTED_STATUSES_LIST)
+ *
+ * In-memory filter pattern (when status comes back from a wider fetch):
+ *   .filter(i => isConnectedStatus(i.status))
+ */
+export const CONNECTED_STATUSES_LIST: string[] = [...CONNECTED_INTEGRATION_STATUSES]
+
 // ─── Provider exemptions (built-ins with no OAuth flow) ─────────────────
 
 /**

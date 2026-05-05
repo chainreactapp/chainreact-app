@@ -3,6 +3,7 @@ import { jsonResponse, errorResponse, successResponse } from '@/lib/utils/api-re
 import { createSupabaseRouteHandlerClient } from "@/utils/supabase/server"
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
@@ -66,7 +67,7 @@ export async function GET(request: Request) {
           .from('integrations')
           .select('provider, status, created_at')
           .eq('user_id', user.id)
-          .eq('status', 'connected')
+          .in('status', CONNECTED_STATUSES_LIST)
           .order('created_at', { ascending: false })
 
         if (!integrations) {

@@ -6,6 +6,7 @@ import type { Database } from "@/types/supabase"
 import { getRequiredScopes, getOptionalScopes } from "@/lib/integrations/integrationScopes"
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 interface DiagnosticResult {
   integrationId: string
@@ -279,7 +280,7 @@ export async function GET(request: NextRequest) {
       .from("integrations")
       .select("*")
       .eq("user_id", userId)
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
 
     if (error) {
       logger.error("Database error:", error)

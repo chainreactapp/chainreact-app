@@ -2,6 +2,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { decrypt } from '@/lib/security/encryption'
 import { ActionResult } from '../index'
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 /**
  * Create a new Microsoft Teams team
@@ -34,7 +35,7 @@ export async function createTeamsTeam(
       .select('*')
       .eq('user_id', userId)
       .eq('provider', 'teams')
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration || !integration.access_token) {

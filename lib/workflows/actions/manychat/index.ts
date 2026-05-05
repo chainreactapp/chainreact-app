@@ -8,6 +8,7 @@ import { createSupabaseServerClient } from '@/utils/supabase/server'
 import { decrypt } from '@/lib/security/encryption'
 import { createManyChatClient } from '@/lib/integrations/providers/manychat/client'
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 /**
  * Helper: Get ManyChat client for user
@@ -20,7 +21,7 @@ async function getManyChatClient(userId: string) {
     .select('*')
     .eq('user_id', userId)
     .eq('provider', 'manychat')
-    .eq('status', 'connected')
+    .in('status', CONNECTED_STATUSES_LIST)
     .single()
 
   if (error || !integration) {

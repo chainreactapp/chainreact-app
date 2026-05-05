@@ -5,6 +5,7 @@ import { cookies } from "next/headers"
 
 import { logger } from '@/lib/utils/logger'
 import type { Database } from "@/types/supabase"
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 export async function GET() {
   try {
@@ -27,7 +28,7 @@ export async function GET() {
       .from("integrations")
       .select("*")
       .eq("user_id", userId)
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
 
     if (error) {
       logger.error("Database error:", error)

@@ -26,6 +26,7 @@
 
 import {
   CONNECTED_INTEGRATION_STATUSES,
+  CONNECTED_STATUSES_LIST,
   CONNECTION_EXEMPT_PROVIDERS,
   isConnectedStatus,
   isIntegrationRequired,
@@ -86,6 +87,19 @@ describe('isConnectedStatus', () => {
     expect([...CONNECTED_INTEGRATION_STATUSES].sort()).toEqual(
       ['active', 'authorized', 'connected', 'ok', 'ready', 'valid'],
     )
+  })
+
+  test('CONNECTED_STATUSES_LIST is a mutable string[] mirror of the canonical tuple', () => {
+    // Same set, just shaped for Supabase `.in('status', ...)` calls
+    // which expect `string[]` rather than `readonly string[]`.
+    expect([...CONNECTED_STATUSES_LIST].sort()).toEqual(
+      [...CONNECTED_INTEGRATION_STATUSES].sort(),
+    )
+    // Drift guard: must not be a different list. If a contributor
+    // adds a value to CONNECTED_INTEGRATION_STATUSES they MUST update
+    // CONNECTED_STATUSES_LIST too (currently it's spread from the
+    // tuple, but this test pins the relationship).
+    expect(CONNECTED_STATUSES_LIST).toHaveLength(CONNECTED_INTEGRATION_STATUSES.length)
   })
 })
 

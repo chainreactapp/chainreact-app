@@ -18,6 +18,7 @@ import {
 import { logger } from '@/lib/utils/logger'
 import { decrypt } from '@/lib/security/encryption'
 import { getWebhookBaseUrl } from '@/lib/utils/getBaseUrl'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 const getSupabase = () => createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -59,7 +60,7 @@ export class GitHubTriggerLifecycle implements TriggerLifecycle {
       .select('*')
       .eq('user_id', userId)
       .eq('provider', 'github')
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     if (intError || !integration) {

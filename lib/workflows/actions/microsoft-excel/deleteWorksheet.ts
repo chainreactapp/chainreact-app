@@ -7,6 +7,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { decrypt } from '@/lib/security/encryption'
 import { logger } from '@/lib/utils/logger'
 import type { ActionResult } from '@/lib/workflows/actions/core/executeWait'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 const GRAPH_API_BASE = 'https://graph.microsoft.com/v1.0'
 
@@ -35,7 +36,7 @@ export async function deleteMicrosoftExcelWorksheet(
       .select('*')
       .eq('user_id', userId)
       .eq('provider', 'microsoft-excel')
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     if (error || !integration) {

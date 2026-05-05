@@ -1,5 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin"
 import { PostgrestError } from "@supabase/supabase-js"
+import { CONNECTED_STATUSES_LIST } from "./connectionStatus"
 
 import { logger } from '@/lib/utils/logger'
 
@@ -35,7 +36,7 @@ export async function getTokenHealthReport(): Promise<{
     throw new Error("Failed to create Supabase client")
   }
 
-  const { data: integrations, error } = await supabase.from("integrations").select("*").eq("status", "connected")
+  const { data: integrations, error } = await supabase.from("integrations").select("*").in("status", CONNECTED_STATUSES_LIST)
 
   if (error) {
     throw new Error(`Failed to fetch integrations: ${error.message}`)

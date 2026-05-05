@@ -7,6 +7,7 @@ import { getDecryptedAccessToken } from './core/getDecryptedAccessToken'
 import { resolveValue } from './core/resolveValue'
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 /**
  * Upload a file to OneDrive
@@ -233,7 +234,7 @@ export async function uploadFileToOneDrive(
       .select('*')
       .eq('user_id', userId)
       .in('provider', ['onedrive', 'microsoft-onedrive'])
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration) {

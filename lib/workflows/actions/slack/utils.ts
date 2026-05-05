@@ -3,6 +3,7 @@
  */
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 /**
  * Convert Slack URL message ID to timestamp format
@@ -60,7 +61,7 @@ export async function getSlackToken(
     .from('integrations')
     .select('access_token, metadata')
     .eq('provider', 'slack')
-    .eq('status', 'connected')
+    .in('status', CONNECTED_STATUSES_LIST)
 
   if (isIntegrationId) {
     query = query.eq('id', userIdOrIntegrationId)

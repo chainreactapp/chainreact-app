@@ -3,6 +3,7 @@ import { getDecryptedAccessToken } from './core/getDecryptedAccessToken'
 import { resolveValue } from './core/resolveValue'
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 /**
  * Create a new Notion database
@@ -36,7 +37,7 @@ export async function createNotionDatabase(
       .select("*")
       .eq("user_id", userId)
       .eq("provider", "notion")
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration) {
@@ -203,7 +204,7 @@ export async function createNotionPage(
       .select("*")
       .eq("user_id", userId)
       .eq("provider", "notion")
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration) {
@@ -328,7 +329,7 @@ export async function updateNotionPage(
       .select("*")
       .eq("user_id", userId)
       .eq("provider", "notion")
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration) {

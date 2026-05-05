@@ -3,6 +3,7 @@ import { createSupabaseServerClient } from '@/utils/supabase/server'
 import { jsonResponse, errorResponse } from '@/lib/utils/api-response'
 import { logger } from '@/lib/utils/logger'
 import { ALL_NODE_COMPONENTS } from '@/lib/workflows/nodes'
+import { isConnectedStatus } from "@/lib/integrations/connectionStatus"
 
 export const dynamic = 'force-dynamic'
 
@@ -151,7 +152,7 @@ async function validateIntegrations(nodes: any[], userId: string, supabase: any)
   }
 
   const connectedProviders = integrations
-    ?.filter((i: any) => i.status === 'connected')
+    ?.filter((i: any) => isConnectedStatus(i.status))
     .map((i: any) => i.provider) || []
 
   for (const node of nodes) {

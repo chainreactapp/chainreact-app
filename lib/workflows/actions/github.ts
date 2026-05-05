@@ -3,6 +3,7 @@ import { getDecryptedAccessToken } from './core/getDecryptedAccessToken'
 import { resolveValue } from './core/resolveValue'
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 /**
  * Create a new GitHub issue
@@ -37,7 +38,7 @@ export async function createGitHubIssue(
       .select("*")
       .eq("user_id", userId)
       .eq("provider", "github")
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration) {
@@ -141,7 +142,7 @@ export async function createGitHubRepository(
       .select("*")
       .eq("user_id", userId)
       .eq("provider", "github")
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration) {
@@ -247,7 +248,7 @@ export async function createGitHubPullRequest(
       .select("*")
       .eq("user_id", userId)
       .eq("provider", "github")
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration) {
@@ -386,7 +387,7 @@ export async function createGitHubGist(
       .select("*")
       .eq("user_id", userId)
       .eq("provider", "github")
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration) {
@@ -476,7 +477,7 @@ export async function createGitHubBranch(
       .select("*")
       .eq("user_id", userId)
       .eq("provider", "github")
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration) {
@@ -588,7 +589,7 @@ export async function addGitHubComment(
       .select("*")
       .eq("user_id", userId)
       .eq("provider", "github")
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration) {

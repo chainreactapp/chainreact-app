@@ -1108,7 +1108,7 @@ export const useIntegrationStore = create<IntegrationStore>()(
     hasMultipleAccounts: (providerId: string) => {
       const { getAllIntegrationsByProvider } = get()
       const accounts = getAllIntegrationsByProvider(providerId)
-      return accounts.filter(a => a.status === 'connected').length > 1
+      return accounts.filter(a => isConnectedStatus(a.status)).length > 1
     },
 
     getConnectedProviders: () => {

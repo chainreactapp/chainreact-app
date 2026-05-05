@@ -43,6 +43,7 @@ export { slackActionSetUserPresence } from './slack/setUserPresence'
 export { slackActionUpdateUserStatus } from './slack/updateUserStatus'
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 /**
  * Wrapper for the new Slack send message implementation
@@ -92,7 +93,7 @@ export async function slackActionSendMessage(
           .select('*')
           .eq('user_id', userId)
           .eq('provider', provider)
-          .eq('status', 'connected')
+          .in('status', CONNECTED_STATUSES_LIST)
           .single()
 
         return integration
@@ -176,7 +177,7 @@ export async function createSlackChannel(
       .select('*')
       .eq('user_id', userId)
       .eq('provider', 'slack')
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration) {

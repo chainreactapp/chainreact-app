@@ -4,6 +4,7 @@ import { NextResponse } from "next/server"
 import { jsonResponse, errorResponse, successResponse } from '@/lib/utils/api-response'
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 export async function GET(request: Request) {
   try {
@@ -135,7 +136,7 @@ export async function POST(request: Request) {
         .select("*")
         .eq("user_id", user.id)
         .eq("provider", "gmail")
-        .eq("status", "connected")
+        .in("status", CONNECTED_STATUSES_LIST)
         .single()
 
       gmailIntegration = {
