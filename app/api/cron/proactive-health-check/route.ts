@@ -121,10 +121,10 @@ export async function GET(request: NextRequest) {
         // Build health integration for transition engine
         const healthIntegration: HealthIntegration = {
           id: integration.id,
-          user_id: integration.user_id,
+          user_id: integration.user_id!,
           provider: integration.provider,
-          health_check_status: integration.health_check_status ?? null,
-          last_notification_milestone: integration.last_notification_milestone ?? null,
+          health_check_status: integration.health_check_status as HealthIntegration['health_check_status'],
+          last_notification_milestone: integration.last_notification_milestone as HealthIntegration['last_notification_milestone'],
           requires_user_action: integration.requires_user_action ?? false,
           user_action_type: integration.user_action_type ?? null,
           user_action_deadline: integration.user_action_deadline ?? null,
