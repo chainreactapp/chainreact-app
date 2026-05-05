@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { jsonResponse, errorResponse, successResponse } from '@/lib/utils/api-response'
 import { createClient } from '@supabase/supabase-js'
-import { AdvancedExecutionEngine } from '@/lib/execution/advancedExecutionEngine'
+import { executeWebhookWorkflow } from '@/lib/webhooks/execute'
 
 import { logger } from '@/lib/utils/logger'
 
@@ -145,34 +145,35 @@ async function processWebhook(
       }
     }
 
-    // Execute each workflow
-    const executionEngine = new AdvancedExecutionEngine()
+    // PR-V2-WEBHOOK-INTEGRATION-WEBHOOKS: route through unified webhook
+    // dispatcher. Dedup uses the integration_webhook_executions row id
+    // (`execution.id`) — that's the per-inbound-event identifier the
+    // route persists before fanning out to workflows.
     const workflowResults = []
 
     for (const workflow of workflows) {
       try {
-        // Transform payload for the workflow
         const transformedPayload = transformPayloadForWorkflow(provider, payload, workflow)
-        
-        // Create execution session
-        const session = await executionEngine.createExecutionSession(
-          workflow.id,
-          workflow.user_id,
-          'webhook',
-          { 
-            inputData: transformedPayload,
-            webhookExecutionId: execution.id,
-            provider: provider
-          }
-        )
 
-        // Execute the workflow
-        await executionEngine.executeWorkflowAdvanced(session.id, transformedPayload)
-        
+        const dispatchResult = await executeWebhookWorkflow({
+          workflowId: workflow.id,
+          userId: workflow.user_id,
+          provider,
+          triggerType: `${provider}_webhook`,
+          triggerData: transformedPayload,
+          metadata: {
+            webhookExecutionId: execution.id,
+            providerId: provider,
+          },
+          dedupeKey: execution.id,
+        })
+
         workflowResults.push({
           workflowId: workflow.id,
-          sessionId: session.id,
-          success: true
+          sessionId: dispatchResult.sessionId ?? null,
+          success: dispatchResult.success,
+          duplicate: dispatchResult.duplicate,
+          ...(dispatchResult.error ? { error: dispatchResult.error } : {}),
         })
 
       } catch (error) {
