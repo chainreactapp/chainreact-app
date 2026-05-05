@@ -1,6 +1,6 @@
-import { AdvancedExecutionEngine } from '@/lib/execution/advancedExecutionEngine'
 import { createClient } from '@supabase/supabase-js'
 import { safeDecrypt } from '@/lib/security/encryption'
+import { executeWebhookWorkflow } from '@/lib/webhooks/execute'
 
 import { logger } from '@/lib/utils/logger'
 
@@ -195,6 +195,57 @@ async function findDropboxWorkflows(payload: any): Promise<any[]> {
   return matching
 }
 
+/**
+ * PR-V2-WEBHOOK-DROPBOX: routes Dropbox workflow execution through the
+ * unified webhook dispatcher (executeWebhookWorkflow). Dedup uses the
+ * cursor when available (Dropbox monotonic delta cursor) and falls back
+ * to requestId — closes audit `Dedup: None` for this entry path.
+ *
+ * Exported for tests.
+ */
+export async function dispatchDropboxWorkflow(
+  workflow: { id: string; user_id: string },
+  triggerPayload: DropboxTriggerPayload,
+  triggerNode: any,
+  requestId?: string,
+): Promise<{ success: boolean; sessionId?: string; duplicate?: boolean; error?: string }> {
+  const logPrefix = requestId ? `[${requestId}]` : '[dropbox]'
+  const dedupeKey = triggerPayload.cursor || requestId
+
+  try {
+    const result = await executeWebhookWorkflow({
+      workflowId: workflow.id,
+      userId: workflow.user_id,
+      provider: 'dropbox',
+      triggerType: triggerNode?.data?.type ?? 'dropbox_webhook',
+      triggerData: triggerPayload,
+      metadata: {
+        requestId,
+        accountId: triggerPayload.accountId ?? null,
+        folderPath: triggerPayload.folderPath,
+      },
+      dedupeKey,
+    })
+
+    if (!result.success) {
+      logger.error(`${logPrefix} Dropbox workflow dispatch failed for ${workflow.id}`, {
+        error: result.error,
+      })
+      return { success: false, error: result.error }
+    }
+
+    logger.info(`${logPrefix} Dropbox workflow execution completed`, {
+      workflowId: workflow.id,
+      sessionId: result.sessionId,
+      duplicate: result.duplicate,
+    })
+    return { success: true, sessionId: result.sessionId, duplicate: result.duplicate }
+  } catch (dispatchError: any) {
+    logger.error(`${logPrefix} Dropbox workflow dispatch threw for ${workflow.id}`, dispatchError)
+    return { success: false, error: dispatchError?.message ?? 'dispatch threw' }
+  }
+}
+
 async function processDropboxWorkflow(
   workflow: any,
   payload: any,
@@ -271,23 +322,22 @@ async function processDropboxWorkflow(
     }
   }
 
-  const executionEngine = new AdvancedExecutionEngine()
-  const session = await executionEngine.createExecutionSession(
-    workflow.id,
-    workflow.user_id,
-    'webhook',
-    {
-      inputData: triggerPayload,
-      provider: 'dropbox',
-      triggerNode: triggerNode,
-      requestId
+  const dispatchResult = await dispatchDropboxWorkflow(workflow, triggerPayload, triggerNode, requestId)
+
+  if (!dispatchResult.success) {
+    return {
+      workflowId: workflow.id,
+      success: false,
+      reason: dispatchResult.error || 'dispatch_failed',
+      dropbox: {
+        accountId: triggerPayload.accountId || null,
+        folderPath: triggerPayload.folderPath,
+        includeSubfolders: triggerPayload.includeSubfolders,
+        fileType: triggerPayload.fileType,
+        rawEntriesCount: triggerPayload.rawEntriesCount,
+      },
     }
-  )
-
-  logger.info(`${logPrefix} Created execution session: ${session.id}`)
-
-  await executionEngine.executeWorkflowAdvanced(session.id, triggerPayload)
-  logger.info(`${logPrefix} Dropbox workflow execution completed`)
+  }
 
   return {
     workflowId: workflow.id,
