@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { checkUsageLimit } from "@/lib/usageTracking"
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 import { logger } from '@/lib/utils/logger'
 
@@ -109,7 +110,7 @@ export class AIAuthenticationService {
         .from("integrations")
         .select("*")
         .eq("user_id", userId)
-        .eq("status", "connected")
+        .in("status", CONNECTED_STATUSES_LIST)
 
       const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error("Database timeout")), timeout)

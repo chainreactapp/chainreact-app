@@ -5,6 +5,7 @@ import { decrypt } from '@/lib/security/encryption';
 import { refreshAndRetry } from '@/lib/workflows/actions/core/refreshAndRetry';
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 /**
  * Internal function to execute Notion Manage Users action
@@ -23,7 +24,7 @@ async function executeNotionManageUsersInternal(
     .select('*')
     .eq('user_id', context.userId)
     .eq('provider', 'notion')
-    .eq('status', 'connected')
+    .in('status', CONNECTED_STATUSES_LIST)
     .single();
 
   if (integrationError || !integration) {

@@ -38,7 +38,7 @@ import {
   Plus
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { createClient } from "@/utils/supabase/client"
+import { getAuthHeader } from "@/lib/auth/getAuthHeader"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 
 import { logger } from '@/lib/utils/logger'
@@ -64,6 +64,7 @@ import {
 
 // Import voice components
 import { VoiceDictation } from './VoiceDictation'
+import { isConnectedStatus } from "@/lib/integrations/connectionStatus"
 // AIAssistantComingSoon removed — voice feature not yet available
 
 interface Message {
@@ -204,15 +205,13 @@ export default function AIAssistantContent() {
     };
   }, []);
 
-  // Load proactive insights on mount (non-blocking)
+  // Load proactive insights on mount (non-blocking).
+  // PR-AUTH-5: cache-only mode — telemetry-style fetch must not block on auth refresh.
   useEffect(() => {
     if (!user || insightsLoaded) return
-    const supabase = createClient()
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session?.access_token) return
-      fetch("/api/ai/insights", {
-        headers: { Authorization: `Bearer ${session.access_token}` }
-      })
+    getAuthHeader({ mode: "cache-only" }).then((authHeader) => {
+      if (!authHeader.Authorization) return
+      fetch("/api/ai/insights", { headers: authHeader })
         .then(res => res.json())
         .then(data => {
           if (data.insights) setInsights(data.insights)
@@ -253,9 +252,10 @@ export default function AIAssistantContent() {
   const loadConversations = async () => {
     setIsLoadingConversations(true)
     try {
-      const supabase = createClient()
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session?.access_token) {
+      // PR-AUTH-5: cached header. No-token short-circuit preserves the
+      // existing "skip load when signed out" behavior without a getSession call.
+      const authHeader = await getAuthHeader({ mode: "cache-only" })
+      if (!authHeader.Authorization) {
         logger.info("No session found, skipping conversation load")
         setConversations([])
         setIsLoadingConversations(false)
@@ -264,9 +264,7 @@ export default function AIAssistantContent() {
 
       logger.info("Loading conversations...")
       const response = await fetch("/api/ai/conversations", {
-        headers: {
-          "Authorization": `Bearer ${session.access_token}`,
-        },
+        headers: authHeader,
       })
 
       if (response.ok) {
@@ -290,14 +288,12 @@ export default function AIAssistantContent() {
   const loadConversation = async (convId: string) => {
     setIsLoading(true)
     try {
-      const supabase = createClient()
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session?.access_token) return
+      // PR-AUTH-5: cached header.
+      const authHeader = await getAuthHeader({ mode: "cache-only" })
+      if (!authHeader.Authorization) return
 
       const response = await fetch(`/api/ai/conversations/${convId}`, {
-        headers: {
-          "Authorization": `Bearer ${session.access_token}`,
-        },
+        headers: authHeader,
       })
 
       if (response.ok) {
@@ -343,9 +339,9 @@ export default function AIAssistantContent() {
 
   const saveConversation = async (convId: string | undefined, title: string, msgs: Message[]): Promise<string | null> => {
     try {
-      const supabase = createClient()
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session?.access_token) return null
+      // PR-AUTH-5: cached header.
+      const authHeader = await getAuthHeader({ mode: "cache-only" })
+      if (!authHeader.Authorization) return null
 
       const preview = msgs[0]?.content.slice(0, 100) || ""
 
@@ -355,8 +351,8 @@ export default function AIAssistantContent() {
       const response = await fetch("/api/ai/conversations", {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${session.access_token}`,
           "Content-Type": "application/json",
+          ...authHeader,
         },
         body: JSON.stringify({
           id: isValidUUID ? convId : undefined, // Only send valid UUIDs
@@ -392,10 +388,9 @@ export default function AIAssistantContent() {
       // Close confirmation dialog
       setDeleteConfirmId(null)
 
-      // Background deletion (async, non-blocking)
-      const supabase = createClient()
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session?.access_token) {
+      // PR-AUTH-5: cached header. Background deletion (async, non-blocking).
+      const authHeader = await getAuthHeader({ mode: "cache-only" })
+      if (!authHeader.Authorization) {
         logger.error("No session for delete")
         return
       }
@@ -403,9 +398,7 @@ export default function AIAssistantContent() {
       // Fire and forget - don't await, allow multiple deletes in parallel
       fetch(`/api/ai/conversations/${convId}`, {
         method: "DELETE",
-        headers: {
-          "Authorization": `Bearer ${session.access_token}`,
-        },
+        headers: authHeader,
       }).then(response => {
         if (!response.ok) {
           logger.error("Background delete failed for conversation:", convId)
@@ -432,16 +425,16 @@ export default function AIAssistantContent() {
 
   const updateConversation = async (convId: string, allCurrentMessages: Message[]) => {
     try {
-      const supabase = createClient()
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session?.access_token) return
+      // PR-AUTH-5: cached header.
+      const authHeader = await getAuthHeader({ mode: "cache-only" })
+      if (!authHeader.Authorization) return
 
       // Save the complete conversation history
       const response = await fetch(`/api/ai/conversations/${convId}`, {
         method: "PATCH",
         headers: {
-          "Authorization": `Bearer ${session.access_token}`,
           "Content-Type": "application/json",
+          ...authHeader,
         },
         body: JSON.stringify({
           messages: allCurrentMessages,
@@ -790,22 +783,11 @@ For detailed pricing and features, check out our [Pricing page](/pricing).
 
     while (retryCount <= maxRetries) {
       try {
-        // Get the current session token
-        const supabase = createClient()
-        
-        // First validate user authentication
-        const {
-          data: { user },
-          error: userError,
-        } = await supabase.auth.getUser()
-        
-        if (userError || !user) {
-          throw new Error("Not authenticated")
-        }
-
-        // Then get session for access token
-        const { data: { session } } = await supabase.auth.getSession()
-        if (!session?.access_token) {
+        // PR-AUTH-5: cached header. Pre-PR did getUser() then getSession() —
+        // both lock-bound. Cached path is sync; missing token surfaces as a
+        // server 401 caught by the existing throw-on-!response.ok branch.
+        const authHeader = await getAuthHeader()
+        if (!authHeader.Authorization) {
           throw new Error("Session expired. Please log in again.")
         }
 
@@ -819,7 +801,7 @@ For detailed pricing and features, check out our [Pricing page](/pricing).
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${session.access_token}`,
+            ...authHeader,
           },
           body: JSON.stringify({
             message: userMessage.content,
@@ -954,20 +936,9 @@ For detailed pricing and features, check out our [Pricing page](/pricing).
     abortControllerRef.current = new AbortController();
 
     try {
-      // Get the current session token
-      const supabase = createClient()
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser()
-      
-      if (userError || !user) {
-        throw new Error("Not authenticated")
-      }
-
-      // Then get session for access token
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session?.access_token) {
+      // PR-AUTH-5: cached header.
+      const authHeader = await getAuthHeader()
+      if (!authHeader.Authorization) {
         throw new Error("Session expired. Please log in again.")
       }
 
@@ -975,7 +946,7 @@ For detailed pricing and features, check out our [Pricing page](/pricing).
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${session.access_token}`,
+            ...authHeader,
           },
         body: JSON.stringify({
           action: pendingConfirmation.action,
@@ -1238,7 +1209,7 @@ For detailed pricing and features, check out our [Pricing page](/pricing).
   const suggestions = useMemo(() => {
     const connected = new Set(
       integrations
-        .filter(i => i.status === 'connected')
+        .filter(i => isConnectedStatus(i.status))
         .map(i => i.provider)
     )
 

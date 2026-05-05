@@ -18,6 +18,7 @@ import {
 } from '../types'
 import { logger } from '@/lib/utils/logger'
 import { decrypt } from '@/lib/security/encryption'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 const getSupabase = () => createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -49,7 +50,7 @@ export class FacebookTriggerLifecycle implements TriggerLifecycle {
       .select('*')
       .eq('user_id', userId)
       .eq('provider', 'facebook')
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     if (intError || !integration) {

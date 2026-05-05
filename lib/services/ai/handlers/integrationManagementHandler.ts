@@ -2,6 +2,7 @@ import { BaseActionHandler } from "./baseActionHandler"
 import { IntentAnalysisResult, Integration } from "../aiIntentAnalysisService"
 import { ActionExecutionResult } from "../aiActionExecutionService"
 import { logger } from '@/lib/utils/logger'
+import { isConnectedStatus } from "@/lib/integrations/connectionStatus"
 
 /**
  * Integration Management Handler
@@ -106,7 +107,7 @@ export class IntegrationManagementHandler extends BaseActionHandler {
       }
     }
 
-    const connected = integrations.filter(i => i.status === 'connected')
+    const connected = integrations.filter(i => isConnectedStatus(i.status))
     const expired = integrations.filter(i => i.status === 'expired' || i.status === 'error')
 
     let content = `You have ${connected.length} integration${connected.length !== 1 ? 's' : ''} connected`
@@ -171,7 +172,7 @@ export class IntegrationManagementHandler extends BaseActionHandler {
     }
 
     // Overall status
-    const connected = integrations.filter(i => i.status === 'connected').length
+    const connected = integrations.filter(i => isConnectedStatus(i.status)).length
     const needsReconnection = integrations.filter(i => i.status === 'expired' || i.status === 'error').length
     const total = integrations.length
 

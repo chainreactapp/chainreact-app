@@ -5,6 +5,7 @@ import { useIntegrationStore, Integration } from "@/stores/integrationStore"
 import { useWorkflowStore } from "@/stores/workflowStore"
 import { INTEGRATION_CONFIGS } from "@/lib/integrations/availableIntegrations"
 import { useToast } from "@/hooks/use-toast"
+import { isConnectedStatus } from "@/lib/integrations/connectionStatus"
 
 export type StatusFilter = "all" | "connected" | "attention"
 
@@ -59,7 +60,7 @@ export function useConnections() {
 
   // Status counts
   const statusCounts = useMemo(() => {
-    const connected = connections.filter(c => c.status === 'connected').length
+    const connected = connections.filter(c => isConnectedStatus(c.status)).length
     const attention = connections.filter(c =>
       c.status === 'expired' || c.status === 'needs_reauthorization'
     ).length

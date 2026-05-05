@@ -78,8 +78,9 @@ export async function loadWorkflowPreferences(): Promise<WorkflowPreferences | n
     store.setLoading(true)
     store.setError(null)
 
-    // Get current user
-    const { data: { user } } = await supabase.auth.getUser()
+    // PR-AUTH-5: cached user id.
+    const { useAuthStore } = await import('./authStore')
+    const user = useAuthStore.getState().user
     if (!user) {
       throw new Error("No authenticated user")
     }
@@ -124,8 +125,9 @@ export async function updateWorkflowPreferences(
     store.setLoading(true)
     store.setError(null)
 
-    // Get current user
-    const { data: { user } } = await supabase.auth.getUser()
+    // PR-AUTH-5: cached user id.
+    const { useAuthStore } = await import('./authStore')
+    const user = useAuthStore.getState().user
     if (!user) {
       throw new Error("No authenticated user")
     }

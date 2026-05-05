@@ -3,6 +3,7 @@ import { jsonResponse, errorResponse, successResponse } from '@/lib/utils/api-re
 import { createSupabaseRouteHandlerClient } from "@/utils/supabase/server"
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 async function fetchGmailMessages(integrationId?: string) {
   const supabase = await createSupabaseRouteHandlerClient()
@@ -37,7 +38,7 @@ async function fetchGmailMessages(integrationId?: string) {
       .select('*')
       .eq('user_id', user.id)
       .eq('provider', 'gmail')
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
     logger.info('📨 Gmail messages: Integration by provider result:', integrationByProvider, 'error:', byProviderError)
     integration = integrationByProvider

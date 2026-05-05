@@ -197,7 +197,7 @@ export async function GET(request: NextRequest) {
           // Send email if configured
           if (step.sendEmail) {
             await deliverDisconnectionNotification(supabase, {
-              userId: integration.user_id,
+              userId: integration.user_id!,
               provider: integration.provider,
               integrationId: integration.id,
               errorMessage: step.messageTemplate(providerName, daysLeft),

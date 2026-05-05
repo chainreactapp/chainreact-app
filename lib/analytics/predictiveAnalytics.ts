@@ -42,6 +42,14 @@ export interface ROICalculation {
 export class PredictiveAnalytics {
   private supabase = createClient()
 
+  // PR-AUTH-7: cached user id from the auth store. Lazy import keeps this
+  // module loadable from server-only contexts even though it's authored as
+  // client-side code.
+  private async getCachedUserId(): Promise<string | undefined> {
+    const { useAuthStore } = await import("@/stores/authStore")
+    return useAuthStore.getState().user?.id
+  }
+
   async predictWorkflowFailure(workflowId: string): Promise<WorkflowFailurePrediction> {
     try {
       // Get workflow execution history
@@ -97,7 +105,7 @@ export class PredictiveAnalytics {
       // Store prediction
       await this.supabase.from("predictions").insert({
         model_id: "workflow-failure-v1",
-        user_id: (await this.supabase.auth.getUser()).data.user?.id,
+        user_id: await this.getCachedUserId(),
         prediction_type: "workflow_failure",
         input_data: { workflowId, totalExecutions, failedExecutions, avgExecutionTime },
         prediction_result: { failureProbability, riskFactors, recommendations },
@@ -231,7 +239,7 @@ export class PredictiveAnalytics {
       // Store health score
       await this.supabase.from("integration_health_scores").upsert({
         integration_id: integrationId,
-        user_id: (await this.supabase.auth.getUser()).data.user?.id,
+        user_id: await this.getCachedUserId(),
         health_score: overallScore,
         reliability_score: reliabilityScore,
         performance_score: performanceScore,
@@ -300,7 +308,7 @@ export class PredictiveAnalytics {
       // Store ROI calculation
       await this.supabase.from("roi_calculations").insert({
         workflow_id: workflowId,
-        user_id: (await this.supabase.auth.getUser()).data.user?.id,
+        user_id: await this.getCachedUserId(),
         time_saved_hours: timeSavedHours,
         cost_saved_amount: costSavedAmount,
         revenue_generated: revenueGenerated,

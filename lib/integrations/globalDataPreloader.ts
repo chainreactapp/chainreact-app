@@ -244,9 +244,9 @@ class GlobalDataPreloader {
 
   async validateUserAccess(): Promise<boolean> {
     try {
-      const supabase = createClient()
-      const { data: user } = await supabase.auth.getUser()
-      return !!user.user
+      // PR-AUTH-7: cached user id from auth store (no lock contention).
+      const { useAuthStore } = await import("@/stores/authStore")
+      return !!useAuthStore.getState().user
     } catch (error) {
       logger.error("Failed to validate user access:", error)
       return false

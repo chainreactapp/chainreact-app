@@ -53,6 +53,18 @@ export interface Integration {
   [key: string]: any
 }
 
+// Canonical helpers live in lib/integrations/connectionStatus.ts so
+// they can be consumed from server-side code without dragging zustand
+// into the bundle. Re-exported here for backward compatibility — older
+// imports of `isConnectedStatus` / `CONNECTED_INTEGRATION_STATUSES`
+// from this file continue to work.
+import {
+  CONNECTED_INTEGRATION_STATUSES,
+  isConnectedStatus,
+  type ConnectedIntegrationStatus,
+} from "@/lib/integrations/connectionStatus"
+export { CONNECTED_INTEGRATION_STATUSES, isConnectedStatus, type ConnectedIntegrationStatus }
+
 
 export interface IntegrationStore {
   integrations: Integration[]
@@ -1096,16 +1108,11 @@ export const useIntegrationStore = create<IntegrationStore>()(
     hasMultipleAccounts: (providerId: string) => {
       const { getAllIntegrationsByProvider } = get()
       const accounts = getAllIntegrationsByProvider(providerId)
-      return accounts.filter(a => a.status === 'connected').length > 1
+      return accounts.filter(a => isConnectedStatus(a.status)).length > 1
     },
 
     getConnectedProviders: () => {
       const { integrations } = get()
-
-      const isConnectedStatus = (status?: string) => {
-        const v = (status || '').toLowerCase()
-        return v === 'connected' || v === 'authorized' || v === 'active' || v === 'valid' || v === 'ok' || v === 'ready'
-      }
 
       // Debug log (commented out to reduce console noise)
       // logger.debug('🔍 [getConnectedProviders] Checking integrations:', {

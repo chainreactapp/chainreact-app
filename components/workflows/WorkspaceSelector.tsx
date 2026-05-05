@@ -24,7 +24,7 @@ export function WorkspaceSelector({
 }: WorkspaceSelectorProps) {
   const { workspaces, loading } = useWorkspaces()
   const { workspaceType, workspaceId } = useWorkflowStore()
-  const { profile, updateDefaultWorkspace } = useAuthStore()
+  const { profile, updateProfile } = useAuthStore()
   const [setAsDefault, setSetAsDefault] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -62,10 +62,10 @@ export function WorkspaceSelector({
     if (checked) {
       try {
         setSaving(true)
-        await updateDefaultWorkspace(
-          workspaceType as 'personal' | 'team' | 'organization',
-          workspaceId
-        )
+        await updateProfile({
+          default_workspace_type: workspaceType as 'personal' | 'team' | 'organization',
+          default_workspace_id: workspaceId || null,
+        })
         logger.info('[WorkspaceSelector] Set as default workspace:', { workspaceType, workspaceId })
         toast.success(`Default workspace set to ${currentWorkspace?.name || 'Personal'}`)
       } catch (error: any) {

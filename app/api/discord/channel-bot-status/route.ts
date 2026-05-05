@@ -4,6 +4,7 @@ import { createSupabaseRouteHandlerClient } from '@/utils/supabase/server'
 import { validateDiscordToken, makeDiscordApiRequest } from '../../integrations/discord/data/utils'
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 interface ChannelBotStatus {
   isInChannel: boolean
@@ -163,7 +164,7 @@ export async function GET(request: NextRequest) {
       .select("*")
       .eq("user_id", user.id)
       .eq("provider", "discord")
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration) {

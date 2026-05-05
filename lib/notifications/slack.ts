@@ -4,85 +4,15 @@
 
 import { logger } from '@/lib/utils/logger'
 import { createSupabaseServerClient } from '@/utils/supabase/server'
-
-interface SlackMessage {
-  channel: string
-  text: string
-  blocks?: any[]
-}
-
-/**
- * Send Slack notification to a channel
- */
-export async function sendSlackMessage(
-  channelId: string,
-  message: string,
-  userId: string
-): Promise<boolean> {
-  try {
-    // Get user's Slack integration
-    const supabase = await createSupabaseServerClient()
-
-    const { data: integration, error } = await supabase
-      .from('integrations')
-      .select('credentials')
-      .eq('user_id', userId)
-      .eq('provider', 'slack')
-      .eq('status', 'connected')
-      .single()
-
-    if (error || !integration) {
-      logger.error('Slack integration not found for user:', userId)
-      return false
-    }
-
-    const accessToken = integration.credentials?.access_token
-
-    if (!accessToken) {
-      logger.error('Slack access token not found')
-      return false
-    }
-
-    // Send message via Slack API
-    const response = await fetch('https://slack.com/api/chat.postMessage', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        channel: channelId,
-        text: message,
-        blocks: formatSlackBlocks(message),
-      }),
-    })
-
-    const data = await response.json()
-
-    if (!data.ok) {
-      logger.error('Slack API error:', data.error)
-      return false
-    }
-
-    logger.info('Slack message sent successfully:', {
-      channel: channelId,
-      ts: data.ts
-    })
-
-    return true
-  } catch (error: any) {
-    logger.error('Failed to send Slack message:', {
-      error: error.message,
-      channelId
-    })
-    return false
-  }
-}
-
 import type { WorkflowFailurePayload } from './workflowFailurePayload'
 
 /**
  * Send workflow error to Slack with humanized blocks.
+ *
+ * Reads the bot token from `user_profiles.slack_notification_config`, which is
+ * populated by the dedicated notification OAuth flow at
+ * `/api/notifications/slack/callback`. This is a separate Slack connection
+ * from the workflow Slack integration in the `integrations` table.
  */
 export async function sendWorkflowErrorSlack(
   channelId: string,
@@ -94,21 +24,21 @@ export async function sendWorkflowErrorSlack(
 
   try {
     const supabase = await createSupabaseServerClient()
-    const { data: integration, error } = await supabase
-      .from('integrations')
-      .select('credentials')
-      .eq('user_id', userId)
-      .eq('provider', 'slack')
-      .eq('status', 'connected')
+    const { data: profile, error } = await supabase
+      .from('user_profiles')
+      .select('slack_notification_config')
+      .eq('id', userId)
       .single()
 
-    if (error || !integration) {
-      logger.error('Slack integration not found for user:', userId)
+    if (error || !profile?.slack_notification_config) {
+      logger.error('Slack notification config not found for user:', userId)
       return false
     }
-    const accessToken = (integration.credentials as any)?.access_token
+
+    const config = profile.slack_notification_config as { bot_token?: string }
+    const accessToken = config.bot_token
     if (!accessToken) {
-      logger.error('Slack access token not found')
+      logger.error('Slack bot token not found in notification config')
       return false
     }
 

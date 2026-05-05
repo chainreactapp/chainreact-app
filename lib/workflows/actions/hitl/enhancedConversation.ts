@@ -12,6 +12,7 @@ import type OpenAI from 'openai'
 import type { HITLConfig, ConversationMessage, ExtractedVariables } from './types'
 import { logger } from '@/lib/utils/logger'
 import { createSupabaseServerClient } from '@/utils/supabase/server'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 /**
  * Format email data in a user-friendly way (like in an inbox)
@@ -241,7 +242,7 @@ export async function getConnectedStorageIntegrations(userId: string): Promise<s
       .from('integrations')
       .select('provider')
       .eq('user_id', userId)
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .in('provider', ['google_drive', 'google_docs', 'onedrive', 'notion', 'dropbox'])
 
     if (error || !integrations) {
@@ -317,7 +318,7 @@ async function searchGoogleDrive(
       .select('*')
       .eq('user_id', userId)
       .eq('provider', 'google-drive')
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     if (error || !integration) {
@@ -376,7 +377,7 @@ async function searchGoogleDocs(
       .select('*')
       .eq('user_id', userId)
       .in('provider', ['google-drive', 'google-docs'])
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     if (error || !integration) {
@@ -433,7 +434,7 @@ async function searchOneDrive(
       .select('*')
       .eq('user_id', userId)
       .eq('provider', 'onedrive')
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     if (error || !integration) {
@@ -493,7 +494,7 @@ async function searchNotion(
       .select('*')
       .eq('user_id', userId)
       .eq('provider', 'notion')
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     if (error || !integration) {

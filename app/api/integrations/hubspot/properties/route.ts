@@ -6,6 +6,7 @@ import type { HubspotFieldDef, HubspotPropertiesResponse } from '@/lib/workflows
 import { hubspotPropertyToFieldDef } from '@/lib/workflows/nodes/providers/hubspot/types';
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 // Cache for property schemas (in-memory for now, could be moved to Redis)
 const propertyCache = new Map<string, { data: HubspotFieldDef[], timestamp: number }>();
@@ -36,7 +37,7 @@ export async function GET(request: NextRequest) {
       .select('*')
       .eq('user_id', user.id)
       .eq('provider', 'hubspot')
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single();
 
     if (integrationError || !integration) {

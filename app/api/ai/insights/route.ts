@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { logger } from "@/lib/utils/logger"
+import { isConnectedStatus } from "@/lib/integrations/connectionStatus"
 
 function getSupabaseAdmin() {
   return createClient(
@@ -76,7 +77,7 @@ export async function GET(request: NextRequest) {
     const insights: Array<{ type: string; icon: string; text: string; priority: "info" | "warning" | "success" }> = []
 
     // Integration health
-    const connected = integrations.filter(i => i.status === "connected")
+    const connected = integrations.filter(i => isConnectedStatus(i.status))
     const expiring = integrations.filter(i => {
       if (!i.expires_at) return false
       const expiresIn = new Date(i.expires_at).getTime() - Date.now()

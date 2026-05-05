@@ -19,6 +19,13 @@ export interface UserSession {
  * SessionManager handles user authentication and session management
  * Extracted from integrationStore.ts for better separation of concerns
  */
+// Shorter than the previous 8s — getSession() is the cached/fast path. If it
+// hasn't returned in 3s it's almost certainly deadlocked on @supabase/ssr's
+// internal navigator lock; we'd rather fail fast and try refreshSession()
+// (separate code path) than keep the user staring at a frozen button.
+const GET_SESSION_TIMEOUT_MS = 3000
+const REFRESH_SESSION_TIMEOUT_MS = 8000
+
 export class SessionManager {
   private static async withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
     let timeoutId: ReturnType<typeof setTimeout> | undefined
@@ -47,14 +54,32 @@ export class SessionManager {
       throw new Error("Supabase client not available")
     }
 
-    // First try to get the session (this is faster and more reliable)
-    const { data: { session }, error: sessionError } = await SessionManager.withTimeout(
-      supabase.auth.getSession(),
-      8000,
-      "Supabase getSession"
-    )
+    // First try to get the session (cached path). Catch the timeout
+    // so we can fall through to refreshSession() — which uses a different
+    // code path inside the supabase client and won't be wedged on the same
+    // lock contention that hangs getSession().
+    let session: any = null
+    let sessionError: any = null
+    try {
+      const result = await SessionManager.withTimeout(
+        supabase.auth.getSession(),
+        GET_SESSION_TIMEOUT_MS,
+        "Supabase getSession"
+      )
+      session = result.data?.session
+      sessionError = result.error
+    } catch (timeoutErr: any) {
+      // PR-AUTH-7: structured tag so the rollout dashboard can scrape this
+      // event distinctly from generic warnings.
+      logger.warn("getSession timed out, falling through to refreshSession", {
+        event: "auth.getSession_timeout_fallback",
+        error: timeoutErr?.message,
+        timeoutMs: GET_SESSION_TIMEOUT_MS,
+      })
+      // Leave session null so the refresh branch runs below.
+    }
 
-    // If we have a valid session with access token, get the user
+    // If we have a valid session with access token, return it.
     if (session?.access_token && session?.user) {
       return {
         user: session.user,
@@ -62,11 +87,19 @@ export class SessionManager {
       }
     }
 
-    // If no session or it's incomplete, try to refresh
-    logger.info("No valid session found, attempting refresh...")
+    if (sessionError) {
+      logger.info("getSession returned error, attempting refresh", {
+        error: sessionError?.message,
+      })
+    } else if (session) {
+      logger.info("Session present but incomplete, attempting refresh")
+    } else {
+      logger.info("No valid session found, attempting refresh...")
+    }
+
     const { data: { session: refreshedSession }, error: refreshError } = await SessionManager.withTimeout(
       supabase.auth.refreshSession(),
-      8000,
+      REFRESH_SESSION_TIMEOUT_MS,
       "Supabase refreshSession"
     )
 

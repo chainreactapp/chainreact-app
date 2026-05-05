@@ -171,16 +171,18 @@ export function FileUpload({
 
               // Try to fetch the preview URL from Supabase storage - await it to ensure it completes
               try {
-                // Get auth token
-                const { supabase } = await import('@/utils/supabaseClient');
-                const { data: { session } } = await supabase.auth.getSession();
+                // PR-AUTH-5: cached auth header. Missing token → server 401
+                // → preview unavailable; existing fall-through behavior
+                // (file shows without preview thumbnail) is preserved.
+                const { getAuthHeader } = await import('@/lib/auth/getAuthHeader');
+                const authHeader = await getAuthHeader();
 
-                if (session?.access_token) {
+                if (authHeader.Authorization) {
                   const response = await fetch('/api/storage/sign-url', {
                     method: 'POST',
                     headers: {
                       'Content-Type': 'application/json',
-                      'Authorization': `Bearer ${session.access_token}`
+                      ...authHeader,
                     },
                     body: JSON.stringify({
                       bucket: 'workflow-files',

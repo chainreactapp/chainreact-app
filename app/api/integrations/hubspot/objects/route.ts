@@ -5,6 +5,7 @@ import { decrypt } from '@/lib/security/encryption';
 
 import { logger } from '@/lib/utils/logger'
 import type { HubspotObjectType, HubspotObjectsResponse } from '@/lib/workflows/nodes/providers/hubspot/types';
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 // Standard HubSpot CRM objects
 const STANDARD_OBJECTS: HubspotObjectType[] = [
@@ -38,7 +39,7 @@ export async function GET(request: NextRequest) {
       .select('*')
       .eq('user_id', user.id)
       .eq('provider', 'hubspot')
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single();
 
     if (integrationError || !integration) {

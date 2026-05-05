@@ -5,6 +5,7 @@
 
 import { ActionResult } from '../core/executeWait'
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 export async function addSlackReaction(params: {
   config: any
@@ -63,7 +64,7 @@ export async function addSlackReaction(params: {
       .select('access_token')
       .eq('user_id', userId)
       .eq('provider', 'slack')
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     if (integrationError || !integration) {

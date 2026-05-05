@@ -3,6 +3,7 @@ import { safeDecrypt } from '@/lib/security/encryption'
 import { executeWebhookWorkflow } from '@/lib/webhooks/execute'
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 // Helper to create supabase client inside handlers
 const getSupabase = () => createClient(
@@ -416,7 +417,7 @@ async function buildDropboxTriggerPayload(
     .select('id, access_token, provider, status, metadata')
     .eq('user_id', workflow.user_id)
     .eq('provider', 'dropbox')
-    .eq('status', 'connected')
+    .in('status', CONNECTED_STATUSES_LIST)
     .maybeSingle()
 
   if (integrationError || !integration) {

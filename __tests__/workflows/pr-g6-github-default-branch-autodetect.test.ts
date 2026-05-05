@@ -25,12 +25,14 @@ beforeEach(() => {
   const supabaseServer = jest.requireMock('@/utils/supabase/server') as {
     createSupabaseServerClient: jest.Mock
   }
+  // Handler chain after the connected-status sweep:
+  //   from → select → eq(user_id) → eq(provider) → in(status, CONNECTED_STATUSES_LIST) → single
   supabaseServer.createSupabaseServerClient.mockResolvedValue({
     from: () => ({
       select: () => ({
         eq: () => ({
           eq: () => ({
-            eq: () => ({
+            in: () => ({
               single: () =>
                 Promise.resolve({
                   data: {

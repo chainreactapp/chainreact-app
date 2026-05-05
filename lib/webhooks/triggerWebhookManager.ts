@@ -34,6 +34,7 @@ import { safeDecrypt } from '@/lib/security/encryption'
 import { flagIntegrationWorkflows, clearIntegrationWorkflowFlags } from '@/lib/integrations/integrationWorkflowManager'
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 interface WebhookTriggerConfig {
   workflowId: string
@@ -621,7 +622,7 @@ export class TriggerWebhookManager {
         .select('*')
         .eq('user_id', config.userId)
         .eq('provider', 'gmail')
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .single()
 
       if (!integration) {
@@ -685,7 +686,7 @@ export class TriggerWebhookManager {
         .select('*')
         .eq('user_id', config.userId)
         .eq('provider', 'google-calendar')
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .single()
 
       if (!integration) {
@@ -753,7 +754,7 @@ export class TriggerWebhookManager {
         .select('*')
         .eq('user_id', config.userId)
         .eq('provider', 'google-drive')
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .single()
 
       if (!integration) {
@@ -806,7 +807,7 @@ export class TriggerWebhookManager {
         .select('*')
         .eq('user_id', config.userId)
         .in('provider', ['google-sheets', 'google_sheets'])
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .maybeSingle()
 
       if (!integration) {
@@ -1075,7 +1076,7 @@ export class TriggerWebhookManager {
         .select('*')
         .eq('user_id', config.userId)
         .eq('provider', 'github')
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .single()
 
       if (!integration) {
@@ -1184,7 +1185,7 @@ export class TriggerWebhookManager {
         .select('*')
         .eq('user_id', config.userId)
         .eq('provider', 'microsoft-teams')
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .single()
 
       if (!integration) {
@@ -1276,7 +1277,7 @@ export class TriggerWebhookManager {
         .select('*')
         .eq('user_id', config.userId)
         .eq('provider', 'microsoft-onenote')
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .single()
 
       if (!integration) {
@@ -1369,7 +1370,7 @@ export class TriggerWebhookManager {
         .select('*')
         .eq('user_id', config.userId)
         .eq('provider', 'onedrive')
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .single()
 
       if (!integration) {
@@ -1456,7 +1457,7 @@ export class TriggerWebhookManager {
         .select('*')
         .eq('user_id', config.userId)
         .eq('provider', 'microsoft-outlook')
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .single()
 
       if (!integration) {
@@ -1561,7 +1562,7 @@ export class TriggerWebhookManager {
         .select('*')
         .eq('user_id', config.userId)
         .eq('provider', 'airtable')
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .single()
 
       if (!integration) {
@@ -1636,7 +1637,7 @@ export class TriggerWebhookManager {
         .select('*')
         .eq('user_id', config.userId)
         .eq('provider', 'dropbox')
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .maybeSingle()
 
       if (!integration) {
@@ -1814,7 +1815,7 @@ export class TriggerWebhookManager {
         .select('*')
         .eq('user_id', config.userId)
         .eq('provider', 'trello')
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .maybeSingle()
 
       if (!integration) {
@@ -2092,7 +2093,7 @@ export class TriggerWebhookManager {
         .select('*')
         .eq('user_id', webhookConfig.user_id)
         .eq('provider', 'trello')
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .maybeSingle()
 
       if (!integration) {
@@ -2202,7 +2203,7 @@ export class TriggerWebhookManager {
           .select('id')
           .eq('user_id', webhookConfig.user_id)
           .eq('provider', 'gmail')
-          .eq('status', 'connected')
+          .in('status', CONNECTED_STATUSES_LIST)
           .maybeSingle()
 
         if (integration) {
@@ -2254,7 +2255,7 @@ export class TriggerWebhookManager {
           .select('id')
           .eq('user_id', webhookConfig.user_id)
           .eq('provider', 'google-calendar')
-          .eq('status', 'connected')
+          .in('status', CONNECTED_STATUSES_LIST)
           .maybeSingle()
 
         if (integration) {
@@ -2306,7 +2307,7 @@ export class TriggerWebhookManager {
           .select('id')
           .eq('user_id', webhookConfig.user_id)
           .eq('provider', 'google-drive')
-          .eq('status', 'connected')
+          .in('status', CONNECTED_STATUSES_LIST)
           .maybeSingle()
 
         if (integration) {
@@ -2496,7 +2497,7 @@ export class TriggerWebhookManager {
         .select('*')
         .eq('user_id', webhookConfig.user_id)
         .eq('provider', 'onedrive')
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .maybeSingle()
 
       if (!integration) {
@@ -2539,7 +2540,7 @@ export class TriggerWebhookManager {
         .select('access_token')
         .eq('user_id', webhookConfig.user_id)
         .eq('provider', 'microsoft-outlook')
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .single()
 
       const accessToken = integration?.data?.access_token
@@ -2595,7 +2596,7 @@ export class TriggerWebhookManager {
         .select('access_token')
         .eq('user_id', webhookConfig.user_id)
         .eq('provider', 'github')
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .maybeSingle()
 
       if (!integration) {
@@ -2650,7 +2651,7 @@ export class TriggerWebhookManager {
         .select('access_token')
         .eq('user_id', webhookConfig.user_id)
         .eq('provider', 'microsoft-teams')
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .single()
 
       const accessToken = integration?.data?.access_token
@@ -2686,7 +2687,7 @@ export class TriggerWebhookManager {
         .select('access_token')
         .eq('user_id', webhookConfig.user_id)
         .eq('provider', 'microsoft-onenote')
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .single()
 
       const accessToken = integration?.data?.access_token

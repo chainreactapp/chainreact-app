@@ -6,7 +6,7 @@ import { Switch } from "@/components/ui/switch"
 import { Slider } from "@/components/ui/slider"
 import { Loader2, AlertTriangle, Zap } from "lucide-react"
 import { fetchWithTimeout } from "@/lib/utils/fetch-with-timeout"
-import { createClient } from "@/utils/supabase/client"
+import { getAuthHeader } from "@/lib/auth/getAuthHeader"
 import { logger } from "@/lib/utils/logger"
 
 interface OverageState {
@@ -20,15 +20,9 @@ interface OverageState {
   tasksLimit: number
 }
 
-async function getAuthToken(): Promise<string | null> {
-  try {
-    const supabase = createClient()
-    const { data: { session } } = await supabase.auth.getSession()
-    return session?.access_token ?? null
-  } catch {
-    return null
-  }
-}
+// PR-AUTH-5: getAuthToken() helper removed; use getAuthHeader() from
+// @/lib/auth/getAuthHeader directly. Missing token resolves to {} so the
+// API returns a normal 401 surfaced through the existing error branch.
 
 export function OverageToggle() {
   const [state, setState] = useState<OverageState | null>(null)
@@ -38,17 +32,11 @@ export function OverageToggle() {
 
   const fetchState = useCallback(async () => {
     try {
-      const token = await getAuthToken()
-      if (!token) {
-        setError("Not signed in")
-        setLoading(false)
-        return
-      }
       const response = await fetchWithTimeout(
         "/api/billing/overage",
         {
           method: "GET",
-          headers: { Authorization: `Bearer ${token}` },
+          headers: { ...(await getAuthHeader()) },
         },
         10000
       )
@@ -76,15 +64,13 @@ export function OverageToggle() {
       setSaving(true)
       setError(null)
       try {
-        const token = await getAuthToken()
-        if (!token) throw new Error("Not signed in")
         const response = await fetchWithTimeout(
           "/api/billing/overage",
           {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              Authorization: `Bearer ${token}`,
+              ...(await getAuthHeader()),
             },
             body: JSON.stringify(next),
           },

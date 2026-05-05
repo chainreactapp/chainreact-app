@@ -5,7 +5,10 @@ import "./globals.css"
 import { Geist, Geist_Mono } from "next/font/google"
 import localFont from "next/font/local"
 import { ThemeProvider } from "@/components/theme-provider"
-import SupabaseProvider from "@/components/providers/SupabaseProvider"
+// PR-AUTH-6: SupabaseProvider removed — it constructed a second non-singleton
+// browser client and exposed an unused SupabaseContext (zero consumers in the
+// app). Auth state lives in the Zustand authStore + the singleton supabase
+// client at @/utils/supabase/client.
 import AuthInitializer from "@/components/auth/AuthInitializer"
 import AuthErrorBoundary from "@/components/auth/AuthErrorBoundary"
 import { LightweightPresenceProvider } from "@/components/providers/LightweightPresenceProvider"
@@ -154,26 +157,24 @@ export default function RootLayout({
       </head>
       <body className={`${geistSans.variable} ${geistMono.variable} ${spaceGrotesk.variable} font-sans`} suppressHydrationWarning>
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
-          <SupabaseProvider>
-            <AuthErrorBoundary>
-              <GlobalErrorHandler />
-              <AuthInitializer />
-              <WebVitalsReporter />
-              <AppContextProvider>
-                <LoadingDetector />
-                <ChunkErrorHandler />
-                <VersionChecker />
-                <IconPrefetcher />
-                <LightweightPresenceProvider>
-                  <Toaster />
-                  <SonnerToaster position="top-right" />
-                  <GlobalAdminDebugPanel />
-                  <OnboardingTour />
-                  {children}
-                </LightweightPresenceProvider>
-              </AppContextProvider>
-            </AuthErrorBoundary>
-          </SupabaseProvider>
+          <AuthErrorBoundary>
+            <GlobalErrorHandler />
+            <AuthInitializer />
+            <WebVitalsReporter />
+            <AppContextProvider>
+              <LoadingDetector />
+              <ChunkErrorHandler />
+              <VersionChecker />
+              <IconPrefetcher />
+              <LightweightPresenceProvider>
+                <Toaster />
+                <SonnerToaster position="top-right" />
+                <GlobalAdminDebugPanel />
+                <OnboardingTour />
+                {children}
+              </LightweightPresenceProvider>
+            </AppContextProvider>
+          </AuthErrorBoundary>
         </ThemeProvider>
       </body>
     </html>

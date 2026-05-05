@@ -7,6 +7,7 @@ import { createSupabaseServerClient } from '@/utils/supabase/server'
 import { decrypt } from '@/lib/security/encryption'
 import { logger } from '@/lib/utils/logger'
 import { fetchWithTimeout } from '@/lib/utils/fetch-with-timeout'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 const FETCH_TIMEOUT = 15000 // 15 seconds
 
@@ -47,7 +48,7 @@ async function getProviderCredentials(
       .select('access_token, refresh_token, expires_at')
       .eq('user_id', userId)
       .in('provider', providerIds)
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     if (error || !integration) {

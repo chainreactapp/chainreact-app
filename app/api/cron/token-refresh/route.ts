@@ -393,7 +393,7 @@ export async function GET(request: NextRequest) {
           const { error: updateError } = await supabase
             .from("integrations")
             .update({
-              consecutive_failures: supabase.rpc("increment", { row_id: integration.id, field: "consecutive_failures" }),
+              consecutive_failures: (integration.consecutive_failures || 0) + 1,
               disconnect_reason: `Unexpected error: ${error.message}`,
               last_failure_at: now.toISOString(),
               // Only update status if we've hit too many consecutive failures
@@ -464,20 +464,6 @@ export async function GET(request: NextRequest) {
         .forEach(([reason, count]) => {
           logger.info(`      ${count}x ${reason}`)
         })
-    }
-    
-    // Fix any integrations that have successful refreshes but incorrect statuses
-    try {
-      const { data: statusFixResult } = await supabase.rpc('fix_integration_statuses', {
-        threshold_minutes: 60 // Consider refreshes in the last hour
-      })
-      
-      const fixedCount = statusFixResult?.count || 0;
-      if (fixedCount > 0) {
-        logger.info(`Fixed statuses for ${fixedCount} integrations with recent successful refreshes`)
-      }
-    } catch (error) {
-      logger.error(`Could not run status fix procedure:`, error)
     }
 
     return jsonResponse({

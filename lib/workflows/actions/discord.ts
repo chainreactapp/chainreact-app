@@ -4,6 +4,7 @@ import { resolveValue } from './core/resolveValue'
 import { updateDiscordPresenceForAction } from '@/lib/integrations/discordGateway'
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 const DISCORD_MAX_RETRIES = 3
 const DISCORD_MIN_RETRY_DELAY_MS = 1000
@@ -170,7 +171,7 @@ export async function sendDiscordMessage(
       .select("*")
       .eq("user_id", userId)
       .eq("provider", "discord")
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
 
     logger.info(`🔍 [DISCORD DEBUG] Integration query result:`)
@@ -360,7 +361,7 @@ export async function createDiscordCategory(
       .select("*")
       .eq("user_id", userId)
       .eq("provider", "discord")
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration) {
@@ -499,7 +500,7 @@ export async function deleteDiscordCategory(
       .select("*")
       .eq("user_id", userId)
       .eq("provider", "discord")
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration) {
@@ -646,7 +647,7 @@ export async function createDiscordChannel(
       .select("*")
       .eq("user_id", userId)
       .eq("provider", "discord")
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration) {
@@ -804,7 +805,7 @@ export async function addDiscordRole(
       .select("*")
       .eq("user_id", userId)
       .eq("provider", "discord")
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration) {
@@ -909,7 +910,7 @@ export async function editDiscordMessage(config: any, userId: string, input: Rec
       .select("*")
       .eq("user_id", userId)
       .eq("provider", "discord")
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration) {
@@ -1244,7 +1245,7 @@ export async function fetchDiscordMessages(config: any, userId: string, input: R
       .select("*")
       .eq("user_id", userId)
       .eq("provider", "discord")
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration) {

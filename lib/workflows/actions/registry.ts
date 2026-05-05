@@ -78,6 +78,7 @@ import { copyGoogleDriveFile } from './googleDrive/copyFile'
 import { moveGoogleDriveFile } from './googleDrive/moveFile'
 import { deleteGoogleDriveFile } from './googleDrive/deleteFile'
 import { createGoogleDriveFolder } from './googleDrive/createFolder'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 import { searchGoogleDriveFiles } from './googleDrive/searchFiles'
 import { listGoogleDriveFiles } from './googleDrive/listFiles'
 import { getGoogleDriveFileMetadata } from './googleDrive/getFileMetadata'
@@ -590,7 +591,7 @@ function createExecutionContextWrapper(handler: Function) {
           .select('*')
           .eq('user_id', params.userId)
           .eq('provider', provider)
-          .eq('status', 'connected')
+          .in('status', CONNECTED_STATUSES_LIST)
           .single()
 
         if (error || !data) return null

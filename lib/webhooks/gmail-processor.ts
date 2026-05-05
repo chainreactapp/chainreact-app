@@ -6,6 +6,7 @@ import { logInfo, logError, logSuccess, logWarning } from '@/lib/logging/backend
 import { getAnthropicClient } from '@/lib/ai/anthropic-client'
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 interface GmailNotification {
   emailAddress: string
@@ -65,16 +66,19 @@ function wasRecentlyProcessedGmail(workflowId: string, dedupeId: string): boolea
 
 function markGmailEventProcessed(workflowId: string, dedupeId: string) {
   const key = buildGmailDedupeKey(workflowId, dedupeId)
-  processedGmailEvents.set(key, Date.now())
+  const now = Date.now()
 
-  if (processedGmailEvents.size > 1000) {
-    const now = Date.now()
-    for (const [k, timestamp] of processedGmailEvents.entries()) {
-      if (now - timestamp > GMAIL_DEDUPE_WINDOW_MS) {
-        processedGmailEvents.delete(k)
-      }
+  // Evict TTL-expired entries on every insert. The previous
+  // size>1000 gate let stale entries linger past the 5-min window
+  // under sustained burst load (>1000 events / 5 min) until the
+  // map happened to cross 1000.
+  for (const [k, timestamp] of processedGmailEvents) {
+    if (now - timestamp > GMAIL_DEDUPE_WINDOW_MS) {
+      processedGmailEvents.delete(k)
     }
   }
+
+  processedGmailEvents.set(key, now)
 }
 
 function normalizeEmailString(value: string) {
@@ -1245,7 +1249,7 @@ async function triggerMatchingGmailWorkflows(event: GmailWebhookEvent): Promise<
               .select('*')
               .eq('user_id', userId)
               .eq('provider', 'gmail')
-              .eq('status', 'connected')
+              .in('status', CONNECTED_STATUSES_LIST)
               .single()
 
             if (integration) {

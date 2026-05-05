@@ -80,7 +80,7 @@ export default async function FlowBuilderV2Page({ params }: BuilderPageProps) {
   return (
     <TooltipProvider>
       <ReactFlowProvider>
-        <WorkflowBuilderV2 flowId={flowId} initialRevision={revision} initialStatus={flowRow.status} />
+        <WorkflowBuilderV2 flowId={flowId} initialRevision={revision} initialStatus={flowRow.status as 'draft' | 'active' | 'inactive' | undefined} />
       </ReactFlowProvider>
     </TooltipProvider>
   )

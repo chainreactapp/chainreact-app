@@ -3,6 +3,7 @@ import { createSupabaseServerClient } from '@/utils/supabase/server'
 import { logger } from '@/lib/utils/logger'
 import { decrypt } from '@/lib/security/encryption'
 import { fetchWithTimeout } from '@/lib/utils/fetch-with-timeout'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 /**
  * Get ManyChat flows
@@ -34,7 +35,7 @@ export async function GET(request: NextRequest) {
       .eq('id', integrationId)
       .eq('user_id', user.id)
       .eq('provider', 'manychat')
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     if (integrationError || !integration) {

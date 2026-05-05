@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, RefreshCw } from "lucide-react"
 import { fetchWithTimeout } from "@/lib/utils/fetch-with-timeout"
-import { createClient } from "@/utils/supabase/client"
+import { getAuthHeader } from "@/lib/auth/getAuthHeader"
 import { logger } from "@/lib/utils/logger"
 
 interface BillingRow {
@@ -28,15 +28,8 @@ interface BillingRow {
   billing_period_end: string | null
 }
 
-async function getAuthToken(): Promise<string | null> {
-  try {
-    const supabase = createClient()
-    const { data: { session } } = await supabase.auth.getSession()
-    return session?.access_token ?? null
-  } catch {
-    return null
-  }
-}
+// PR-AUTH-7: getAuthToken removed; use getAuthHeader() directly. Missing
+// token resolves to {} so the API returns a normal 401.
 
 export default function AdminBillingPage() {
   const { profile } = useAuthStore()
@@ -51,15 +44,12 @@ export default function AdminBillingPage() {
     setRefreshing(true)
     setError(null)
     try {
-      const token = await getAuthToken()
-      if (!token) throw new Error("Not signed in")
-
       const params = new URLSearchParams()
       if (q) params.set("q", q)
 
       const response = await fetchWithTimeout(
         `/api/admin/billing/users?${params.toString()}`,
-        { method: "GET", headers: { Authorization: `Bearer ${token}` } },
+        { method: "GET", headers: { ...(await getAuthHeader()) } },
         15000
       )
       if (!response.ok) {

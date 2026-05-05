@@ -1166,9 +1166,9 @@ export const useWorkflowStore = create<WorkflowState & WorkflowActions>((set, ge
       const workflow = get().workflows.find((w) => w.id === workflowId)
       if (!workflow) throw new Error("Workflow not found")
 
-      const {
-        data: { user },
-      } = await supabase.auth.getUser()
+      // PR-AUTH-5: cached user id.
+      const { useAuthStore } = await import('./authStore')
+      const user = useAuthStore.getState().user
       if (!user) throw new Error("User not authenticated")
 
       const { error } = await supabase.from("templates").insert({

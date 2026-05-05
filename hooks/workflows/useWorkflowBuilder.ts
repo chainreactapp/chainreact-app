@@ -2024,7 +2024,7 @@ export function useWorkflowBuilder() {
           user_id: templateRecord.created_by || templateRecord.user_id || templateRecord.author_id || "",
           nodes: sanitizedNodes,
           connections: rawConnections,
-          status: 'template_draft',
+          status: 'template_draft' as Workflow['status'],
           created_at: templateRecord.created_at || new Date().toISOString(),
           updated_at: templateRecord.updated_at || new Date().toISOString(),
         }

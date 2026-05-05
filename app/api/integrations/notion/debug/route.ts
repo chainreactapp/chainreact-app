@@ -4,6 +4,7 @@ import { createSupabaseRouteHandlerClient } from "@/utils/supabase/server"
 import { cookies } from "next/headers"
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 export async function GET(request: NextRequest) {
   try {
@@ -26,7 +27,7 @@ export async function GET(request: NextRequest) {
       .select("*")
       .eq("user_id", user.id)
       .eq("provider", "notion")
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
 
     if (integrationsError) {
       return errorResponse(integrationsError.message , 500)

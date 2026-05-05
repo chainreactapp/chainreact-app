@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { useAuthStore } from '@/stores/authStore'
-import { createClient } from '@/utils/supabaseClient'
+import { getAuthHeader } from '@/lib/auth/getAuthHeader'
 import { Loader2, AlertCircle, CheckCircle2, XCircle } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 
@@ -56,18 +56,9 @@ export default function StripeAccountDebugPage() {
         setLoading(true)
         setError(null)
 
-        const supabase = createClient()
-        const { data: { session } } = await supabase.auth.getSession()
-
-        if (!session) {
-          setError('Not authenticated')
-          return
-        }
-
+        // PR-AUTH-7: cached auth header. Missing token → 401 surfaces below.
         const response = await fetch('/api/debug/stripe-account', {
-          headers: {
-            'Authorization': `Bearer ${session.access_token}`
-          }
+          headers: { ...(await getAuthHeader()) }
         })
 
         if (!response.ok) {

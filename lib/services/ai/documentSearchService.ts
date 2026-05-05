@@ -7,6 +7,7 @@ import { AI_MODELS } from "@/lib/ai/models"
 import { runWorkflowAction } from "./utils/runWorkflowAction"
 
 import { logger } from '@/lib/utils/logger'
+import { isConnectedStatus } from "@/lib/integrations/connectionStatus"
 
 interface SearchResult {
   title: string
@@ -102,7 +103,7 @@ export class DocumentSearchService {
     integrations: Integration[],
     userId: string
   ): Promise<SearchResult[]> {
-    const connected = integrations.filter(i => i.status === "connected")
+    const connected = integrations.filter(i => isConnectedStatus(i.status))
     const providerSet = new Set(connected.map(i => i.provider))
 
     const searches: Promise<SearchResult[]>[] = []

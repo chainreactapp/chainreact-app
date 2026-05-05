@@ -819,8 +819,9 @@ export function useWorkflowExecution() {
     }
 
     try {
-      // Get current user ID for cleanup purposes
-      const { data: { user } } = await supabase.auth.getUser()
+      // PR-AUTH-5: cached user id.
+      const { useAuthStore } = await import('@/stores/authStore')
+      const user = useAuthStore.getState().user
       if (!user) {
         toast({
           title: "Error",

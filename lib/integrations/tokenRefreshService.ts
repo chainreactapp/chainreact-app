@@ -12,6 +12,7 @@ import { getBaseUrl } from "@/lib/utils/getBaseUrl"
 import { decrypt, encrypt } from "@/lib/security/encryption"
 import { getSecret } from "@/lib/secrets"
 import { classifyOAuthError, type ClassifiedError } from "./errorClassificationService"
+import { CONNECTED_STATUSES_LIST } from "./connectionStatus"
 import { createAdminClient } from "@/lib/supabase/admin"
 
 import { logger } from '@/lib/utils/logger'
@@ -550,7 +551,7 @@ export async function refresh(
       .select("*")
       .eq("user_id", userId)
       .eq("provider", provider)
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
 
     if (error || !data) {

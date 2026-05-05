@@ -1334,7 +1334,9 @@ export function WorkflowsContentInner() {
   const shortcuts = getWorkflowShortcuts({
     onNew: () => {
       if (!isCreatingWorkflow) {
-        createAndOpen()
+        // Toast surfaces user-facing errors; swallow the rejection so it
+        // doesn't escape as an unhandled promise rejection.
+        createAndOpen().catch(() => {})
       }
     },
     onDuplicate: () => {
@@ -1522,7 +1524,7 @@ export function WorkflowsContentInner() {
                 disabled={activeTab === 'workflows' && isCreatingWorkflow}
                 onClick={() => {
                   if (activeTab === 'workflows') {
-                    initiateWorkflowCreation(() => createAndOpen())
+                    initiateWorkflowCreation(() => createAndOpen().catch(() => {}))
                   } else {
                     setCreateFolderDialog(true)
                   }
@@ -2763,7 +2765,7 @@ export function WorkflowsContentInner() {
                     <Button
                       className="mt-6 bg-gradient-to-r from-orange-500 to-rose-500 hover:from-orange-600 hover:to-rose-600 text-white shadow-lg shadow-orange-500/20 border-0"
                       disabled={isCreatingWorkflow}
-                      onClick={() => initiateWorkflowCreation(() => createAndOpen())}
+                      onClick={() => initiateWorkflowCreation(() => createAndOpen().catch(() => {}))}
                     >
                       <Plus className="w-4 h-4 mr-2" />
                       {isCreatingWorkflow ? 'Creating...' : 'Create Workflow'}

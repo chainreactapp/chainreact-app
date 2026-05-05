@@ -3,6 +3,7 @@ import { createSupabaseRouteHandlerClient } from "@/utils/supabase/server"
 import { jsonResponse, errorResponse } from "@/lib/utils/api-response"
 import { subDays, startOfDay, format, eachDayOfInterval } from "date-fns"
 import { logger } from "@/lib/utils/logger"
+import { isConnectedStatus } from "@/lib/integrations/connectionStatus"
 
 export const dynamic = "force-dynamic"
 
@@ -379,7 +380,7 @@ function calculateIntegrationStats(integrations: any[]): IntegrationStats {
   )
 
   const total = externalIntegrations.length
-  const connected = externalIntegrations.filter((i) => i.status === "connected").length
+  const connected = externalIntegrations.filter((i) => isConnectedStatus(i.status)).length
   const disconnected = externalIntegrations.filter((i) => i.status === "disconnected").length
 
   // Check for expiring/expired tokens

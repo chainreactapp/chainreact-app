@@ -25,6 +25,7 @@ import {
   type Integration as HealthIntegration,
 } from '@/lib/integrations/healthTransitionEngine'
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 300
@@ -75,7 +76,7 @@ export async function GET(request: NextRequest) {
     const { data: integrations, error: fetchError } = await supabase
       .from('integrations')
       .select('id, provider, user_id, access_token, status, health_check_status, last_notification_milestone, requires_user_action, user_action_type, user_action_deadline')
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .not('access_token', 'is', null)
       .or(`next_health_check_at.is.null,next_health_check_at.lte.${now.toISOString()}`)
       .limit(50)
@@ -120,10 +121,10 @@ export async function GET(request: NextRequest) {
         // Build health integration for transition engine
         const healthIntegration: HealthIntegration = {
           id: integration.id,
-          user_id: integration.user_id,
+          user_id: integration.user_id!,
           provider: integration.provider,
-          health_check_status: integration.health_check_status ?? null,
-          last_notification_milestone: integration.last_notification_milestone ?? null,
+          health_check_status: integration.health_check_status as HealthIntegration['health_check_status'],
+          last_notification_milestone: integration.last_notification_milestone as HealthIntegration['last_notification_milestone'],
           requires_user_action: integration.requires_user_action ?? false,
           user_action_type: integration.user_action_type ?? null,
           user_action_deadline: integration.user_action_deadline ?? null,

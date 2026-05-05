@@ -9,28 +9,19 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { useIntegrationStore } from "@/stores/integrationStore"
+import { useIntegrationStore, isConnectedStatus } from "@/stores/integrationStore"
 import { AlertTriangle, CheckCircle2, ExternalLink, Loader2, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { getProviderDisplayName, getProviderIcon } from "@/lib/workflows/ai-agent/providerDisambiguation"
+import { getProviderIcon } from "@/lib/workflows/ai-agent/providerDisambiguation"
+import {
+  getDisconnectedIntegrations as getDisconnectedIntegrationsImpl,
+  type DisconnectedIntegration,
+} from "./disconnectedIntegrations"
 
-// Built-in providers that don't need OAuth connection. Sourced from a
-// grep of `providerId:` across lib/workflows/nodes/providers/ — only the
-// IDs that actually appear in node schemas are listed.
-const CONNECTION_EXEMPT_PROVIDERS = [
-  'ai',          // AI Agent / AI Router (platform-managed keys)
-  'ask-human',   // HITL Conversation
-  'automation',  // Manual Trigger, Wait-for-Event
-  'logic',       // if/router/loop/delay/http_request
-  'utility',     // built-in utility nodes
-  'webhook',     // built-in webhook trigger (HMAC-secured, no OAuth)
-]
-
-interface DisconnectedIntegration {
-  providerId: string
-  displayName: string
-  nodeCount: number
-}
+// Re-exported so existing imports in WorkflowBuilderV2.tsx continue to
+// work. The implementation lives in `./disconnectedIntegrations.ts` so
+// it can be unit-tested without React/JSX in the transform path.
+export const getDisconnectedIntegrations = getDisconnectedIntegrationsImpl
 
 interface DisconnectedIntegrationsDialogProps {
   open: boolean
@@ -49,10 +40,14 @@ export function DisconnectedIntegrationsDialog({
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
 
-  // Check which integrations are now connected
+  // Check which integrations are now connected. Uses the shared
+  // `isConnectedStatus` helper so we accept the same set of values
+  // (connected | authorized | active | valid | ok | ready) that the
+  // integration store treats as connected. Narrowing this list here
+  // re-introduces the false-disconnect bug fixed on 2026-05-05.
   const getConnectionStatus = (providerId: string) => {
     const integration = integrations.find(i => i.provider === providerId)
-    return integration?.status === 'connected' || integration?.status === 'authorized'
+    return isConnectedStatus(integration?.status)
   }
 
   // Count how many are still disconnected
@@ -237,37 +232,3 @@ export function DisconnectedIntegrationsDialog({
   )
 }
 
-// Helper function to get disconnected integrations for a workflow
-export function getDisconnectedIntegrations(
-  nodes: any[],
-  integrations: any[]
-): DisconnectedIntegration[] {
-  // Group nodes by provider
-  const providerCounts = new Map<string, number>()
-
-  for (const node of nodes) {
-    const providerId = node.data?.providerId
-    if (!providerId) continue
-    if (CONNECTION_EXEMPT_PROVIDERS.includes(providerId)) continue
-
-    providerCounts.set(providerId, (providerCounts.get(providerId) || 0) + 1)
-  }
-
-  // Check which are not connected
-  const disconnected: DisconnectedIntegration[] = []
-
-  for (const [providerId, count] of providerCounts) {
-    const integration = integrations.find(i => i.provider === providerId)
-    const isConnected = integration?.status === 'connected' || integration?.status === 'authorized'
-
-    if (!isConnected) {
-      disconnected.push({
-        providerId,
-        displayName: getProviderDisplayName(providerId),
-        nodeCount: count,
-      })
-    }
-  }
-
-  return disconnected
-}

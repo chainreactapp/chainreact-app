@@ -9,6 +9,13 @@ import { safeLocalStorageSet } from '@/lib/utils/storage-cleanup'
  * Uses the normalized workflow_nodes table as single source of truth
  */
 
+// PR-AUTH-7: cached user lookup. Lazy-imports authStore so this module
+// stays tree-shakeable from non-React contexts.
+async function getCachedUser(): Promise<{ id: string } | null> {
+  const { useAuthStore } = await import("@/stores/authStore")
+  return useAuthStore.getState().user ?? null
+}
+
 /**
  * Save node configuration to the workflow_nodes table
  * @param workflowId The ID of the workflow
@@ -32,9 +39,10 @@ export const saveNodeConfig = async (
     const supabase = createClient()
 
     // Get the current user
-    const { data: { user }, error: userError } = await supabase.auth.getUser()
+    // PR-AUTH-7: cached user from auth store.
+    const user = await getCachedUser()
 
-    if (userError || !user) {
+    if (!user) {
       logger.error(`❌ [ConfigPersistence] User not authenticated, cannot save config for node ${nodeId}`)
       throw new Error('User not authenticated')
     }
@@ -120,9 +128,10 @@ export const clearNodeConfig = async (
     const supabase = createClient()
 
     // Get the current user
-    const { data: { user }, error: userError } = await supabase.auth.getUser()
+    // PR-AUTH-7: cached user from auth store.
+    const user = await getCachedUser()
 
-    if (userError || !user) {
+    if (!user) {
       logger.error(`❌ [ConfigPersistence] User not authenticated, cannot clear config for node ${nodeId}`)
       return
     }
@@ -168,9 +177,10 @@ export const loadNodeConfig = async (
     const supabase = createClient()
 
     // Get the current user
-    const { data: { user }, error: userError } = await supabase.auth.getUser()
+    // PR-AUTH-7: cached user from auth store.
+    const user = await getCachedUser()
 
-    if (userError || !user) {
+    if (!user) {
       logger.info(`🔍 [ConfigPersistence] User not authenticated, cannot load config for node ${nodeId}`)
       return null
     }
@@ -239,9 +249,10 @@ export const clearWorkflowConfigs = async (workflowId: string): Promise<void> =>
     const supabase = createClient()
 
     // Get the current user
-    const { data: { user }, error: userError } = await supabase.auth.getUser()
+    // PR-AUTH-7: cached user from auth store.
+    const user = await getCachedUser()
 
-    if (userError || !user) {
+    if (!user) {
       logger.error(`❌ [ConfigPersistence] User not authenticated, cannot clear workflow configs`)
       return
     }
@@ -280,9 +291,10 @@ export const getAllWorkflowConfigs = async (workflowId: string): Promise<Record<
     const supabase = createClient()
 
     // Get the current user
-    const { data: { user }, error: userError } = await supabase.auth.getUser()
+    // PR-AUTH-7: cached user from auth store.
+    const user = await getCachedUser()
 
-    if (userError || !user) {
+    if (!user) {
       logger.info(`🔍 [ConfigPersistence] User not authenticated, cannot get workflow configs`)
       return {}
     }

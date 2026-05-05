@@ -7,6 +7,7 @@ import { safeDecrypt, encrypt } from '@/lib/security/encryption'
 import { flagIntegrationWorkflows } from '@/lib/integrations/integrationWorkflowManager'
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 // Helper to create supabase client inside handlers
 const getSupabase = () => createClient(
@@ -1596,7 +1597,7 @@ async function resolveOneDriveTokens(userId: string): Promise<{ accessToken: str
     .select('id, access_token, refresh_token, status')
     .eq('user_id', userId)
     .eq('provider', 'onedrive')
-    .eq('status', 'connected')
+    .in('status', CONNECTED_STATUSES_LIST)
     .maybeSingle()
 
   if (!integration) {
@@ -1749,7 +1750,7 @@ async function resolveProviderTokens(userId: string, resourceType: string): Prom
     .select('id, access_token, refresh_token, status')
     .eq('user_id', userId)
     .eq('provider', provider)
-    .eq('status', 'connected')
+    .in('status', CONNECTED_STATUSES_LIST)
     .maybeSingle()
 
   if (!integration) {

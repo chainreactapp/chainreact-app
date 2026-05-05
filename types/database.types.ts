@@ -7,13 +7,63 @@ export type Json =
   | Json[]
 
 export type Database = {
-  // Allows to automatically instantiate createClient with right options
-  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
-  __InternalSupabase: {
-    PostgrestVersion: "12.2.3 (519615d)"
+  graphql_public: {
+    Tables: {
+      [_ in never]: never
+    }
+    Views: {
+      [_ in never]: never
+    }
+    Functions: {
+      graphql: {
+        Args: {
+          extensions?: Json
+          operationName?: string
+          query?: string
+          variables?: Json
+        }
+        Returns: Json
+      }
+    }
+    Enums: {
+      [_ in never]: never
+    }
+    CompositeTypes: {
+      [_ in never]: never
+    }
   }
   public: {
     Tables: {
+      admin_step_up_sessions: {
+        Row: {
+          expires_at: string
+          id: string
+          ip_address: unknown
+          method: string
+          user_agent: string | null
+          user_id: string
+          verified_at: string
+        }
+        Insert: {
+          expires_at?: string
+          id?: string
+          ip_address?: unknown
+          method: string
+          user_agent?: string | null
+          user_id: string
+          verified_at?: string
+        }
+        Update: {
+          expires_at?: string
+          id?: string
+          ip_address?: unknown
+          method?: string
+          user_agent?: string | null
+          user_id?: string
+          verified_at?: string
+        }
+        Relationships: []
+      }
       agent_chat_messages: {
         Row: {
           content: string
@@ -969,6 +1019,65 @@ export type Database = {
           workflow_id?: string | null
         }
         Relationships: []
+      }
+      business_context: {
+        Row: {
+          category: string
+          created_at: string | null
+          id: string
+          key: string
+          last_used_at: string | null
+          locked: boolean | null
+          organization_id: string | null
+          relevance_tags: string[] | null
+          scope: string
+          source: string
+          updated_at: string | null
+          usage_count: number | null
+          user_id: string
+          value: string
+        }
+        Insert: {
+          category: string
+          created_at?: string | null
+          id?: string
+          key: string
+          last_used_at?: string | null
+          locked?: boolean | null
+          organization_id?: string | null
+          relevance_tags?: string[] | null
+          scope?: string
+          source?: string
+          updated_at?: string | null
+          usage_count?: number | null
+          user_id: string
+          value: string
+        }
+        Update: {
+          category?: string
+          created_at?: string | null
+          id?: string
+          key?: string
+          last_used_at?: string | null
+          locked?: boolean | null
+          organization_id?: string | null
+          relevance_tags?: string[] | null
+          scope?: string
+          source?: string
+          updated_at?: string | null
+          usage_count?: number | null
+          user_id?: string
+          value?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "business_context_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       collaboration_sessions: {
         Row: {
@@ -2562,6 +2671,8 @@ export type Database = {
           last_error_details: Json | null
           last_failure_at: string | null
           last_health_check_at: string | null
+          last_notification_milestone: string | null
+          last_notified_at: string | null
           last_refresh_attempt: string | null
           last_refresh_success: string | null
           last_token_refresh: string | null
@@ -2610,6 +2721,8 @@ export type Database = {
           last_error_details?: Json | null
           last_failure_at?: string | null
           last_health_check_at?: string | null
+          last_notification_milestone?: string | null
+          last_notified_at?: string | null
           last_refresh_attempt?: string | null
           last_refresh_success?: string | null
           last_token_refresh?: string | null
@@ -2658,6 +2771,8 @@ export type Database = {
           last_error_details?: Json | null
           last_failure_at?: string | null
           last_health_check_at?: string | null
+          last_notification_milestone?: string | null
+          last_notified_at?: string | null
           last_refresh_attempt?: string | null
           last_refresh_success?: string | null
           last_token_refresh?: string | null
@@ -3253,6 +3368,57 @@ export type Database = {
         }
         Relationships: []
       }
+      pack_purchases: {
+        Row: {
+          created_at: string
+          id: string
+          pack_price_cents: number
+          pack_size: number
+          paid_at: string | null
+          plan_code: string
+          refunded_at: string | null
+          status: string
+          stripe_checkout_session_id: string | null
+          stripe_payment_intent_id: string | null
+          tasks_consumed: number
+          tasks_remaining: number
+          triggered_by: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          pack_price_cents: number
+          pack_size: number
+          paid_at?: string | null
+          plan_code: string
+          refunded_at?: string | null
+          status: string
+          stripe_checkout_session_id?: string | null
+          stripe_payment_intent_id?: string | null
+          tasks_consumed?: number
+          tasks_remaining: number
+          triggered_by: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          pack_price_cents?: number
+          pack_size?: number
+          paid_at?: string | null
+          plan_code?: string
+          refunded_at?: string | null
+          status?: string
+          stripe_checkout_session_id?: string | null
+          stripe_payment_intent_id?: string | null
+          tasks_consumed?: number
+          tasks_remaining?: number
+          triggered_by?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       pkce_flow: {
         Row: {
           code_verifier: string
@@ -3274,18 +3440,60 @@ export type Database = {
         }
         Relationships: []
       }
+      plan_audit_log: {
+        Row: {
+          changed_at: string
+          changed_by: string | null
+          field_name: string
+          id: string
+          new_value: Json | null
+          old_value: Json | null
+          plan_id: string
+        }
+        Insert: {
+          changed_at?: string
+          changed_by?: string | null
+          field_name: string
+          id?: string
+          new_value?: Json | null
+          old_value?: Json | null
+          plan_id: string
+        }
+        Update: {
+          changed_at?: string
+          changed_by?: string | null
+          field_name?: string
+          id?: string
+          new_value?: Json | null
+          old_value?: Json | null
+          plan_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "plan_audit_log_plan_id_fkey"
+            columns: ["plan_id"]
+            isOneToOne: false
+            referencedRelation: "plans"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       plans: {
         Row: {
+          code: string
           created_at: string | null
           description: string | null
           display_name: string | null
+          feature_flags: Json | null
           features: Json | null
+          history_retention_days: number | null
           id: string
           is_active: boolean | null
           limits: Json | null
           max_ai_agent_executions: number | null
           max_ai_assistant_calls: number | null
           max_ai_compose_uses: number | null
+          max_business_context_entries: number | null
           max_executions_per_month: number | null
           max_integrations: number | null
           max_nodes_per_workflow: number | null
@@ -3293,24 +3501,36 @@ export type Database = {
           max_team_members: number | null
           max_workflows: number | null
           name: string
+          pack_price_cents: number | null
+          pack_size: number | null
           price_monthly: number | null
           price_yearly: number | null
           sort_order: number | null
+          stripe_metered_price_id_monthly: string | null
+          stripe_metered_price_id_yearly: string | null
+          stripe_pack_price_id: string | null
           stripe_price_id_monthly: string | null
           stripe_price_id_yearly: string | null
+          tasks_per_month: number | null
           updated_at: string | null
+          updated_by: string | null
+          version: number | null
         }
         Insert: {
+          code: string
           created_at?: string | null
           description?: string | null
           display_name?: string | null
+          feature_flags?: Json | null
           features?: Json | null
+          history_retention_days?: number | null
           id?: string
           is_active?: boolean | null
           limits?: Json | null
           max_ai_agent_executions?: number | null
           max_ai_assistant_calls?: number | null
           max_ai_compose_uses?: number | null
+          max_business_context_entries?: number | null
           max_executions_per_month?: number | null
           max_integrations?: number | null
           max_nodes_per_workflow?: number | null
@@ -3318,24 +3538,36 @@ export type Database = {
           max_team_members?: number | null
           max_workflows?: number | null
           name: string
+          pack_price_cents?: number | null
+          pack_size?: number | null
           price_monthly?: number | null
           price_yearly?: number | null
           sort_order?: number | null
+          stripe_metered_price_id_monthly?: string | null
+          stripe_metered_price_id_yearly?: string | null
+          stripe_pack_price_id?: string | null
           stripe_price_id_monthly?: string | null
           stripe_price_id_yearly?: string | null
+          tasks_per_month?: number | null
           updated_at?: string | null
+          updated_by?: string | null
+          version?: number | null
         }
         Update: {
+          code?: string
           created_at?: string | null
           description?: string | null
           display_name?: string | null
+          feature_flags?: Json | null
           features?: Json | null
+          history_retention_days?: number | null
           id?: string
           is_active?: boolean | null
           limits?: Json | null
           max_ai_agent_executions?: number | null
           max_ai_assistant_calls?: number | null
           max_ai_compose_uses?: number | null
+          max_business_context_entries?: number | null
           max_executions_per_month?: number | null
           max_integrations?: number | null
           max_nodes_per_workflow?: number | null
@@ -3343,12 +3575,20 @@ export type Database = {
           max_team_members?: number | null
           max_workflows?: number | null
           name?: string
+          pack_price_cents?: number | null
+          pack_size?: number | null
           price_monthly?: number | null
           price_yearly?: number | null
           sort_order?: number | null
+          stripe_metered_price_id_monthly?: string | null
+          stripe_metered_price_id_yearly?: string | null
+          stripe_pack_price_id?: string | null
           stripe_price_id_monthly?: string | null
           stripe_price_id_yearly?: string | null
+          tasks_per_month?: number | null
           updated_at?: string | null
+          updated_by?: string | null
+          version?: number | null
         }
         Relationships: []
       }
@@ -3563,6 +3803,53 @@ export type Database = {
           },
         ]
       }
+      session_side_effects: {
+        Row: {
+          action_type: string
+          execution_session_id: string
+          external_id: string | null
+          fired_at: string
+          id: string
+          node_id: string
+          payload_hash: string
+          provider: string
+          result_snapshot: Json
+          root_execution_id: string | null
+        }
+        Insert: {
+          action_type: string
+          execution_session_id: string
+          external_id?: string | null
+          fired_at?: string
+          id?: string
+          node_id: string
+          payload_hash: string
+          provider: string
+          result_snapshot: Json
+          root_execution_id?: string | null
+        }
+        Update: {
+          action_type?: string
+          execution_session_id?: string
+          external_id?: string | null
+          fired_at?: string
+          id?: string
+          node_id?: string
+          payload_hash?: string
+          provider?: string
+          result_snapshot?: Json
+          root_execution_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "session_side_effects_session_fk"
+            columns: ["execution_session_id"]
+            isOneToOne: false
+            referencedRelation: "workflow_execution_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       social_post_submissions: {
         Row: {
           created_at: string
@@ -3747,6 +4034,65 @@ export type Database = {
           },
         ]
       }
+      stripe_processed_events: {
+        Row: {
+          event_created: string | null
+          event_id: string
+          event_type: string
+          processed_at: string
+          stripe_customer_id: string | null
+          stripe_subscription_id: string | null
+        }
+        Insert: {
+          event_created?: string | null
+          event_id: string
+          event_type: string
+          processed_at?: string
+          stripe_customer_id?: string | null
+          stripe_subscription_id?: string | null
+        }
+        Update: {
+          event_created?: string | null
+          event_id?: string
+          event_type?: string
+          processed_at?: string
+          stripe_customer_id?: string | null
+          stripe_subscription_id?: string | null
+        }
+        Relationships: []
+      }
+      stripe_tier_mapping: {
+        Row: {
+          created_at: string
+          id: string
+          stripe_price_id: string
+          stripe_product_id: string | null
+          tier_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          stripe_price_id: string
+          stripe_product_id?: string | null
+          tier_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          stripe_price_id?: string
+          stripe_product_id?: string | null
+          tier_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "stripe_tier_mapping_tier_id_fkey"
+            columns: ["tier_id"]
+            isOneToOne: false
+            referencedRelation: "plans"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       subscriptions: {
         Row: {
           billing_cycle: string | null
@@ -3754,6 +4100,7 @@ export type Database = {
           created_at: string | null
           current_period_end: string | null
           current_period_start: string | null
+          default_payment_method_id: string | null
           id: string
           organization_id: string | null
           plan_id: string
@@ -3773,6 +4120,7 @@ export type Database = {
           created_at?: string | null
           current_period_end?: string | null
           current_period_start?: string | null
+          default_payment_method_id?: string | null
           id?: string
           organization_id?: string | null
           plan_id: string
@@ -3792,6 +4140,7 @@ export type Database = {
           created_at?: string | null
           current_period_end?: string | null
           current_period_start?: string | null
+          default_payment_method_id?: string | null
           id?: string
           organization_id?: string | null
           plan_id?: string
@@ -3979,6 +4328,51 @@ export type Database = {
           period_start_snapshot?: string | null
           source?: string
           tasks_limit_snapshot?: number
+          user_id?: string
+          workflow_id?: string | null
+        }
+        Relationships: []
+      }
+      task_overage_events: {
+        Row: {
+          amount: number
+          created_at: string
+          execution_id: string
+          id: string
+          period_end: string
+          period_start: string
+          rate_cents: number
+          reported_to_stripe_at: string | null
+          stripe_subscription_item_id: string | null
+          stripe_usage_record_id: string | null
+          user_id: string
+          workflow_id: string | null
+        }
+        Insert: {
+          amount: number
+          created_at?: string
+          execution_id: string
+          id?: string
+          period_end: string
+          period_start: string
+          rate_cents: number
+          reported_to_stripe_at?: string | null
+          stripe_subscription_item_id?: string | null
+          stripe_usage_record_id?: string | null
+          user_id: string
+          workflow_id?: string | null
+        }
+        Update: {
+          amount?: number
+          created_at?: string
+          execution_id?: string
+          id?: string
+          period_end?: string
+          period_start?: string
+          rate_cents?: number
+          reported_to_stripe_at?: string | null
+          stripe_subscription_item_id?: string | null
+          stripe_usage_record_id?: string | null
           user_id?: string
           workflow_id?: string | null
         }
@@ -4763,6 +5157,59 @@ export type Database = {
         }
         Relationships: []
       }
+      user_entitlements: {
+        Row: {
+          current_period_end: string
+          current_period_start: string
+          id: string
+          last_stripe_event_at: string | null
+          last_stripe_event_id: string | null
+          source: string
+          status: string
+          tasks_limit_snapshot: number
+          tasks_used: number
+          tier_id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          current_period_end: string
+          current_period_start: string
+          id?: string
+          last_stripe_event_at?: string | null
+          last_stripe_event_id?: string | null
+          source?: string
+          status?: string
+          tasks_limit_snapshot: number
+          tasks_used?: number
+          tier_id: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          current_period_end?: string
+          current_period_start?: string
+          id?: string
+          last_stripe_event_at?: string | null
+          last_stripe_event_id?: string | null
+          source?: string
+          status?: string
+          tasks_limit_snapshot?: number
+          tasks_used?: number
+          tier_id?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "user_entitlements_tier_id_fkey"
+            columns: ["tier_id"]
+            isOneToOne: false
+            referencedRelation: "plans"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       user_memory_documents: {
         Row: {
           content: string | null
@@ -4841,6 +5288,8 @@ export type Database = {
       user_profiles: {
         Row: {
           admin: boolean | null
+          admin_capabilities: Json
+          auto_buy_packs: boolean
           avatar_url: string | null
           billing_period_end: string | null
           billing_period_start: string
@@ -4858,20 +5307,33 @@ export type Database = {
           id: string
           job_title: string | null
           last_name: string | null
+          locale: string | null
+          notification_preferences: Json | null
           openai_api_keys: Json | null
+          opt_in_v2_execution: boolean
+          overage_cap_multiplier: number
+          overage_enabled: boolean
+          overage_tasks_used: number
           phone_number: string | null
           plan: string
           provider: string | null
           role: string | null
           secondary_email: string | null
+          slack_notification_config: Json | null
+          stripe_subscription_item_id: string | null
+          task_pack_balance: number
           tasks_limit: number
           tasks_used: number
+          timezone: string | null
           updated_at: string | null
+          usage_notifications_sent: Json
           username: string | null
           workflow_creation_mode: string | null
         }
         Insert: {
           admin?: boolean | null
+          admin_capabilities?: Json
+          auto_buy_packs?: boolean
           avatar_url?: string | null
           billing_period_end?: string | null
           billing_period_start?: string
@@ -4889,20 +5351,33 @@ export type Database = {
           id: string
           job_title?: string | null
           last_name?: string | null
+          locale?: string | null
+          notification_preferences?: Json | null
           openai_api_keys?: Json | null
+          opt_in_v2_execution?: boolean
+          overage_cap_multiplier?: number
+          overage_enabled?: boolean
+          overage_tasks_used?: number
           phone_number?: string | null
           plan?: string
           provider?: string | null
           role?: string | null
           secondary_email?: string | null
+          slack_notification_config?: Json | null
+          stripe_subscription_item_id?: string | null
+          task_pack_balance?: number
           tasks_limit?: number
           tasks_used?: number
+          timezone?: string | null
           updated_at?: string | null
+          usage_notifications_sent?: Json
           username?: string | null
           workflow_creation_mode?: string | null
         }
         Update: {
           admin?: boolean | null
+          admin_capabilities?: Json
+          auto_buy_packs?: boolean
           avatar_url?: string | null
           billing_period_end?: string | null
           billing_period_start?: string
@@ -4920,15 +5395,26 @@ export type Database = {
           id?: string
           job_title?: string | null
           last_name?: string | null
+          locale?: string | null
+          notification_preferences?: Json | null
           openai_api_keys?: Json | null
+          opt_in_v2_execution?: boolean
+          overage_cap_multiplier?: number
+          overage_enabled?: boolean
+          overage_tasks_used?: number
           phone_number?: string | null
           plan?: string
           provider?: string | null
           role?: string | null
           secondary_email?: string | null
+          slack_notification_config?: Json | null
+          stripe_subscription_item_id?: string | null
+          task_pack_balance?: number
           tasks_limit?: number
           tasks_used?: number
+          timezone?: string | null
           updated_at?: string | null
+          usage_notifications_sent?: Json
           username?: string | null
           workflow_creation_mode?: string | null
         }
@@ -5523,6 +6009,8 @@ export type Database = {
           paused_reason: string | null
           progress_percentage: number | null
           resume_data: Json | null
+          retention_class: string
+          root_execution_id: string | null
           session_type: string | null
           started_at: string | null
           status: string | null
@@ -5532,6 +6020,7 @@ export type Database = {
           updated_at: string | null
           user_id: string | null
           webhook_event_id: string | null
+          workflow_definition_hash: string | null
           workflow_id: string
         }
         Insert: {
@@ -5555,6 +6044,8 @@ export type Database = {
           paused_reason?: string | null
           progress_percentage?: number | null
           resume_data?: Json | null
+          retention_class?: string
+          root_execution_id?: string | null
           session_type?: string | null
           started_at?: string | null
           status?: string | null
@@ -5564,6 +6055,7 @@ export type Database = {
           updated_at?: string | null
           user_id?: string | null
           webhook_event_id?: string | null
+          workflow_definition_hash?: string | null
           workflow_id: string
         }
         Update: {
@@ -5587,6 +6079,8 @@ export type Database = {
           paused_reason?: string | null
           progress_percentage?: number | null
           resume_data?: Json | null
+          retention_class?: string
+          root_execution_id?: string | null
           session_type?: string | null
           started_at?: string | null
           status?: string | null
@@ -5596,6 +6090,7 @@ export type Database = {
           updated_at?: string | null
           user_id?: string | null
           webhook_event_id?: string | null
+          workflow_definition_hash?: string | null
           workflow_id?: string
         }
         Relationships: []
@@ -5809,6 +6304,41 @@ export type Database = {
           workflow_id?: string
         }
         Relationships: []
+      }
+      workflow_permissions: {
+        Row: {
+          granted_at: string
+          granted_by: string | null
+          id: string
+          permission: string
+          user_id: string
+          workflow_id: string
+        }
+        Insert: {
+          granted_at?: string
+          granted_by?: string | null
+          id?: string
+          permission: string
+          user_id: string
+          workflow_id: string
+        }
+        Update: {
+          granted_at?: string
+          granted_by?: string | null
+          id?: string
+          permission?: string
+          user_id?: string
+          workflow_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "workflow_permissions_workflow_id_fkey"
+            columns: ["workflow_id"]
+            isOneToOne: false
+            referencedRelation: "workflows"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       workflow_preferences: {
         Row: {
@@ -6186,7 +6716,7 @@ export type Database = {
           description?: string | null
           flow_v2_enabled?: boolean
           folder_id?: string | null
-          id: string
+          id?: string
           last_modified_by?: string | null
           max_executions_per_hour?: number | null
           max_executions_per_minute?: number | null
@@ -6308,30 +6838,36 @@ export type Database = {
           created_at: string | null
           description: string | null
           id: string
+          locale: string | null
           name: string
           owner_id: string
           settings: Json | null
           slug: string | null
+          timezone: string | null
           updated_at: string | null
         }
         Insert: {
           created_at?: string | null
           description?: string | null
           id?: string
+          locale?: string | null
           name?: string
           owner_id: string
           settings?: Json | null
           slug?: string | null
+          timezone?: string | null
           updated_at?: string | null
         }
         Update: {
           created_at?: string | null
           description?: string | null
           id?: string
+          locale?: string | null
           name?: string
           owner_id?: string
           settings?: Json | null
           slug?: string | null
+          timezone?: string | null
           updated_at?: string | null
         }
         Relationships: []
@@ -6380,6 +6916,16 @@ export type Database = {
       add_user_to_beta_testers: {
         Args: { user_email: string; user_notes?: string; user_status?: string }
         Returns: string
+      }
+      apply_stripe_period: {
+        Args: {
+          p_reset_tasks?: boolean
+          p_stripe_period_end: string
+          p_stripe_period_start: string
+          p_tier_id: string
+          p_user_id: string
+        }
+        Returns: undefined
       }
       auto_delete_old_trash_workflows: { Args: never; Returns: undefined }
       bytea_to_text: { Args: { data: string }; Returns: string }
@@ -6431,6 +6977,17 @@ export type Database = {
         Args: { keep_latest?: number; retention_days?: number }
         Returns: undefined
       }
+      compute_next_period: {
+        Args: {
+          p_current_period_end: string
+          p_current_period_start: string
+          p_now?: string
+        }
+        Returns: {
+          next_period_end: string
+          next_period_start: string
+        }[]
+      }
       confirm_beta_tester_email: {
         Args: { user_email: string }
         Returns: undefined
@@ -6468,7 +7025,73 @@ export type Database = {
         }
         Returns: string
       }
+      create_workflow_with_revision: {
+        Args: {
+          p_billing_scope_id?: string
+          p_billing_scope_type?: string
+          p_description?: string
+          p_folder_id?: string
+          p_name: string
+          p_status?: string
+          p_user_id?: string
+          p_workspace_id?: string
+          p_workspace_type?: string
+        }
+        Returns: {
+          billing_scope_id: string
+          billing_scope_type: string
+          circuit_breaker_tripped_at: string | null
+          consecutive_failure_threshold: number | null
+          created_at: string
+          created_by: string | null
+          deleted_at: string | null
+          description: string | null
+          flow_v2_enabled: boolean
+          folder_id: string | null
+          id: string
+          last_modified_by: string | null
+          max_executions_per_hour: number | null
+          max_executions_per_minute: number | null
+          name: string
+          original_folder_id: string | null
+          owner_id: string | null
+          status: string | null
+          tags: string[] | null
+          updated_at: string | null
+          user_id: string | null
+          workspace_id: string | null
+          workspace_type: string | null
+        }[]
+        SetofOptions: {
+          from: "*"
+          to: "workflows"
+          isOneToOne: false
+          isSetofReturn: true
+        }
+      }
       deduct_tasks_if_available: {
+        Args: {
+          p_amount: number
+          p_event_type?: string
+          p_execution_id?: string
+          p_node_breakdown?: Json
+          p_source?: string
+          p_user_id: string
+          p_workflow_id?: string
+        }
+        Returns: {
+          applied: boolean
+          consumed_from_overage: number
+          consumed_from_pack: number
+          current_tasks_limit: number
+          new_tasks_used: number
+          overage_rate_cents: number
+          remaining: number
+          result_type: string
+          success: boolean
+        }[]
+      }
+      deduct_tasks_v2: {
         Args: {
           p_amount: number
           p_event_type?: string
@@ -6763,6 +7386,10 @@ export type Database = {
         Args: { check_team_id: string; check_user_id: string }
         Returns: boolean
       }
+      is_workflow_admin: {
+        Args: { p_user_id: string; p_workflow_id: string }
+        Returns: boolean
+      }
       is_workspace_member: {
         Args: { usr_id: string; ws_id: string }
         Returns: boolean
@@ -7026,7 +7653,11 @@ export type CompositeTypes<
     : never
 
 export const Constants = {
+  graphql_public: {
+    Enums: {},
+  },
   public: {
     Enums: {},
   },
 } as const
+

@@ -3,6 +3,7 @@ import { jsonResponse, errorResponse } from '@/lib/utils/api-response'
 import { createSupabaseRouteHandlerClient } from "@/utils/supabase/server"
 import { decryptToken } from "@/lib/integrations/tokenUtils"
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 /**
  * Fetch a single email by ID with its attachment list
@@ -39,7 +40,7 @@ export async function POST(request: NextRequest) {
       .select("*")
       .eq("provider", "microsoft-outlook")
       .eq("user_id", user.id)
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
 
     if (integrationError || !integration) {

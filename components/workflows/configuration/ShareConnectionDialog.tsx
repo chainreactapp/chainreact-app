@@ -43,7 +43,7 @@ import {
 import { cn } from '@/lib/utils'
 import { fetchWithTimeout } from '@/lib/utils/fetch-with-timeout'
 import { logger } from '@/lib/utils/logger'
-import { createClient } from '@/utils/supabaseClient'
+import { getAuthHeader } from '@/lib/auth/getAuthHeader'
 
 interface Team {
   id: string
@@ -105,20 +105,17 @@ export function ShareConnectionDialog({
     setError(null)
 
     try {
-      const supabase = createClient()
-      const { data: { session } } = await supabase.auth.getSession()
-
-      if (!session?.access_token) {
-        throw new Error('No active session')
-      }
+      // PR-AUTH-5: cached auth header. Missing → server returns 401, surfaced
+      // through the existing !response.ok branch as "Failed to fetch sharing settings".
+      const authHeader = await getAuthHeader()
 
       // Fetch sharing settings
       const response = await fetchWithTimeout(
         `/api/integrations/share?integration_id=${integrationId}`,
         {
           headers: {
-            'Authorization': `Bearer ${session.access_token}`,
             'Content-Type': 'application/json',
+            ...authHeader,
           },
         },
         8000
@@ -152,13 +149,13 @@ export function ShareConnectionDialog({
       )
       setSelectedTeams(teamIds)
 
-      // Fetch available teams
+      // Fetch available teams (re-use the same authHeader captured above).
       const teamsResponse = await fetchWithTimeout(
         '/api/teams',
         {
           headers: {
-            'Authorization': `Bearer ${session.access_token}`,
             'Content-Type': 'application/json',
+            ...authHeader,
           },
         },
         8000
@@ -190,14 +187,7 @@ export function ShareConnectionDialog({
     setSuccess(false)
 
     try {
-      const supabase = createClient()
-      const { data: { session } } = await supabase.auth.getSession()
-
-      if (!session?.access_token) {
-        throw new Error('No active session')
-      }
-
-      // Determine what teams to share with
+      // PR-AUTH-5: cached auth header.
       const teamsToShare = Array.from(selectedTeams)
 
       const response = await fetchWithTimeout(
@@ -205,8 +195,8 @@ export function ShareConnectionDialog({
         {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${session.access_token}`,
             'Content-Type': 'application/json',
+            ...(await getAuthHeader()),
           },
           body: JSON.stringify({
             integration_id: integrationId,
@@ -246,20 +236,14 @@ export function ShareConnectionDialog({
     setError(null)
 
     try {
-      const supabase = createClient()
-      const { data: { session } } = await supabase.auth.getSession()
-
-      if (!session?.access_token) {
-        throw new Error('No active session')
-      }
-
+      // PR-AUTH-5: cached auth header.
       const response = await fetchWithTimeout(
         '/api/integrations/share',
         {
           method: 'DELETE',
           headers: {
-            'Authorization': `Bearer ${session.access_token}`,
             'Content-Type': 'application/json',
+            ...(await getAuthHeader()),
           },
           body: JSON.stringify({
             integration_id: integrationId,

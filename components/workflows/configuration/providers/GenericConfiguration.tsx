@@ -9,7 +9,7 @@ import { AIFieldWrapper } from '../fields/AIFieldWrapper';
 import { GenericSelectField } from '../fields/shared/GenericSelectField';
 import { ConfigurationContainer } from '../components/ConfigurationContainer';
 import { FieldVisibilityEngine } from '@/lib/workflows/fields/visibility';
-import { supabase } from '@/utils/supabaseClient';
+import { getAuthHeader } from '@/lib/auth/getAuthHeader';
 import { getProviderDisplayName } from '@/lib/utils/provider-names';
 
 import { logger } from '@/lib/utils/logger'
@@ -769,12 +769,9 @@ export function GenericConfiguration({
     setShowPreview(false);
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) {
-        setPreviewResult({ error: 'Please sign in to preview search results' });
-        setShowPreview(true);
-        return;
-      }
+      // PR-AUTH-5: cached auth header. Missing token → server 401 surfaced
+      // through the existing !response.ok error branch below.
+      const authHeader = await getAuthHeader();
 
       // Build search configuration - always fetch max (100) items
       const searchConfig = {
@@ -793,7 +790,7 @@ export function GenericConfiguration({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`
+          ...authHeader,
         },
         body: JSON.stringify({
           integrationId,
@@ -826,12 +823,8 @@ export function GenericConfiguration({
     setShowPreview(false);
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) {
-        setPreviewResult({ error: 'Please sign in to preview list results' });
-        setShowPreview(true);
-        return;
-      }
+      // PR-AUTH-5: cached auth header.
+      const authHeader = await getAuthHeader();
 
       // Build list configuration - always fetch max (100) items
       const listConfig = {
@@ -846,7 +839,7 @@ export function GenericConfiguration({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`
+          ...authHeader,
         },
         body: JSON.stringify({
           integrationId,
@@ -879,12 +872,8 @@ export function GenericConfiguration({
     setShowPreview(false);
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) {
-        setPreviewResult({ error: 'Please sign in to preview search results' });
-        setShowPreview(true);
-        return;
-      }
+      // PR-AUTH-5: cached auth header.
+      const authHeader = await getAuthHeader();
 
       // Build search configuration
       const searchConfig = {
@@ -899,7 +888,7 @@ export function GenericConfiguration({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`
+          ...authHeader,
         },
         body: JSON.stringify({
           integrationId,
@@ -932,12 +921,8 @@ export function GenericConfiguration({
     setShowPreview(false);
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) {
-        setPreviewResult({ error: 'Please sign in to preview search results' });
-        setShowPreview(true);
-        return;
-      }
+      // PR-AUTH-5: cached auth header.
+      const authHeader = await getAuthHeader();
 
       // Build advanced search configuration
       const advancedSearchConfig = {
@@ -963,7 +948,7 @@ export function GenericConfiguration({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`
+          ...authHeader,
         },
         body: JSON.stringify({
           integrationId,
@@ -995,12 +980,8 @@ export function GenericConfiguration({
     setShowPreview(false);
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) {
-        setPreviewResult({ error: 'Please sign in to preview search results' });
-        setShowPreview(true);
-        return;
-      }
+      // PR-AUTH-5: cached auth header.
+      const authHeader = await getAuthHeader();
 
       // Build mark as read configuration
       const markAsReadConfig = {
@@ -1020,7 +1001,7 @@ export function GenericConfiguration({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`
+          ...authHeader,
         },
         body: JSON.stringify({
           integrationId,
@@ -1052,12 +1033,8 @@ export function GenericConfiguration({
     setShowPreview(false);
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) {
-        setPreviewResult({ error: 'Please sign in to preview search results' });
-        setShowPreview(true);
-        return;
-      }
+      // PR-AUTH-5: cached auth header.
+      const authHeader = await getAuthHeader();
 
       // Build mark as unread configuration
       const markAsUnreadConfig = {
@@ -1077,7 +1054,7 @@ export function GenericConfiguration({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`
+          ...authHeader,
         },
         body: JSON.stringify({
           integrationId,

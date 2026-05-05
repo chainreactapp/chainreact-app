@@ -3,6 +3,7 @@ import { getDecryptedAccessToken } from './core/getDecryptedAccessToken'
 import { resolveValue } from './core/resolveValue'
 
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 /**
  * Send an email through Microsoft Outlook
@@ -37,7 +38,7 @@ export async function sendOutlookEmail(
       .select("*")
       .eq("user_id", userId)
       .eq("provider", "microsoft-outlook")
-      .eq("status", "connected")
+      .in("status", CONNECTED_STATUSES_LIST)
       .single()
 
     if (!integration) {

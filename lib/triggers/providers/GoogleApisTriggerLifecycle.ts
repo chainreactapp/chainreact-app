@@ -20,6 +20,7 @@ import {
 
 import { logger } from '@/lib/utils/logger'
 import { getWebhookBaseUrl } from '@/lib/utils/getBaseUrl'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 // Helper to create supabase client inside handlers
 const getSupabase = () => createClient(
@@ -62,7 +63,7 @@ export class GoogleApisTriggerLifecycle implements TriggerLifecycle {
       .select('id, access_token, refresh_token')
       .eq('user_id', userId)
       .eq('provider', providerId)
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     if (exactMatch) {
@@ -76,7 +77,7 @@ export class GoogleApisTriggerLifecycle implements TriggerLifecycle {
         .select('id, access_token, refresh_token')
         .eq('user_id', userId)
         .in('provider', googleProviders)
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .limit(1)
         .single()
 
@@ -496,7 +497,7 @@ export class GoogleApisTriggerLifecycle implements TriggerLifecycle {
             .from('integrations')
             .select('access_token, refresh_token')
             .eq('id', resource.config.integrationId)
-            .eq('status', 'connected')
+            .in('status', CONNECTED_STATUSES_LIST)
             .maybeSingle()
           integration = exactIntegration
         }
@@ -508,7 +509,7 @@ export class GoogleApisTriggerLifecycle implements TriggerLifecycle {
             .select('access_token, refresh_token')
             .eq('user_id', userId)
             .eq('provider', resource.provider_id)
-            .eq('status', 'connected')
+            .in('status', CONNECTED_STATUSES_LIST)
             .limit(1)
             .maybeSingle()
           integration = providerMatch
@@ -521,7 +522,7 @@ export class GoogleApisTriggerLifecycle implements TriggerLifecycle {
             .select('access_token, refresh_token')
             .eq('user_id', userId)
             .in('provider', googleProviders)
-            .eq('status', 'connected')
+            .in('status', CONNECTED_STATUSES_LIST)
             .limit(1)
             .maybeSingle()
           integration = anyGoogle

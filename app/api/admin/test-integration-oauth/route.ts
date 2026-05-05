@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireAdmin } from '@/lib/utils/admin-auth'
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 /**
  * POST /api/admin/test-integration-oauth
@@ -37,7 +38,7 @@ export async function POST(request: NextRequest) {
       .select('*')
       .eq('user_id', userId)
       .eq('provider', provider)
-      .eq('status', 'connected')
+      .in('status', CONNECTED_STATUSES_LIST)
       .single()
 
     const connectionAvailable = !!integration && !integrationError

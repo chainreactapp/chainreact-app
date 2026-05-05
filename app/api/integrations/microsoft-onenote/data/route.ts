@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { jsonResponse, errorResponse, successResponse } from '@/lib/utils/api-response'
 import { createSupabaseRouteHandlerClient, createSupabaseServiceClient } from "@/utils/supabase/server"
 import { logger } from '@/lib/utils/logger'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 async function getServiceClient() {
   return await createSupabaseServiceClient()
@@ -19,7 +20,7 @@ async function fetchIntegration({
     .from('integrations')
     .select('*')
     .eq('provider', 'microsoft-onenote')
-    .eq('status', 'connected')
+    .in('status', CONNECTED_STATUSES_LIST)
 
   if (integrationId) {
     query = query.eq('id', integrationId)

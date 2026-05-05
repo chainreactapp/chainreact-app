@@ -1,5 +1,4 @@
 import { createSupabaseServiceClient } from '@/utils/supabase/server'
-import { AdvancedExecutionEngine } from '@/lib/execution/advancedExecutionEngine'
 import { executeWebhookWorkflow } from '@/lib/webhooks/execute'
 import { google } from 'googleapis'
 import { getDecryptedAccessToken } from '@/lib/workflows/actions/core/getDecryptedAccessToken'
@@ -3040,50 +3039,46 @@ export async function processGoogleEventForTestSession(event: {
       .update({ status: 'executing' })
       .eq('id', testSessionId)
 
-    // Create execution session using the advanced execution engine
-    const executionEngine = new AdvancedExecutionEngine()
-    const executionSession = await executionEngine.createExecutionSession(
-      workflow.id,
-      testSession.user_id,
-      'webhook',
-      {
-        triggerData: eventData,
-        source: 'google_test_webhook',
-        testSessionId,
-        isTestExecution: true
-      }
-    )
+    // Execute via v2's sandbox path. testMode=true causes v2 to default
+    // to triggerMode=USE_MOCK_DATA + actionMode=INTERCEPT_WRITES; the
+    // execution session row is created inside executeWorkflow.
+    const { WorkflowExecutionService } = await import('@/lib/services/workflowExecutionService')
+    const executionService = new WorkflowExecutionService()
 
-    // Update test session with execution ID
-    await supabase
-      .from('workflow_test_sessions')
-      .update({
-        execution_id: executionSession.id,
-        status: 'executing'
-      })
-      .eq('id', testSessionId)
-
-    // Execute the workflow with test data
     logger.info(`🧪 [Test Session] Starting workflow execution`, {
       workflowId: workflow.id,
-      executionId: executionSession.id,
       testSessionId
     })
 
-    // Execute workflow (this is similar to how production triggers work)
-    await executionEngine.executeWorkflow(
-      executionSession.id,
-      workflow.nodes,
-      workflow.connections,
-      { triggerOutput: eventData }
+    const result = await executionService.executeWorkflow(
+      workflow,
+      eventData,
+      testSession.user_id,
+      true,
+      { nodes: workflow.nodes, connections: workflow.connections },
+      false,
+      undefined,
+      supabase,
+      { source: 'google_test_webhook' }
     )
+
+    // v2's success branch returns executionId; its intercepted-actions
+    // branch does not (pre-existing v2 API gap — flagged as follow-up).
+    const executionId = (result as { executionId?: string })?.executionId ?? null
+
+    if (executionId) {
+      await supabase
+        .from('workflow_test_sessions')
+        .update({ execution_id: executionId })
+        .eq('id', testSessionId)
+    }
 
     logger.info(`🧪 [Test Session] Workflow execution complete for session ${testSessionId}`)
 
     return {
       processed: true,
       testSessionId,
-      executionId: executionSession.id,
+      executionId,
       service,
       isTestExecution: true
     }

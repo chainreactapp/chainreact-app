@@ -93,7 +93,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   }, [open])
 
   const handleSelect = useCallback(
-    (callback: () => void, loadingMessage?: string) => {
+    (callback: () => void | Promise<void>, loadingMessage?: string) => {
       if (loadingMessage) {
         setLoading(true)
         setLoadingText(loadingMessage)
@@ -103,7 +103,24 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
         if (!loadingMessage) {
           onOpenChange(false)
         }
-        callback()
+        // Wrap in Promise.resolve so sync throws and async rejections are
+        // handled identically. Without this, a failing callback (e.g.
+        // createAndOpen() rejecting) would leave the palette stuck on the
+        // spinner forever — there was no path to reset loading state.
+        Promise.resolve()
+          .then(() => callback())
+          .catch(() => {
+            // Errors are surfaced to the user by the callback's own toast
+            // path (e.g. useCreateAndOpenWorkflow's destructive toast).
+            // Swallow here so the loading-reset finally block runs.
+          })
+          .finally(() => {
+            if (loadingMessage) {
+              setLoading(false)
+              setLoadingText("")
+              onOpenChange(false)
+            }
+          })
       }, loadingMessage ? 100 : 0)
     },
     [onOpenChange]
@@ -187,7 +204,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
             {!search && (
               <Command.Group heading="Quick Actions">
                 <Command.Item
-                  onSelect={() => handleSelect(() => createAndOpen(), "Creating workflow...")}
+                  onSelect={() => handleSelect(() => { createAndOpen().catch(() => {}) }, "Creating workflow...")}
                   className="flex items-center justify-between px-2 py-2 cursor-pointer rounded-sm hover:bg-accent"
                 >
                   <div className="flex items-center gap-2">

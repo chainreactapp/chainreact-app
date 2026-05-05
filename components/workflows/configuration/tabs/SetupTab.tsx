@@ -9,6 +9,7 @@ import { getProviderBrandName } from '@/lib/integrations/brandNames'
 import { useToast } from '@/hooks/use-toast'
 import { AlertCircle } from 'lucide-react'
 import { isNodeTypeConnectionExempt, isProviderConnectionExempt } from '../utils/connectionExemptions'
+import { isConnectedStatus } from '@/lib/integrations/connectionStatus'
 import { INTEGRATION_CONFIGS } from '@/lib/integrations/availableIntegrations'
 import { ManyChatGuide } from '@/components/integrations/guides/ManyChatGuide'
 import { BeehiivGuide } from '@/components/integrations/guides/BeehiivGuide'
@@ -152,19 +153,6 @@ export function SetupTab(props: SetupTabProps) {
     const providerIntegrations = effectiveIntegrations.filter(
       int => int.provider === nodeInfo.providerId
     )
-
-    const isConnectedStatus = (status?: string) => {
-      if (!status) return false
-      const normalized = status.toLowerCase()
-      return (
-        normalized === 'connected' ||
-        normalized === 'authorized' ||
-        normalized === 'active' ||
-        normalized === 'valid' ||
-        normalized === 'ready' ||
-        normalized === 'ok'
-      )
-    }
 
     const isErrorStatus = (status?: string) => {
       if (!status) return false
@@ -372,25 +360,15 @@ export function SetupTab(props: SetupTabProps) {
   }
 
   const handleDeleteConnection = async (connectionId: string) => {
-    // Get Supabase session for auth token
-    const { createClient } = await import('@/utils/supabase/client')
-    const supabase = createClient()
-    const { data: { session } } = await supabase.auth.getSession()
-
-    if (!session?.access_token) {
-      toast({
-        title: "Authentication Error",
-        description: "You must be logged in to delete connections.",
-        variant: "destructive",
-      })
-      throw new Error("Authentication required")
-    }
+    // PR-AUTH-5: cached token; missing → server returns 401, surfaced via the
+    // existing !response.ok / !data.success branch below.
+    const { getAuthHeader } = await import('@/lib/auth/getAuthHeader')
 
     // Call DELETE API
     const response = await fetch(`/api/integrations/${connectionId}`, {
       method: 'DELETE',
       headers: {
-        'Authorization': `Bearer ${session.access_token}`,
+        ...(await getAuthHeader()),
       },
     })
 

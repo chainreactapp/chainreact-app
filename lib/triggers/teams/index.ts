@@ -4,6 +4,7 @@ import { decrypt, encrypt } from '@/lib/security/encryption'
 import { logger } from '@/lib/utils/logger'
 import { getWebhookBaseUrl } from '@/lib/utils/getBaseUrl'
 import { generateEncryptionCertificate, rotateCertificateIfNeeded } from '@/lib/utils/encryptionCertificate'
+import { CONNECTED_STATUSES_LIST } from "@/lib/integrations/connectionStatus"
 
 /**
  * Microsoft Teams Trigger Lifecycle Handler
@@ -37,7 +38,7 @@ export class TeamsTriggerLifecycle implements TriggerLifecycle {
         .select('*')
         .eq('user_id', userId)
         .eq('provider', 'teams')
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .single()
 
       if (integrationError || !integration || !integration.access_token) {
@@ -304,7 +305,7 @@ export class TeamsTriggerLifecycle implements TriggerLifecycle {
         .select('access_token')
         .eq('user_id', userId)
         .eq('provider', 'teams')
-        .eq('status', 'connected')
+        .in('status', CONNECTED_STATUSES_LIST)
         .single()
 
       let userAccessToken: string | null = null
@@ -467,7 +468,7 @@ export class TeamsTriggerLifecycle implements TriggerLifecycle {
           .select('access_token')
           .eq('user_id', userId)
           .eq('provider', 'teams')
-          .eq('status', 'connected')
+          .in('status', CONNECTED_STATUSES_LIST)
           .single()
 
         if (!integration || !integration.access_token) {

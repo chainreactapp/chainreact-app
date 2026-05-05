@@ -1001,11 +1001,10 @@ export default function IntegrationTestsPage() {
     setSession(newSession)
 
     try {
-      // Get auth token
-      const supabase = createClient()
-      const { data: { session: authSession } } = await supabase.auth.getSession()
-
-      if (!authSession?.access_token) {
+      // PR-AUTH-7: cached auth header.
+      const { getAuthHeader } = await import('@/lib/auth/getAuthHeader')
+      const authHeader = await getAuthHeader()
+      if (!authHeader.Authorization) {
         throw new Error('Not authenticated')
       }
 
@@ -1014,7 +1013,7 @@ export default function IntegrationTestsPage() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authSession.access_token}`,
+          ...authHeader,
         },
         body: JSON.stringify({
           provider: selectedProvider,

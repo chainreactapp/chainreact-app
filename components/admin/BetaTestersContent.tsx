@@ -221,8 +221,9 @@ export default function BetaTestersContent() {
       return
     }
 
-    const supabase = createClient()
-    const { data: userData } = await supabase.auth.getUser()
+    // PR-AUTH-7: read user id from cached auth store (no lock contention).
+    const { useAuthStore } = await import("@/stores/authStore")
+    const cachedUser = useAuthStore.getState().user
 
     const expiryDays = parseInt(newTesterExpiry)
     const expiresAt = expiryDays > 0
@@ -243,7 +244,7 @@ export default function BetaTestersContent() {
           max_workflows: parseInt(newTesterWorkflows) || 50,
           max_executions_per_month: parseInt(newTesterExecutions) || 5000,
           max_integrations: 30,
-          added_by: userData?.user?.id
+          added_by: cachedUser?.id
         })
       })
 
