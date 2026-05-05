@@ -1,43 +1,22 @@
 /**
- * Shared helper for determining which providers/node types do NOT require OAuth connections.
- * Keep this list in sync anywhere connection UI/state needs to be skipped.
+ * Helper for determining which providers / node types do NOT require an
+ * OAuth connection.
+ *
+ * The provider-level exemption (`isProviderConnectionExempt`) consults
+ * the canonical `CONNECTION_EXEMPT_PROVIDERS` list from
+ * `lib/integrations/connectionStatus` — same source-of-truth as the
+ * builder's "Connect Your Accounts" dialog.
+ *
+ * The node-type-level exemption (`isNodeTypeConnectionExempt`) stays
+ * local because it covers a different axis: special-case node types
+ * whose provider-side exemption isn't enough (e.g. utility nodes that
+ * don't fit any provider category, or trigger types that are
+ * configured at the node level rather than via an OAuth account).
  */
 
-const CONNECTION_EXEMPT_PROVIDERS = new Set<string>([
-  // Logic / control providers
-  'logic',
-  'mapper',
-  'core',
-  'manual',
+import { CONNECTION_EXEMPT_PROVIDERS as CANONICAL_EXEMPT_PROVIDERS } from "@/lib/integrations/connectionStatus"
 
-  // Scheduling / branching helpers
-  'schedule',
-  'conditional',
-  'if_then',
-  'path',
-  'filter',
-  'http_request',
-
-  // Utility + system helpers
-  'utility',
-  'transformer',
-  'file_upload',
-  'extract_website_data',
-  'conditional_trigger',
-  'google_search',
-  'tavily_search',
-
-  // First-party AI + automation helpers
-  'ai',
-  'ai_agent',
-  'ai_router',
-  'ai_message',
-  'ai_action',
-
-  // System nodes that never prompt for OAuth
-  'webhook',
-  'ask-human',
-])
+const CONNECTION_EXEMPT_PROVIDERS = new Set<string>(CANONICAL_EXEMPT_PROVIDERS)
 
 const CONNECTION_EXEMPT_NODE_TYPES = new Set<string>([
   'webhook',

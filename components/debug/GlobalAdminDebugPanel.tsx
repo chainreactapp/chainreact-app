@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge"
 import { Bug, Copy, Check, Trash2, Download, X, Minimize2, Maximize2 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { isProfileAdmin } from "@/lib/types/admin"
+import { isConnectedStatus } from "@/lib/integrations/connectionStatus"
 
 /**
  * Global admin-only floating debug panel
@@ -97,7 +98,7 @@ export function GlobalAdminDebugPanel() {
     },
     "Integration Stats": {
       total: integrations.length,
-      connected: integrations.filter(i => i.status === 'connected').length,
+      connected: integrations.filter(i => isConnectedStatus(i.status)).length,
       expired: integrations.filter(i => i.status === 'expired' || i.status === 'needs_reauthorization').length,
       withPermissions: integrations.filter(i => i.user_permission).length,
       withoutPermissions: integrations.filter(i => !i.user_permission).length,

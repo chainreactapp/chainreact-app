@@ -3,6 +3,8 @@
  * Detects vague provider terms and helps users select the right integration
  */
 
+import { isConnectedStatus } from "@/lib/integrations/connectionStatus"
+
 export interface ProviderCategory {
   vagueTerm: string // "email", "calendar", "storage"
   displayName: string // "Email", "Calendar", "File Storage"
@@ -177,23 +179,6 @@ export interface ProviderOption {
   icon: string // Icon identifier
   isConnected: boolean
   integrationId?: string // Integration ID if connected
-}
-
-/**
- * Helper to check if a status represents a connected/usable integration
- * Matches the logic in integrationStore.ts getConnectedProviders()
- */
-function isConnectedStatus(status?: string): boolean {
-  if (!status) return false
-  const v = status.toLowerCase()
-  // Only truly connected statuses - 'expired' should show as disconnected
-  // so the user knows they need to reconnect
-  return v === 'connected' ||
-         v === 'authorized' ||
-         v === 'active' ||
-         v === 'valid' ||
-         v === 'ok' ||
-         v === 'ready'
 }
 
 /**

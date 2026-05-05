@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button'
 import { ChevronDown, Check, ArrowRight, AlertCircle, Loader2 } from 'lucide-react'
 import type { ProviderOption } from '@/lib/workflows/ai-agent/providerDisambiguation'
 import { useIntegrationStore } from '@/stores/integrationStore'
+import { isConnectedStatus } from '@/lib/integrations/connectionStatus'
 
 /**
  * Maps provider IDs to their actual icon filenames
@@ -13,21 +14,6 @@ function getProviderIconPath(providerId: string): string {
     'yahoo-mail': 'yahoo-mail',
   }
   return `/integrations/${iconMap[providerId] || providerId}.svg`
-}
-
-/**
- * Helper to check if a status represents a connected/usable integration
- * Matches the logic in providerDisambiguation.ts isConnectedStatus()
- */
-function isConnectedStatus(status?: string): boolean {
-  if (!status) return false
-  const v = status.toLowerCase()
-  return v === 'connected' ||
-         v === 'authorized' ||
-         v === 'active' ||
-         v === 'valid' ||
-         v === 'ok' ||
-         v === 'ready'
 }
 
 type ConnectionState = 'idle' | 'connecting' | 'just_connected'

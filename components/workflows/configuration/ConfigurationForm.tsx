@@ -6,6 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import { useDynamicOptions } from './hooks/useDynamicOptions';
 import { useFieldChangeHandler } from './hooks/useFieldChangeHandler';
 import { useIntegrationStore } from '@/stores/integrationStore';
+import { isConnectedStatus } from '@/lib/integrations/connectionStatus';
 import { useWorkflowStore } from '@/stores/workflowStore';
 import { useDebugStore } from '@/stores/debugStore';
 import { ConfigurationLoadingScreen } from '@/components/ui/loading-screen';
@@ -218,7 +219,7 @@ function ConfigurationForm({
   const allIntegrations = !skipConnectionCheck && providerToCheck
     ? getAllIntegrationsByProvider(providerToCheck)
     : [];
-  const connectedIntegrations = allIntegrations.filter(i => i.status === 'connected');
+  const connectedIntegrations = allIntegrations.filter(i => isConnectedStatus(i.status));
   const showAccountSelector = connectedIntegrations.length > 1;
 
   // State for selected integration when multiple accounts exist
@@ -296,16 +297,6 @@ function ConfigurationForm({
     }));
     logger.debug('[ConfigForm] Selected account changed:', { integrationId });
   }, []);
-
-  // Helper function to check if status means connected
-  const isConnectedStatus = (status?: string) => {
-    if (!status) return false;
-    const normalizedStatus = status.toLowerCase();
-    return normalizedStatus === 'connected' ||
-           normalizedStatus === 'authorized' ||
-           normalizedStatus === 'active' ||
-           normalizedStatus === 'valid';
-  };
 
   const needsConnection =
     !skipConnectionCheck &&

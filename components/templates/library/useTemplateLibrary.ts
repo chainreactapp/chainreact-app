@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { useIntegrationStore } from "@/stores/integrationStore"
 import { useToast } from "@/hooks/use-toast"
+import { isConnectedStatus } from "@/lib/integrations/connectionStatus"
 
 export function useTemplateLibrary() {
   const router = useRouter()
@@ -53,7 +54,7 @@ export function useTemplateLibrary() {
   }
 
   const connectedIntegrations = useMemo(
-    () => integrations.filter(i => i.status === 'connected').map(i => i.provider),
+    () => integrations.filter(i => isConnectedStatus(i.status)).map(i => i.provider),
     [integrations]
   )
 

@@ -33,7 +33,8 @@ import { CheckCircle, AlertCircle, RefreshCw, ExternalLink, Plus, Users, Buildin
 import { cn } from '@/lib/utils'
 import { fetchWithTimeout } from '@/lib/utils/fetch-with-timeout'
 import { logger } from '@/lib/utils/logger'
-import { createClient } from '@/utils/supabaseClient'
+import { getAuthHeader } from '@/lib/auth/getAuthHeader'
+import { isConnectedStatus } from "@/lib/integrations/connectionStatus"
 
 interface Connection {
   id: string
@@ -119,20 +120,13 @@ export function ServiceConnectionSelector({
     try {
       logger.info('[ServiceConnectionSelector] Fetching all connections', { providerId })
 
-      // Get the current session for authorization
-      const supabase = createClient()
-      const { data: { session } } = await supabase.auth.getSession()
-
-      if (!session?.access_token) {
-        throw new Error('No active session')
-      }
-
+      // PR-AUTH-5: cached token; missing → server returns 401, handled below.
       const response = await fetchWithTimeout(
         `/api/integrations/all-connections?provider=${encodeURIComponent(providerId)}`,
         {
           headers: {
-            'Authorization': `Bearer ${session.access_token}`,
             'Content-Type': 'application/json',
+            ...(await getAuthHeader()),
           },
         },
         8000
@@ -171,7 +165,7 @@ export function ServiceConnectionSelector({
 
   const connection = selectedConnection
   const hasMultipleConnections = connections.length > 1
-  const connectedConnections = connections.filter(c => c.status === 'connected')
+  const connectedConnections = connections.filter(c => isConnectedStatus(c.status))
   const hasConnectedAccounts = connectedConnections.length > 0
 
   const isConnected = connection?.status === 'connected'

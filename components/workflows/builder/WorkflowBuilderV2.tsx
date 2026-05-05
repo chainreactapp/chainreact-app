@@ -68,6 +68,7 @@ import {
 import { loadWorkflowPreferences } from "@/stores/workflowPreferencesStore"
 import { useIntegrationStore } from "@/stores/integrationStore"
 import { useWorkspaceContext } from "@/hooks/useWorkspaceContext"
+import { isConnectedStatus } from "@/lib/integrations/connectionStatus"
 import {
   applyDagreLayout,
   needsLayout,
@@ -6096,7 +6097,7 @@ export function WorkflowBuilderV2({ flowId, initialRevision, initialStatus }: Wo
     if (isFirstTurn) {
       agentEvalTracker.startConversation()
     }
-    const connectedProviders = integrations.filter(i => i.status === 'connected').map(i => i.provider)
+    const connectedProviders = integrations.filter(i => isConnectedStatus(i.status)).map(i => i.provider)
     const promptType = classifyPromptComplexity(userPrompt.length, connectedProviders)
     agentEvalTracker.setPromptType(promptType)
 

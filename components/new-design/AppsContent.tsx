@@ -47,6 +47,7 @@ import {
 } from "@/components/ui/select"
 import { INTEGRATION_CONFIGS } from "@/lib/integrations/availableIntegrations"
 import { AppCategoryFilter, CategoryBadge, APP_CATEGORIES } from "@/components/apps/AppCategoryFilter"
+import { isConnectedStatus } from "@/lib/integrations/connectionStatus"
 
 export function AppsContent() {
   // Note: initializeProviders is now handled by PagePreloader for parallel loading
@@ -109,7 +110,7 @@ export function AppsContent() {
 
   // Get all connected accounts for a provider (supports multi-account)
   const getConnectedAccounts = (providerId: string) => {
-    return integrations.filter(i => i.provider === providerId && i.status === 'connected')
+    return integrations.filter(i => i.provider === providerId && isConnectedStatus(i.status))
   }
 
   // Format date for display
@@ -234,7 +235,7 @@ export function AppsContent() {
   // Create a list of integrations including synthetic shared auth integrations
   // This is used for the workspace grouped view to show Excel when OneDrive is connected
   const integrationsWithSharedAuth = (() => {
-    const connectedIntegrations = integrations.filter(i => i.status === 'connected')
+    const connectedIntegrations = integrations.filter(i => isConnectedStatus(i.status))
     const sharedAuthIntegrations: typeof connectedIntegrations = []
 
     // Find all providers that share auth with connected integrations
