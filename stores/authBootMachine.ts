@@ -66,6 +66,28 @@ export interface BootSlice {
   profile: Profile | null
   loading: boolean
   error: string | null
+  // PR-AUTH-2: cached access token + expiry, in-memory only.
+  // Mirrors the supabase client's session so call sites can build an
+  // Authorization header without going through auth.getSession() / the
+  // navigator lock. NEVER persisted to localStorage — supabase already
+  // owns the durable copy at sb-<ref>-auth-token.
+  accessToken: string | null
+  accessTokenExpiresAt: number | null  // epoch seconds (matches supabase shape)
+}
+
+/**
+ * Extract the cached-token fields from a supabase Session payload (or null
+ * to clear them on sign-out). Used by both the boot pipeline and the
+ * onAuthStateChange listener so the cache stays in lockstep with the SDK.
+ */
+export function extractSessionTokens(session: any | null): Pick<BootSlice, 'accessToken' | 'accessTokenExpiresAt'> {
+  if (!session?.access_token) {
+    return { accessToken: null, accessTokenExpiresAt: null }
+  }
+  return {
+    accessToken: session.access_token,
+    accessTokenExpiresAt: typeof session.expires_at === 'number' ? session.expires_at : null,
+  }
 }
 
 type SetState = (partial: Partial<BootSlice> | ((state: BootSlice) => Partial<BootSlice>)) => void
@@ -415,6 +437,7 @@ export async function boot(set: SetState, get: GetState): Promise<void> {
         profile: null,
         loading: false,
         lastBootCompletedAt: Date.now(),
+        ...extractSessionTokens(null), // clear cached token on no-session boot
       })
 
       // Clear integration store when no user
@@ -455,6 +478,7 @@ export async function boot(set: SetState, get: GetState): Promise<void> {
       profile: keepExisting ? existingProfile : profile,
       loading: false,
       lastBootCompletedAt: Date.now(),
+      ...extractSessionTokens(session), // populate cached token from boot session
     })
 
     // Post-boot side effects
@@ -518,4 +542,6 @@ export const BOOT_INITIAL_STATE: BootSlice = {
   profile: null,
   loading: false,
   error: null,
+  accessToken: null,
+  accessTokenExpiresAt: null,
 }

@@ -7,7 +7,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Textarea } from '@/components/ui/textarea'
 import { Loader2, FolderOpen, FileText, FileSpreadsheet, FileImage, File, Grid, List, Check, ChevronDown, Search } from 'lucide-react'
 import { useIntegrationStore } from '@/stores/integrationStore'
-import { supabase } from '@/utils/supabaseClient'
+import { getAuthHeader } from '@/lib/auth/getAuthHeader'
 import {
   Dialog,
   DialogContent,
@@ -403,11 +403,10 @@ export function NotionBlockFields({
     setLoadingGoogleDrive(true)
     
     try {
-      // Get auth token for fetch-user-data endpoint
-      const { data: { session } } = await supabase.auth.getSession()
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-      if (session?.access_token) {
-        headers['Authorization'] = `Bearer ${session.access_token}`
+      // PR-AUTH-5: cached auth header.
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        ...(await getAuthHeader()),
       }
 
       // Fetch Google Drive files (including folders)

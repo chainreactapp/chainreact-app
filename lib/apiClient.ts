@@ -1,5 +1,5 @@
 import { getApiBaseUrl } from "./utils/getBaseUrl"
-import { createClient } from "@/utils/supabaseClient"
+import { getAuthHeader } from "@/lib/auth/getAuthHeader"
 
 import { logger } from '@/lib/utils/logger'
 
@@ -20,57 +20,28 @@ class ApiClient {
     if (typeof window !== 'undefined') {
       const hostname = window.location.hostname
       if (hostname === 'localhost' || hostname === '127.0.0.1') {
-        const url = `${window.location.protocol}//${window.location.host}`
-        logger.info('🔧 [ApiClient] Using window.location for baseUrl:', url)
-        return url
+        return `${window.location.protocol}//${window.location.host}`
       }
     }
-    
-    // Otherwise use the standard function
-    const url = getApiBaseUrl()
-    logger.info('🔧 [ApiClient] Getting dynamic baseUrl:', url)
-    return url
+    return getApiBaseUrl()
   }
 
+  // PR-AUTH-4: read the Authorization header from the cached-token helper.
+  // Hot path is synchronous (no supabase.auth.getSession() / navigator-lock
+  // contention). Refreshes only when the cached token is stale, with
+  // intra-tab single-flight so concurrent API calls share one round-trip.
+  // Never throws — failures resolve to {} so the request gets a normal 401.
   private async getAuthHeaders(): Promise<Record<string, string>> {
-    try {
-      logger.info("🔍 Getting auth headers...")
-      
-      // First validate user authentication
-      const supabase = createClient()
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser()
-
-      if (userError || !user) {
-        throw new Error("Not authenticated")
-      }
-
-      // Then get session for access token
-      const { data: { session } } = await supabase.auth.getSession()
-      logger.info("🔍 Session data:", session ? { 
-        hasAccessToken: !!session.access_token, 
-        tokenLength: session.access_token?.length || 0,
-        expiresAt: session.expires_at 
-      } : null)
-      
-      if (session?.access_token) {
-        logger.info("✅ Auth token found, returning Authorization header")
-        return {
-          "Authorization": `Bearer ${session.access_token}`,
-        }
-      } 
-        logger.warn("⚠️ No session or access token found")
-      
-    } catch (error) {
-      logger.error("❌ Failed to get auth token:", error)
-    }
-    logger.info("❌ Returning empty auth headers")
-    return {}
+    return getAuthHeader()
   }
 
-  private async request<T = any>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
+  private async request<T = any>(
+    endpoint: string,
+    options: RequestInit = {},
+    // PR-AUTH-FOLLOWUP-2: internal recursion guard. When `true`, the call
+    // is already a retry after a 401; do NOT recurse again.
+    _isAuthRetry: boolean = false,
+  ): Promise<ApiResponse<T>> {
     try {
       // Get base URL dynamically for each request
       const baseUrl = this.getBaseUrl()
@@ -81,9 +52,12 @@ class ApiClient {
         "Content-Type": "application/json",
       }
 
-      // Get authentication headers
-      const authHeaders = await this.getAuthHeaders()
-      logger.info("🔍 Auth headers retrieved:", authHeaders)
+      // On a 401-retry pass we force-refresh the cached token. The cached
+      // token may have been valid by expiry but revoked / rotated on the
+      // server side — only a fresh refresh can rescue the request.
+      const authHeaders = _isAuthRetry
+        ? await getAuthHeader({ mode: "force-refresh" })
+        : await this.getAuthHeaders()
 
       const config: RequestInit = {
         ...options,
@@ -95,16 +69,11 @@ class ApiClient {
         credentials: "include", // Include cookies for authentication
       }
 
-      logger.info(`🌐 API Request: ${config.method || "GET"} ${url}`)
-      if (config.headers) {
-        const headersObj = config.headers as Record<string, string>
-        logger.info(`🌐 API Request Headers:`, Object.fromEntries(Object.entries(headersObj).filter(([key]) => key.toLowerCase() !== 'authorization')))
-        logger.info(`🔍 Has Authorization header:`, !!headersObj['Authorization'])
-      }
-      if (config.body) {
-        const bodyLength = typeof config.body === 'string' ? config.body.length : JSON.stringify(config.body).length
-        logger.info(`🌐 API Request Body length:`, bodyLength)
-      }
+      // Per-request logs at debug level — info-level was producing 5+ lines
+      // of noise per request and made real signal hard to find.
+      logger.debug(`[apiClient] ${config.method || "GET"} ${url}`, {
+        hasAuthHeader: !!authHeaders.Authorization,
+      })
 
       let response: Response;
       try {
@@ -114,6 +83,17 @@ class ApiClient {
         logger.error(`❌ URL was: ${url}`)
         logger.error(`❌ Base URL: ${baseUrl}`)
         throw new Error(`Network error: ${fetchError.message || 'Failed to fetch'}`)
+      }
+
+      // PR-AUTH-FOLLOWUP-2: auto-recover from 401 by force-refreshing the
+      // cached auth token and retrying once. Handles the case where the
+      // cached token is valid by expiry but revoked / rotated server-side
+      // (sign-out elsewhere, key rotation, password change). On success
+      // the user never sees the 401. On second 401 (auth genuinely dead)
+      // the request returns a normal failed response.
+      if (response.status === 401 && !_isAuthRetry) {
+        logger.warn(`[apiClient] 401 for ${endpoint} — forcing refresh and retrying once`)
+        return this.request<T>(endpoint, options, true)
       }
 
       // Auto-recover from 431 (Request Header Fields Too Large) by clearing stale cookies

@@ -40,9 +40,10 @@ export async function loadUserProfile(userId?: string): Promise<UserProfile | nu
     store.setLoading(true)
     store.setError(null)
 
-    // Get current user if no userId provided
+    // PR-AUTH-5: cached user id from auth store.
     if (!userId) {
-      const { data: { user } } = await supabase.auth.getUser()
+      const { useAuthStore } = await import('./authStore')
+      const user = useAuthStore.getState().user
       if (!user) {
         throw new Error("No authenticated user")
       }
@@ -79,8 +80,9 @@ export async function updateUserProfile(updates: Partial<UserProfile>): Promise<
     store.setLoading(true)
     store.setError(null)
 
-    // Get current user
-    const { data: { user } } = await supabase.auth.getUser()
+    // PR-AUTH-5: cached user id.
+    const { useAuthStore } = await import('./authStore')
+    const user = useAuthStore.getState().user
     if (!user) {
       throw new Error("No authenticated user")
     }

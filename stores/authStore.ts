@@ -1,13 +1,14 @@
 "use client"
 
 import { create } from "zustand"
-import { persist } from "zustand/middleware"
+import { persist, createJSONStorage } from "zustand/middleware"
 import { supabase } from "@/utils/supabaseClient"
 import { getCrossTabSync } from "@/lib/utils/cross-tab-sync"
 import { logger } from '@/lib/utils/logger'
 import {
   boot as bootPipeline,
   mapProfileData as bootMapProfile,
+  extractSessionTokens,
   BOOT_INITIAL_STATE,
   type BootPhase,
   type BootSlice,
@@ -22,8 +23,6 @@ interface AuthState extends BootSlice {
   boot: () => Promise<void>
   signOut: () => Promise<void>
   updateProfile: (updates: Partial<Profile>) => Promise<void>
-  updateDefaultWorkspace: (workspaceType: 'personal' | 'team' | 'organization' | null, workspaceId?: string | null) => Promise<void>
-  clearDefaultWorkspace: () => Promise<void>
   signIn: (email: string, password: string) => Promise<void>
   signUp: (email: string, password: string, metadata?: Record<string, any>) => Promise<void>
   signInWithGoogle: () => Promise<void>
@@ -59,6 +58,7 @@ export const useAuthStore = create<AuthState>()(
             loading: false,
             error: null,
             bootError: null,
+            ...extractSessionTokens(null), // PR-AUTH-2: clear cached token on signOut
           })
 
           // Clear localStorage immediately
@@ -128,6 +128,7 @@ export const useAuthStore = create<AuthState>()(
             profile: null,
             loading: false,
             error: null,
+            ...extractSessionTokens(null), // PR-AUTH-2: clear cached token on error path too
           })
           if (typeof window !== 'undefined') {
             localStorage.removeItem('chainreact-auth')
@@ -163,6 +164,9 @@ export const useAuthStore = create<AuthState>()(
               phone_number: updates.phone_number,
               provider: updates.provider,
               avatar_url: updates.avatar_url,
+              default_workspace_type: updates.default_workspace_type,
+              default_workspace_id: updates.default_workspace_id,
+              workflow_creation_mode: updates.workflow_creation_mode,
               updated_at: updatedAt,
             }, { onConflict: 'id' })
 
@@ -211,63 +215,6 @@ export const useAuthStore = create<AuthState>()(
         } catch (error: any) {
           logger.error("Profile update error:", error)
           set({ error: error.message })
-          throw error
-        }
-      },
-
-      updateDefaultWorkspace: async (workspaceType, workspaceId) => {
-        try {
-          const { user, profile } = get()
-          if (!user) throw new Error("No user logged in")
-
-          const response = await fetch('/api/user/default-workspace', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              workspace_type: workspaceType,
-              workspace_id: workspaceId
-            })
-          })
-
-          if (!response.ok) {
-            const error = await response.json()
-            throw new Error(error.error || 'Failed to update default workspace')
-          }
-
-          set({
-            profile: {
-              ...profile,
-              default_workspace_type: workspaceType,
-              default_workspace_id: workspaceId || null
-            } as Profile
-          })
-        } catch (error: any) {
-          logger.error('[AuthStore] Error updating default workspace:', error)
-          throw error
-        }
-      },
-
-      clearDefaultWorkspace: async () => {
-        try {
-          const { user, profile } = get()
-          if (!user) throw new Error("No user logged in")
-
-          const response = await fetch('/api/user/default-workspace', { method: 'DELETE' })
-
-          if (!response.ok) {
-            const error = await response.json()
-            throw new Error(error.error || 'Failed to clear default workspace')
-          }
-
-          set({
-            profile: {
-              ...profile,
-              default_workspace_type: null,
-              default_workspace_id: null
-            } as Profile
-          })
-        } catch (error: any) {
-          logger.error('[AuthStore] Error clearing default workspace:', error)
           throw error
         }
       },
@@ -333,7 +280,13 @@ export const useAuthStore = create<AuthState>()(
               logger.warn('Profile fetch failed during sign-in:', profileError)
             }
 
-            set({ user, profile, loading: false, phase: 'ready' as BootPhase })
+            set({
+              user,
+              profile,
+              loading: false,
+              phase: 'ready' as BootPhase,
+              ...extractSessionTokens(data.session), // PR-AUTH-2: populate cached token
+            })
 
             // Update integration store
             setTimeout(async () => {
@@ -475,7 +428,8 @@ export const useAuthStore = create<AuthState>()(
                 last_name: user.user_metadata?.last_name,
                 full_name: user.user_metadata?.full_name,
                 avatar: user.user_metadata?.avatar_url,
-              }
+              },
+              ...extractSessionTokens(session), // PR-AUTH-2: refresh cached token
             })
             return true
           }
@@ -511,7 +465,13 @@ export const useAuthStore = create<AuthState>()(
         }
         return persistedState
       },
-      storage: {
+      // Wrap a string-shaped StateStorage in createJSONStorage so the persist
+      // middleware gets the typed PersistStorage<S> shape it expects in
+      // Zustand 5. Corruption detection runs at the string level (before the
+      // JSON parse done by createJSONStorage) so we can catch leftover
+      // supabase v1 base64 cookies and stray JWTs before they break the
+      // parse.
+      storage: createJSONStorage(() => ({
         getItem: (name) => {
           try {
             if (typeof window === 'undefined') return null
@@ -537,7 +497,7 @@ export const useAuthStore = create<AuthState>()(
           } catch (error) {
             logger.error('Error reading auth storage:', error)
             if (typeof window !== 'undefined') {
-              localStorage.removeItem(name)
+              try { localStorage.removeItem(name) } catch { /* ignore */ }
             }
             return null
           }
@@ -545,14 +505,8 @@ export const useAuthStore = create<AuthState>()(
         setItem: (name, value) => {
           try {
             if (typeof window === 'undefined') return
-
-            let stringValue = value
-            if (typeof value !== 'string') {
-              stringValue = JSON.stringify(value)
-            }
-
-            JSON.parse(stringValue)
-            localStorage.setItem(name, stringValue)
+            // value is already a JSON string from createJSONStorage.
+            localStorage.setItem(name, value)
           } catch (error: any) {
             if (error?.name === 'QuotaExceededError') {
               console.warn('LocalStorage quota exceeded - auth state may not persist')
@@ -563,7 +517,7 @@ export const useAuthStore = create<AuthState>()(
           if (typeof window === 'undefined') return
           localStorage.removeItem(name)
         },
-      },
+      })),
       partialize: (state) => ({
         user: state.phase === 'degraded' || state.phase === 'error' ? null : state.user,
         profile: state.phase === 'degraded' || state.phase === 'error' ? null : state.profile,
@@ -589,52 +543,121 @@ export const useAuthStore = create<AuthState>()(
 // One-time listener setup (module scope — registered once, not per boot)
 // ---------------------------------------------------------------------------
 
+// Deferred work helpers for the auth state listener (PR-AUTH-1).
+// Kept at module scope so the listener can dispatch them via queueMicrotask
+// without capturing the listener's closure or holding the navigator lock.
+
+async function refreshProfileAfterSignIn(
+  userId: string,
+  profileSnapshot: Profile | null,
+) {
+  try {
+    const { data: profileData } = await supabase
+      .from('user_profiles')
+      .select('id, first_name, last_name, full_name, company, job_title, secondary_email, phone_number, avatar_url, provider, role, plan, admin, email, tasks_used, tasks_limit, billing_period_start, created_at, updated_at')
+      .eq('id', userId)
+      .single()
+
+    if (profileData) {
+      const profile = bootMapProfile(profileData)
+      const existing = useAuthStore.getState().profile
+      const existingTs = existing?.updated_at ? Date.parse(existing.updated_at) : NaN
+      const incomingTs = profile.updated_at ? Date.parse(profile.updated_at) : NaN
+      const keepExisting =
+        existing &&
+        !Number.isNaN(existingTs) &&
+        !Number.isNaN(incomingTs) &&
+        existingTs > incomingTs
+
+      if (!keepExisting) {
+        useAuthStore.setState({ profile })
+      }
+    }
+  } catch (error) {
+    logger.warn('[AUTH] Profile refresh after SIGNED_IN failed', { error })
+  } finally {
+    // Broadcast preserves pre-PR-AUTH-1 semantics: the snapshot captured at
+    // event-fire time, not the post-fetch profile. Other tabs use this only
+    // to know "someone signed in"; they fetch their own profile.
+    try {
+      const sync = getCrossTabSync()
+      sync.broadcast('auth-login', { userId, profile: profileSnapshot })
+    } catch (broadcastError) {
+      logger.warn('[AUTH] Cross-tab broadcast failed', { error: broadcastError })
+    }
+  }
+}
+
+async function clearIntegrationStoreOnSignOut() {
+  try {
+    const { useIntegrationStore } = await import('./integrationStore')
+    const integrationStore = useIntegrationStore.getState()
+    integrationStore.setCurrentUserId(null)
+    integrationStore.clearAllData()
+  } catch {
+    /* ignore — integration store may not be loaded yet */
+  }
+}
+
 let listenersRegistered = false
 
 function registerListeners() {
   if (listenersRegistered || typeof window === 'undefined') return
   listenersRegistered = true
 
-  // Auth state change listener
-  supabase.auth.onAuthStateChange(async (event, session) => {
+  // Auth state change listener.
+  //
+  // CRITICAL: this callback MUST be synchronous. Awaiting Supabase REST / boot
+  // calls inside the listener holds the navigator lock that getSession() needs
+  // and deadlocks every other auth-bound call site. All async follow-up work
+  // is dispatched via queueMicrotask so the SDK callback returns immediately
+  // and releases the lock. See learning/docs/auth-reliability-refactor.md
+  // (PR-AUTH-1).
+  supabase.auth.onAuthStateChange((event, session) => {
     logger.debug('[AUTH] Auth state changed', { event, hasSession: !!session })
+
+    // PR-AUTH-2: keep the cached access token in lockstep with every event
+    // that carries a session payload. This includes silent TOKEN_REFRESHED
+    // events fired by the SDK every ~55 minutes. Writing here is synchronous
+    // (no async work, no lock acquisition) so it's safe inside the listener.
+    if (
+      event === 'SIGNED_IN' ||
+      event === 'TOKEN_REFRESHED' ||
+      event === 'INITIAL_SESSION' ||
+      event === 'USER_UPDATED'
+    ) {
+      useAuthStore.setState(extractSessionTokens(session))
+    } else if (event === 'SIGNED_OUT') {
+      useAuthStore.setState(extractSessionTokens(null))
+    }
 
     if (event === 'SIGNED_IN' && session?.user) {
       const state = useAuthStore.getState()
-      // If we're already ready/degraded with this user, just update profile
-      if ((state.phase === 'ready' || state.phase === 'degraded') && state.user?.id === session.user.id) {
-        // Refresh profile data
-        const { data: profileData } = await supabase
-          .from('user_profiles')
-          .select('id, first_name, last_name, full_name, company, job_title, secondary_email, phone_number, avatar_url, provider, role, plan, admin, email, tasks_used, tasks_limit, billing_period_start, created_at, updated_at')
-          .eq('id', session.user.id)
-          .single()
+      const sessionUser = session.user
 
-        if (profileData) {
-          const profile = bootMapProfile(profileData)
-          const existing = state.profile
-          const existingTs = existing?.updated_at ? Date.parse(existing.updated_at) : NaN
-          const incomingTs = profile.updated_at ? Date.parse(profile.updated_at) : NaN
-          const keepExisting = existing && !Number.isNaN(existingTs) && !Number.isNaN(incomingTs) && existingTs > incomingTs
-
-          if (!keepExisting) {
-            useAuthStore.setState({ profile })
-          }
-        }
-
-        // Broadcast to other tabs
-        const sync = getCrossTabSync()
-        sync.broadcast('auth-login', { userId: session.user.id, profile: state.profile })
+      // Fast path: same user, already ready/degraded — defer profile refresh
+      // and the cross-tab broadcast to a microtask. Capture the existing
+      // profile snapshot synchronously so the broadcast payload preserves
+      // pre-PR-AUTH-1 semantics (it broadcasted the snapshot from when the
+      // event fired, not the freshly-fetched profile).
+      if ((state.phase === 'ready' || state.phase === 'degraded') && state.user?.id === sessionUser.id) {
+        const profileSnapshot = state.profile
+        queueMicrotask(() => {
+          void refreshProfileAfterSignIn(sessionUser.id, profileSnapshot)
+        })
         return
       }
 
-      // New user or not ready — reboot
-      if (!state.user || state.user.id !== session.user.id) {
+      // New user or not ready — write user state synchronously, defer boot()
+      // to a microtask. boot() itself calls getSession(); deferring lets the
+      // SDK callback fully return (and release its lock) before we re-enter
+      // the auth subsystem.
+      if (!state.user || state.user.id !== sessionUser.id) {
         const user: User = {
-          id: session.user.id,
-          email: session.user.email || "",
-          name: session.user.user_metadata?.full_name || session.user.user_metadata?.name,
-          avatar: session.user.user_metadata?.avatar_url,
+          id: sessionUser.id,
+          email: sessionUser.email || "",
+          name: sessionUser.user_metadata?.full_name || sessionUser.user_metadata?.name,
+          avatar: sessionUser.user_metadata?.avatar_url,
         }
         useAuthStore.setState({ user })
 
@@ -644,7 +667,9 @@ function registerListeners() {
         // Only trigger boot if we're in a terminal or idle phase.
         const currentPhase = state.phase
         if (currentPhase === 'idle' || currentPhase === 'ready' || currentPhase === 'degraded' || currentPhase === 'error') {
-          state.boot()
+          queueMicrotask(() => {
+            void useAuthStore.getState().boot()
+          })
         } else {
           logger.debug('[AUTH] SIGNED_IN received during boot, skipping re-boot', { phase: currentPhase })
         }
@@ -660,14 +685,12 @@ function registerListeners() {
           phase: 'ready' as BootPhase,
         })
 
-        setTimeout(async () => {
-          try {
-            const { useIntegrationStore } = await import('./integrationStore')
-            const integrationStore = useIntegrationStore.getState()
-            integrationStore.setCurrentUserId(null)
-            integrationStore.clearAllData()
-          } catch { /* ignore */ }
-        }, 100)
+        // Defer integration-store cleanup to a microtask so the SDK callback
+        // returns first. The previous setTimeout(..., 100) had no rationale
+        // for the 100ms delay; queueMicrotask is fast and ordered.
+        queueMicrotask(() => {
+          void clearIntegrationStoreOnSignOut()
+        })
       }
     }
   })

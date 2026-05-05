@@ -6,7 +6,7 @@ import { Switch } from "@/components/ui/switch"
 import { Button } from "@/components/ui/button"
 import { Loader2, AlertTriangle, Package, ExternalLink } from "lucide-react"
 import { fetchWithTimeout } from "@/lib/utils/fetch-with-timeout"
-import { createClient } from "@/utils/supabase/client"
+import { getAuthHeader } from "@/lib/auth/getAuthHeader"
 import { logger } from "@/lib/utils/logger"
 
 interface PurchaseRow {
@@ -34,15 +34,7 @@ interface PackState {
   history: PurchaseRow[]
 }
 
-async function getAuthToken(): Promise<string | null> {
-  try {
-    const supabase = createClient()
-    const { data: { session } } = await supabase.auth.getSession()
-    return session?.access_token ?? null
-  } catch {
-    return null
-  }
-}
+// PR-AUTH-5: getAuthToken() helper removed; use getAuthHeader() directly.
 
 export function TaskPackSection() {
   const [state, setState] = useState<PackState | null>(null)
@@ -53,15 +45,9 @@ export function TaskPackSection() {
 
   const fetchState = useCallback(async () => {
     try {
-      const token = await getAuthToken()
-      if (!token) {
-        setError("Not signed in")
-        setLoading(false)
-        return
-      }
       const response = await fetchWithTimeout(
         "/api/billing/packs",
-        { method: "GET", headers: { Authorization: `Bearer ${token}` } },
+        { method: "GET", headers: { ...(await getAuthHeader()) } },
         10000
       )
       if (!response.ok) {
@@ -86,13 +72,11 @@ export function TaskPackSection() {
     setPurchasing(true)
     setError(null)
     try {
-      const token = await getAuthToken()
-      if (!token) throw new Error("Not signed in")
       const response = await fetchWithTimeout(
         "/api/billing/packs/checkout",
         {
           method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          headers: { "Content-Type": "application/json", ...(await getAuthHeader()) },
           body: JSON.stringify({}),
         },
         15000
@@ -118,13 +102,11 @@ export function TaskPackSection() {
     setSavingAutoBuy(true)
     setError(null)
     try {
-      const token = await getAuthToken()
-      if (!token) throw new Error("Not signed in")
       const response = await fetchWithTimeout(
         "/api/billing/packs",
         {
           method: "PATCH",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          headers: { "Content-Type": "application/json", ...(await getAuthHeader()) },
           body: JSON.stringify({ autoBuyEnabled: enabled }),
         },
         10000

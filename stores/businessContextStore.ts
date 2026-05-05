@@ -55,7 +55,9 @@ export async function loadBusinessContext(): Promise<BusinessContextEntry[]> {
     store.setLoading(true)
     store.setError(null)
 
-    const { data: { user } } = await supabase.auth.getUser()
+    // PR-AUTH-5: cached user id; no getUser() lock contention.
+    const { useAuthStore } = await import('./authStore')
+    const user = useAuthStore.getState().user
     if (!user) throw new Error('No authenticated user')
 
     // Cast: business_context table not yet in generated Supabase types
@@ -89,7 +91,9 @@ export async function addBusinessContextEntry(entry: {
   try {
     store.setError(null)
 
-    const { data: { user } } = await supabase.auth.getUser()
+    // PR-AUTH-5: cached user id; no getUser() lock contention.
+    const { useAuthStore } = await import('./authStore')
+    const user = useAuthStore.getState().user
     if (!user) throw new Error('No authenticated user')
 
     const { data, error } = await (supabase as any)

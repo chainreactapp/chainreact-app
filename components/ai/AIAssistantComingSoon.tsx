@@ -34,10 +34,11 @@ export function AIAssistantComingSoon({ onClose }: AIAssistantComingSoonProps) {
     setIsSubmitting(true)
 
     try {
-      const supabase = createClient()
-      const { data: { user } } = await supabase.auth.getUser()
+      // PR-AUTH-5: read user id from the cached auth store (no lock contention).
+      const { useAuthStore } = await import('@/stores/authStore')
+      const userId = useAuthStore.getState().user?.id
 
-      if (!user) {
+      if (!userId) {
         toast({
           title: 'Not authenticated',
           description: 'Please sign in to join the waitlist',
@@ -47,10 +48,11 @@ export function AIAssistantComingSoon({ onClose }: AIAssistantComingSoonProps) {
       }
 
       // Store waitlist signup (you'll need to create this table)
+      const supabase = createClient()
       const { error } = await supabase
         .from('ai_assistant_waitlist')
         .insert({
-          user_id: user.id,
+          user_id: userId,
           email: email,
           source: 'ai_assistant_modal',
         })

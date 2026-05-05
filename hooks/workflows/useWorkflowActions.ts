@@ -60,8 +60,9 @@ export function useWorkflowActions() {
           .eq('workflow_id', workflowId)
       ])
 
-      // Create a copy with a new name
-      const { data: { user } } = await supabase.auth.getUser()
+      // PR-AUTH-5: cached user id.
+      const { useAuthStore } = await import('@/stores/authStore')
+      const user = useAuthStore.getState().user
       if (!user) {
         throw new Error('User not authenticated')
       }

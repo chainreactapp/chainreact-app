@@ -593,6 +593,87 @@ NO automatic commits/push unless explicitly asked.
 - Use `@/utils/supabaseClient` for all client-side Supabase access
 - `PROFILE_COLUMNS` in `authBootMachine.ts` and `PROFILE_SELECT` in `ensureUserProfile.ts` must stay in sync — both include `admin_capabilities`
 
+## SessionManager getSession Deadlock Fallback
+**File:** `lib/auth/session.ts` — `SessionManager.getSecureUserAndSession()`
+
+**Symptom:** Click on "Create Workflow" (or any other action that hits `getSecureUserAndSession`) does nothing. Console shows `Supabase getSession timed out after 8000ms`.
+
+**Root cause:** `@supabase/ssr`'s `auth.getSession()` acquires an internal navigator lock and can deadlock when a concurrent refresh is in flight (this is also why `authBootMachine.ts` races `getSession()` against `onAuthStateChange`).
+
+**Fix (2026-05-05):** `getSecureUserAndSession()` now uses a **3s timeout** on `getSession()` and **catches the timeout** so it falls through to `refreshSession()` (separate code path inside the supabase client, not wedged on the same lock). `refreshSession()` keeps an 8s timeout. Only after both fail do we throw "No authenticated user found. Please log in." Constants: `GET_SESSION_TIMEOUT_MS = 3000`, `REFRESH_SESSION_TIMEOUT_MS = 8000`.
+
+**Companion fix:** `hooks/useCreateAndOpenWorkflow.ts` now surfaces a destructive toast on any creation failure ("Couldn't create workflow — your session may have expired" for auth-shaped errors, or "Please refresh and try again" for everything else). Click sites in `WorkflowsPageContent.tsx` and `CommandPalette.tsx` wrap `createAndOpen()` with `.catch(() => {})` because the toast already informs the user — preventing unhandled promise rejections in the console.
+
+**Tests:** `__tests__/auth/session-fallback.test.ts` (6 tests for getSession success / timeout / error / both-failed paths), `__tests__/hooks/useCreateAndOpenWorkflow.test.tsx` (3 tests for auth-flavored toast / generic toast / no-toast-on-success).
+
+## Auth Reliability Refactor — In Progress
+**Plan:** [`learning/docs/auth-reliability-refactor.md`](./learning/docs/auth-reliability-refactor.md) — 7-PR series to make cached auth state the normal path for client actions and eliminate `getSession()` lock contention as a UI-blocking class.
+
+**PR-AUTH-1 shipped 2026-05-05:** `stores/authStore.ts` `onAuthStateChange` callback is now **synchronous**. Async profile-refresh and `boot()` re-entry are dispatched via `queueMicrotask` so the SDK callback returns immediately and releases the navigator lock. The `setTimeout(..., 100)` for SIGNED_OUT integration cleanup is now `queueMicrotask` (the 100ms had no rationale). Two new module-level helpers extracted: `refreshProfileAfterSignIn(userId, profileSnapshot)` and `clearIntegrationStoreOnSignOut()`. Cross-tab broadcast preserves pre-PR-AUTH-1 semantics — broadcasts the snapshot captured at event-fire time, not the post-fetch profile. **Rule:** `onAuthStateChange` callbacks MUST stay synchronous. Awaiting Supabase / REST / boot work inside the listener holds the navigator lock and re-introduces the original "Create Workflow silent click" bug. 8 tests at [`__tests__/auth/onAuthStateChange-sync.test.ts`](./__tests__/auth/onAuthStateChange-sync.test.ts).
+
+**PR-AUTH-2 shipped 2026-05-05:** `BootSlice` extended with `accessToken: string | null` and `accessTokenExpiresAt: number | null` (epoch seconds, mirrors supabase shape). New helper `extractSessionTokens(session | null)` in [`stores/authBootMachine.ts`](./stores/authBootMachine.ts) is the single source for translating a session payload into the cache fields. Wired at every session-update site: boot pipeline (success + no-session paths), `onAuthStateChange` for SIGNED_IN / TOKEN_REFRESHED / INITIAL_SESSION / USER_UPDATED (write) + SIGNED_OUT (clear), explicit `refreshSession()` success, `signIn()` success, `signOut()` (both happy + error paths). **Tokens are in-memory only** — the persist `partialize` allowlist returns only `user` + `profile`, so the cache fields are auto-excluded from `chainreact-auth` localStorage. Supabase keeps owning the durable copy at `sb-<ref>-auth-token`. 15 tests at [`__tests__/auth/authStore-token-cache.test.ts`](./__tests__/auth/authStore-token-cache.test.ts) (extractor purity, BOOT_INITIAL_STATE, all 5 listener-event paths, refreshSession success/no-session, signOut, partialize-excludes-token, no-token-in-persisted-payload).
+
+**PR-AUTH-3 shipped 2026-05-05:** `getAuthHeader({ mode? })` at [`lib/auth/getAuthHeader.ts`](./lib/auth/getAuthHeader.ts) — single client-side helper for `Authorization` headers. Algorithm: read cached token + expiry from Zustand; if `expiresAt - now > 60s`, return `{ Authorization: 'Bearer <token>' }` synchronously without touching supabase; otherwise enter intra-tab single-flight refresh via `SessionManager.getSecureUserAndSession()` (which itself has the PR-AUTH-1 getSession→refreshSession fallback). Concurrent callers share one in-flight refresh promise. **Never throws** — failures resolve to `{}` so callers' fetch hits a normal 401. `mode: "cache-only"` returns cached header if fresh, else `{}` immediately (no refresh) — for fire-and-forget telemetry / debug paths that must not block on auth. Companion synchronous reader `getCachedAccessToken()` for non-header use cases (e.g. WebSocket auth strings). Refresh failure clears the cache so subsequent `cache-only` callers correctly see `{}` instead of a stale lie. 17 tests at [`__tests__/auth/getAuthHeader.test.ts`](./__tests__/auth/getAuthHeader.test.ts) covering all 7 contract requirements + edge cases (60s boundary, expired tokens, null expires_at, 50 concurrent callers, per-wave single-flight reset, post-failure cache state).
+
+**Import path:** `import { getAuthHeader } from "@/lib/auth/getAuthHeader"` (direct, used by all existing callers) or `import { getAuthHeader } from "@/lib/auth"` (via the narrow barrel). Both work after PR-AUTH-6 removed the legacy `lib/auth.ts` shadow.
+
+**PR-AUTH-4 shipped 2026-05-05:** [`lib/apiClient.ts`](./lib/apiClient.ts) — the highest-traffic call site for auth headers — migrated to `getAuthHeader()`. The pre-PR `getUser()` + `getSession()` double-call per request is gone; the body is now a one-line `return getAuthHeader()`. Also dropped 5+ noisy `logger.info` lines per request (per-request log moved to `logger.debug` with a single structured field `hasAuthHeader`). 6 tests at [`__tests__/lib/apiClient-cached-auth.test.ts`](./__tests__/lib/apiClient-cached-auth.test.ts) including the **regression guard**: when `supabase.auth.getSession()` is mocked to hang forever (the original "Create Workflow silent click" failure mode), apiClient still completes requests in <200ms via the cached token. Also covers concurrent-request single-flight (10 concurrent → 1 refresh), refresh-failure pass-through (no Authorization header → normal 401 response), and content-type/credentials forwarding. Steady-state effect: removes ~50% of `getSession()` calls from the app's hot path because every API request used to trip through it.
+
+**Auth header rule:** Client code MUST get its `Authorization` header via `getAuthHeader()` from `@/lib/auth/getAuthHeader` — never call `supabase.auth.getSession()` / `getUser()` for token extraction in components, hooks, or stores outside `lib/auth/`, `stores/auth*.ts`, `app/auth/**`, or `components/auth/**`. ESLint enforcement deferred to PR-AUTH-7.
+
+**PR-AUTH-5 shipped 2026-05-05:** long-tail call site sweep across the three buckets the audit identified. **27 files migrated, 50 client-side `getSession`/`getUser` call sites removed.** Split into 3 sub-PRs by area for reviewability:
+
+- **5a — Workflow config field loaders (12 files, 22 sites):** `components/workflows/configuration/providers/GenericConfiguration.tsx` (×6), `fields/gmail/GmailAttachmentField.tsx` (×3), `fields/googledrive/GoogleDriveFileField.tsx` (×3), `ShareConnectionDialog.tsx` (×3), `ServiceConnectionSelector.tsx`, `tabs/SetupTab.tsx`, `hooks/useFieldChangeHandler.ts`, `providers/dropbox/dropboxOptionsLoader.ts`, `providers/google-drive/GoogleDriveOptionsLoader.ts`, `fields/notion/NotionBlockFields.tsx`, `fields/shared/GenericTextInput.tsx`, `components/workflows/OneNoteSelector.tsx`. The `OneNoteSelector` token-state-on-mount workaround was removed entirely (auth header now comes from cache per-request, no separate getSession round-trip on mount).
+- **5b — AI / Billing / File-upload (7 files, 15 sites):** `components/ai/AIAssistantContent.tsx` (8 getSession + 2 getUser, the longest tail in any single file), `components/ai/VoiceMode.tsx`, `components/ai/VoiceModeSimple.tsx` (×2), `components/ai/AIAssistantComingSoon.tsx`, `components/billing/OverageToggle.tsx`, `components/billing/TaskPackSection.tsx`, `components/ui/file-upload.tsx`. The non-blocking `loadProactiveInsights` and `loadConversations`/`loadConversation`/`saveConversation`/`updateConversation`/`deleteConversation` paths use `mode: 'cache-only'` so they preserve the existing "skip when signed out" semantics without a getSession call. The two billing components had local `getAuthToken()` helpers; both removed in favor of direct `getAuthHeader()` calls.
+- **5c — Stores + hooks (8 files, 13 sites):** `stores/activityStore.ts`, `stores/businessContextStore.ts` (×2), `stores/billingStore.ts` (2 getUser + 1 getSession), `stores/userProfileStore.ts` (×2), `stores/workflowPreferencesStore.ts` (×2), `stores/workflowStore.ts:1171`, `hooks/workflows/useWorkflowActions.ts`, `hooks/workflows/useWorkflowExecution.ts`. `getUser()` callers now read `useAuthStore.getState().user?.id` from the cached store; the one `getSession()` site (billing checkout) uses `getAuthHeader()`.
+
+**Allowed remaining call sites** (intentionally NOT migrated — owned by the auth subsystem or running server-side):
+- `lib/auth/session.ts` — `SessionManager` itself (the canonical session resolver).
+- `stores/authBootMachine.ts:405` — boot pipeline race (canonical session resolution at app start).
+- `components/auth/LoginForm.tsx`, `components/auth/RegisterForm.tsx` — sign-in/sign-up UI inside `components/auth/**`.
+- `middleware.ts`, `lib/utils/admin-auth.ts` — server-side cookie-based auth (not browser-lock-bound).
+- All `app/api/**` and other server routes — server-side `auth.getUser()` uses the cookie-based SSR client; not the same lock.
+
+**Out-of-scope follow-up (deferred from PR-AUTH-5):** 5 client-side files remain that don't fit into the 3 buckets the user scoped: `components/admin/BetaTestersContent.tsx` (1 getUser), `components/test/HitlTestHarness.tsx` (1 getUser), `lib/integrations/globalDataPreloader.ts` (1 getUser), `lib/analytics/predictiveAnalytics.ts` (3 getUser), `lib/workflows/configPersistence.ts` (5 getUser, "use client"-marked). Migrate alongside PR-AUTH-7's ESLint guard rollout — the guard will surface them as failures and the migration becomes mechanical. **All swept by PR-AUTH-7.**
+
+**PR-AUTH-6 shipped 2026-05-05:** four unused-and-divergent client paths deleted, two divergent invite pages migrated.
+
+- **Deleted [`lib/supabase.ts`](./lib/supabase.ts), [`lib/supabase-context.ts`](./lib/supabase-context.ts), [`components/providers/SupabaseProvider.tsx`](./components/providers/SupabaseProvider.tsx)** — together they constructed a second non-singleton browser client at root layout mount and exposed an unused `SupabaseContext`. Verified zero consumers via `grep` before delete (only doc-references to `getSupabaseClient` from `lib/supabase.ts` remained, and the `SupabaseContext` was only consumed by its own provider). `app/layout.tsx` `<SupabaseProvider>` wrapper removed.
+- **Deleted [`lib/auth.ts`](./lib/auth.ts)** — legacy Lucia session stubs (`lucia`, `auth`, `getAuthSession`, `validateRequest`, `generateId`). Verified zero consumers via grep — `generateId` callers all import from `src/lib/workflows/compat/v2Adapter`, not this file. Removing the file unshadowed [`lib/auth/index.ts`](./lib/auth/index.ts) so `import { getAuthHeader } from "@/lib/auth"` now resolves to the barrel.
+- **Migrated [`app/invite/page.tsx`](./app/invite/page.tsx) and [`app/invite/signup/page.tsx`](./app/invite/signup/page.tsx)** off the locally-constructed `@supabase/supabase-js` client. The invite landing page now reads login state from `useAuthStore.getState().user` (cached, no lock); the signup page now uses the SSR singleton at `@/utils/supabase/client` for `auth.signUp`. Eliminates the divergent-cookie-stack class — invite signups now populate the same session that `authStore` listens to via `onAuthStateChange`.
+
+**Browser-client inventory after PR-AUTH-6:** exactly **one** singleton at `utils/supabase/client.ts` (`createBrowserClient` with `isSingleton: true`). The audit-time count of 4+ distinct construction paths is now 1.
+
+**PR-AUTH-7 shipped 2026-05-05 — refactor closes out.** Three deliverables:
+
+1. **Instrumentation.** [`lib/auth/getAuthHeader.ts`](./lib/auth/getAuthHeader.ts) emits structured event tags on every code path so a future metrics sink can compute hit-rate / refresh-storm / failure metrics by scraping the `event` field. Tags: `auth.cache_hit` (mode=auto / cache-only), `auth.cache_only_miss`, `auth.cache_miss_refreshed`, `auth.cache_miss_failed`, `auth.single_flight_dedup` (one per concurrent caller that joined an in-flight refresh), `auth.refresh_failure` (logged at `warn`, not `debug`). Plus existing [`lib/auth/session.ts`](./lib/auth/session.ts) timeout-fallback log promoted to `event: "auth.getSession_timeout_fallback"` with the timeout window included.
+
+2. **ESLint guard.** [`eslint.config.mjs`](./eslint.config.mjs) `no-restricted-syntax` rule. AST selector matches **zero-arg** `<x>.auth.getSession()` / `<x>.auth.getUser()` calls — the zero-arg constraint deliberately excludes server-side token-validation (`auth.getUser(jwt)` takes a bearer token argument and uses the admin client; not lock-bound). Allow-list: `lib/auth/**`, `stores/auth*.ts`, `app/auth/**`, `components/auth/**`, `app/api/**`, `app/(app)/**/route.ts`, `app/actions/**`, `middleware.ts`, `lib/utils/admin-auth.ts`, `utils/supabase/middleware.ts`, plus enumerated server-component pages (`app/(app)/teams/**/page.tsx`, `app/(builder)/workflows/builder/**/page.tsx`), plus `__tests__/**`. New client pages MUST use `getAuthHeader()` — the rule will fail CI otherwise.
+
+3. **Mechanical sweep — 8 client-side files migrated** (5 deferred from PR-AUTH-5 + 3 additional surfaced by the new guard):
+   - `components/admin/BetaTestersContent.tsx` — `userData?.user?.id` → cached `useAuthStore.getState().user?.id`.
+   - `components/test/HitlTestHarness.tsx` — same pattern.
+   - `lib/integrations/globalDataPreloader.ts` — `validateUserAccess()` reads cached store.
+   - `lib/analytics/predictiveAnalytics.ts` — added private `getCachedUserId()` helper, replaced 3 inline `(await this.supabase.auth.getUser()).data.user?.id` sites.
+   - `lib/workflows/configPersistence.ts` — added module-level `getCachedUser()` helper, replaced 5 sites of `const { data: { user }, error: userError } = await supabase.auth.getUser()`.
+   - `app/(app)/admin/billing/page.tsx` — local `getAuthToken()` helper deleted, uses `getAuthHeader()`.
+   - `app/debug/stripe-account/page.tsx` — same pattern.
+   - `app/test/apps/page.tsx` — same pattern.
+
+**9 new tests at [`__tests__/auth/getAuthHeader.test.ts`](./__tests__/auth/getAuthHeader.test.ts) (7 instrumentation) and [`__tests__/auth/session-fallback.test.ts`](./__tests__/auth/session-fallback.test.ts) (2 instrumentation):** assert event tag presence on cache_hit (auto + cache-only), cache_only_miss isolation (no refresh side-effects), cache_miss_refreshed, cache_miss_failed + refresh_failure pairing, single_flight_dedup count under 5 concurrent callers, refresh_failure at WARN level (not DEBUG), and getSession_timeout_fallback tag with `timeoutMs: 3000` field. **64/64 tests pass** across the auth + hooks + lib suites.
+
+**Final state — refactor acceptance criteria met:**
+- ✅ 0 `supabase.auth.getSession()` zero-arg calls outside the allow-list.
+- ✅ 0 `supabase.auth.getUser()` zero-arg calls outside the allow-list.
+- ✅ `onAuthStateChange` callbacks synchronous (PR-AUTH-1).
+- ✅ Cached token lives in Zustand, never persisted to localStorage (PR-AUTH-2).
+- ✅ Single `getAuthHeader()` helper with intra-tab single-flight refresh (PR-AUTH-3).
+- ✅ `apiClient` migrated — every API request uses cached header (PR-AUTH-4).
+- ✅ 27+8 = 35 client-side files swept (PR-AUTH-5 + PR-AUTH-7).
+- ✅ Exactly one browser client singleton (PR-AUTH-6).
+- ✅ ESLint guard prevents regressions (PR-AUTH-7).
+- ✅ Structured event tags emit on every cache path for future observability (PR-AUTH-7).
+
 ## AI Agent Cold Start Bug
 **Symptom:** Agent stuck on "Outline the flow to achieve the task" after cold dev restart.
 **Root Cause:** `chatHistoryLoaded` waits for `authInitialized` which can be slow.

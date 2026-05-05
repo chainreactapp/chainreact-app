@@ -777,29 +777,16 @@ export function GenericTextInput({
               logger.info('📎 [GenericTextInput] Uploading files:', files.length);
               
               try {
-                // Get auth token from Supabase
-                let token = null;
-                
-                try {
-                  // Import the app's Supabase client
-                  const { supabase } = await import('@/utils/supabaseClient');
-                  const { data: { session } } = await supabase.auth.getSession();
-                  token = session?.access_token;
-                  if (!token) {
-                    logger.error('No auth session found');
-                    // Store file metadata without upload
-                    const fileArray = Array.from(files).map(file => ({
-                      name: file.name,
-                      size: file.size,
-                      type: file.type,
-                      lastModified: file.lastModified
-                    }));
-                    onChange(field.multiple ? fileArray : fileArray[0]);
-                    return;
-                  }
-                } catch (e) {
-                  logger.error('Failed to get auth token:', e);
-                  // Store file metadata without upload
+                // PR-AUTH-5: cached auth header. If no token is available
+                // (signed out / refresh failed), the upload will hit a 401
+                // and the existing !response.ok branch surfaces the error.
+                // Pre-PR this stored unsigned file metadata as a fallback;
+                // we keep that fallback when getAuthHeader returns {} so
+                // existing UX (workflow opens with file metadata) still works
+                // for new/unsaved workflows that don't need the server.
+                const { getAuthHeader } = await import('@/lib/auth/getAuthHeader');
+                const authHeader = await getAuthHeader();
+                if (!authHeader.Authorization) {
                   const fileArray = Array.from(files).map(file => ({
                     name: file.name,
                     size: file.size,
@@ -809,26 +796,24 @@ export function GenericTextInput({
                   onChange(field.multiple ? fileArray : fileArray[0]);
                   return;
                 }
-                
+
                 // Get workflow and node IDs from context
                 const workflowId = field.workflowId || 'temp';
                 const nodeId = field.nodeId || `temp-${Date.now()}`;
-                
+
                 const uploadedFiles = [];
-                
+
                 for (const file of Array.from(files)) {
                   logger.info('📎 [GenericTextInput] Uploading file:', file.name);
-                  
+
                   const formData = new FormData();
                   formData.append('file', file);
                   formData.append('workflowId', workflowId);
                   formData.append('nodeId', nodeId);
-                  
+
                   const response = await fetch('/api/workflows/files/upload', {
                     method: 'POST',
-                    headers: {
-                      'Authorization': `Bearer ${token}`
-                    },
+                    headers: authHeader,
                     body: formData
                   });
                   

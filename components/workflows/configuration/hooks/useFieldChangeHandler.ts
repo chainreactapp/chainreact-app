@@ -692,18 +692,13 @@ export function useFieldChangeHandler({
           try {
             // Special handling for preview fields (textareas that show dynamic content)
             if (depField.name === 'filePreview' && nodeInfo?.providerId === 'google-drive') {
-              // For preview fields, fetch the preview and set it directly as the value
-              // Import supabase at the top of the function to get the session
-              const { supabase } = await import('@/utils/supabaseClient');
-              const { data: { session } } = await supabase.auth.getSession();
+              // PR-AUTH-5: cached token (no getSession on the user-action hot path).
+              const { getAuthHeader } = await import('@/lib/auth/getAuthHeader');
 
               const headers: HeadersInit = {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                ...(await getAuthHeader()),
               };
-
-              if (session?.access_token) {
-                headers['Authorization'] = `Bearer ${session.access_token}`;
-              }
 
               const response = await fetch(`/api/integrations/google-drive/file-preview`, {
                 method: 'POST',

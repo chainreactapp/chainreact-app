@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils'
 interface LightningLoaderProps {
   className?: string
   size?: 'sm' | 'md' | 'lg' | 'xl'
-  color?: 'primary' | 'white' | 'blue' | 'yellow'
+  color?: 'primary' | 'white' | 'blue' | 'yellow' | 'orange'
 }
 
 export function LightningLoader({ 
@@ -25,7 +25,8 @@ export function LightningLoader({
     primary: 'text-blue-500',
     white: 'text-white',
     blue: 'text-blue-400',
-    yellow: 'text-yellow-400'
+    yellow: 'text-yellow-400',
+    orange: 'text-orange-400',
   }
 
   return (

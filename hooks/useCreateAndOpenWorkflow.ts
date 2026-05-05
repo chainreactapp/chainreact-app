@@ -9,7 +9,10 @@ import { useRouter } from 'next/navigation'
 import { useWorkflowStore } from '@/stores/workflowStore'
 import { useWorkspaceContext } from '@/hooks/useWorkspaceContext'
 import { useAuthStore } from '@/stores/authStore'
+import { toast } from '@/hooks/use-toast'
 import { logger } from '@/lib/utils/logger'
+
+const SESSION_TIMEOUT_PATTERN = /timed out|getSession|refreshSession|No authenticated user/i
 
 interface CreateWorkflowOptions {
   /** Initial prompt to pass to the AI agent (optional) */
@@ -69,8 +72,22 @@ export function useCreateAndOpenWorkflow() {
       return { flowId }
     } catch (err: any) {
       const message = err?.message || 'Failed to create workflow'
-      logger.error('[useCreateAndOpenWorkflow] Error', { error: message })
+      const isAuthIssue = SESSION_TIMEOUT_PATTERN.test(message)
+      logger.error('[useCreateAndOpenWorkflow] Error', {
+        error: message,
+        isAuthIssue,
+        workspaceType: options.workspaceType || workspaceContext?.type || 'personal',
+      })
       setError(message)
+
+      toast({
+        variant: 'destructive',
+        title: "Couldn't create workflow",
+        description: isAuthIssue
+          ? 'Your session may have expired. Please refresh and try again.'
+          : 'Please refresh and try again.',
+      })
+
       throw err
     } finally {
       setIsCreating(false)

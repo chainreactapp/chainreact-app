@@ -8,22 +8,16 @@ import { Badge } from "@/components/ui/badge"
 import { CheckCircle, XCircle, Users, Crown, Shield, Eye, LogIn, UserPlus } from "lucide-react"
 import { LightningLoader } from '@/components/ui/lightning-loader'
 import { toast } from "sonner"
-import { createClient, SupabaseClient } from "@supabase/supabase-js"
+import { useAuthStore } from '@/stores/authStore'
 
 import { logger } from '@/lib/utils/logger'
 
-// Lazily initialized Supabase client to avoid build-time errors
-let supabaseClient: SupabaseClient | null = null
-
-function getSupabase(): SupabaseClient {
-  if (!supabaseClient) {
-    supabaseClient = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!
-    )
-  }
-  return supabaseClient
-}
+// PR-AUTH-6: removed the locally-constructed @supabase/supabase-js client.
+// That client used a different cookie/storage stack from the SSR singleton
+// at @/utils/supabase/client and didn't share auth state with the rest of
+// the app. We now read login state from the cached Zustand authStore — the
+// same source the rest of the app uses, so a logged-in user landing on an
+// invite link is recognized immediately.
 
 function InvitePageContent() {
   const searchParams = useSearchParams()
@@ -49,9 +43,8 @@ function InvitePageContent() {
 
   const checkAuthAndValidate = async () => {
     try {
-      // Check if user is logged in
-      const { data: { user } } = await getSupabase().auth.getUser()
-      const userIsLoggedIn = !!user
+      // PR-AUTH-6: read login state from cached auth store (no lock).
+      const userIsLoggedIn = !!useAuthStore.getState().user
       setIsLoggedIn(userIsLoggedIn)
 
       // Validate invitation

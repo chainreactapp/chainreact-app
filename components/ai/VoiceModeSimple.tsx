@@ -6,7 +6,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Mic, MicOff, Phone, Volume2, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/utils/logger'
-import { createClient } from '@/utils/supabase/client'
+import { getAuthHeader } from '@/lib/auth/getAuthHeader'
 
 interface VoiceModeProps {
   onClose: () => void
@@ -669,26 +669,16 @@ export function VoiceModeSimple({ onClose, onTranscript }: VoiceModeProps) {
         return
       }
 
-      // Get auth token
-      const supabase = createClient()
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session?.access_token) {
-        throw new Error('Not authenticated')
-      }
+      // PR-AUTH-5: cached auth header.
+      logger.info('📤 Sending request to /api/ai/transcribe')
 
-      logger.info('🔑 Got auth token, creating FormData')
-
-      // Create form data
       const formData = new FormData()
       formData.append('audio', audioBlob, 'recording.webm')
 
-      logger.info('📤 Sending request to /api/ai/transcribe')
-
-      // Send to our API endpoint which will call OpenAI Whisper
       const response = await fetch('/api/ai/transcribe', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${session.access_token}`,
+          ...(await getAuthHeader()),
         },
         body: formData,
       })
@@ -753,19 +743,12 @@ export function VoiceModeSimple({ onClose, onTranscript }: VoiceModeProps) {
         content: userMessage
       })
 
-      // Get auth token
-      const supabase = createClient()
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session?.access_token) {
-        throw new Error('Not authenticated')
-      }
-
-      // Call AI assistant API
+      // PR-AUTH-5: cached auth header.
       const response = await fetch('/api/ai/assistant', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${session.access_token}`,
           'Content-Type': 'application/json',
+          ...(await getAuthHeader()),
         },
         body: JSON.stringify({
           message: userMessage,

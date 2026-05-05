@@ -122,10 +122,9 @@ export function HitlTestHarness() {
     setCheckingConnection(true)
     setConnectError(null)
     try {
-      const supabase = createClient()
-      const {
-        data: { user },
-      } = await supabase.auth.getUser()
+      // PR-AUTH-7: cached user id from auth store.
+      const { useAuthStore } = await import("@/stores/authStore")
+      const user = useAuthStore.getState().user
 
       if (!user) {
         setConnectError("You must be signed in to run HITL tests.")
@@ -135,6 +134,7 @@ export function HitlTestHarness() {
 
       setUserId(user.id)
 
+      const supabase = createClient()
       const { data, error } = await supabase
         .from("integrations")
         .select("id, provider, status")

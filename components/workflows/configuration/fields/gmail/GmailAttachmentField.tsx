@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Loader2, Upload, Link, Database, X, File } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { supabase } from "@/utils/supabaseClient";
+import { getAuthHeader } from "@/lib/auth/getAuthHeader";
 import VariablePicker from "../../../VariablePicker";
 
 import { logger } from '@/lib/utils/logger'
@@ -101,22 +101,19 @@ export function GmailAttachmentField({
     // If there's already an uploaded file, remove it first to prevent orphaned files
     if (uploadedFile && uploadedFile.nodeId) {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session) {
-          // Use the stored nodeId which should be a valid UUID
-          const fileNodeId = uploadedFile.nodeId;
-          let actualWorkflowId = workflowIdFromUrl || workflowId || '';
-          if (!actualWorkflowId || actualWorkflowId === 'undefined' || actualWorkflowId === 'null' || actualWorkflowId === '') {
-            actualWorkflowId = crypto.randomUUID();
-          }
-          
-          await fetch(`/api/workflows/gmail/attachments/upload?nodeId=${fileNodeId}&workflowId=${actualWorkflowId}`, {
-            method: 'DELETE',
-            headers: {
-              'Authorization': `Bearer ${session.access_token}`,
-            },
-          });
+        // PR-AUTH-5: cached auth header. Best-effort cleanup; ignore failures.
+        const fileNodeId = uploadedFile.nodeId;
+        let actualWorkflowId = workflowIdFromUrl || workflowId || '';
+        if (!actualWorkflowId || actualWorkflowId === 'undefined' || actualWorkflowId === 'null' || actualWorkflowId === '') {
+          actualWorkflowId = crypto.randomUUID();
         }
+
+        await fetch(`/api/workflows/gmail/attachments/upload?nodeId=${fileNodeId}&workflowId=${actualWorkflowId}`, {
+          method: 'DELETE',
+          headers: {
+            ...(await getAuthHeader()),
+          },
+        });
       } catch (error) {
         // Continue with upload even if cleanup failed
       }
@@ -125,23 +122,19 @@ export function GmailAttachmentField({
     setUploading(true);
 
     try {
-      // Get the current session for auth token
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-      if (sessionError || !session) {
-        throw new Error('Not authenticated. Please sign in and try again.');
-      }
-
+      // PR-AUTH-5: cached auth header. Missing token → server returns 401 →
+      // !response.ok branch surfaces the API's error message via alert().
       // Always use a proper UUID for the file storage, but keep the original nodeId for reference
       // The nodeId from the workflow (like "node-1757693755059-gk6c930g6") is not a valid UUID
       const fileStorageId = crypto.randomUUID();
-      
+
       // Use workflow ID from URL first, then prop, then generate if needed
       let actualWorkflowId = workflowIdFromUrl || workflowId || '';
       if (!actualWorkflowId || actualWorkflowId === 'undefined' || actualWorkflowId === 'null' || actualWorkflowId === '') {
         // For new workflows that haven't been saved yet, generate a UUID
         actualWorkflowId = crypto.randomUUID();
       }
-      
+
       // Upload file to our Gmail attachments API
       const formData = new FormData();
       formData.append('file', file);
@@ -151,7 +144,7 @@ export function GmailAttachmentField({
       const response = await fetch('/api/workflows/gmail/attachments/upload', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${session.access_token}`,
+          ...(await getAuthHeader()),
         },
         body: formData,
       });
@@ -204,25 +197,20 @@ export function GmailAttachmentField({
 
     try {
       // Get the current session for auth token
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-      if (sessionError || !session) {
-        throw new Error('Not authenticated. Please sign in and try again.');
-      }
-
-      // Use the stored nodeId from uploadedFile (which should be a proper UUID)
+      // PR-AUTH-5: cached auth header.
       const fileNodeId = uploadedFile.nodeId;
-      
+
       // Use workflow ID from URL first, then prop, then generate if needed
       let actualWorkflowId = workflowIdFromUrl || workflowId || '';
       if (!actualWorkflowId || actualWorkflowId === 'undefined' || actualWorkflowId === 'null' || actualWorkflowId === '') {
         actualWorkflowId = crypto.randomUUID();
       }
-      
+
       // Delete the file from storage
       await fetch(`/api/workflows/gmail/attachments/upload?nodeId=${fileNodeId}&workflowId=${actualWorkflowId}`, {
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${session.access_token}`,
+          ...(await getAuthHeader()),
         },
       });
 

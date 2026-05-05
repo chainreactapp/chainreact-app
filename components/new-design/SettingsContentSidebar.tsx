@@ -109,7 +109,6 @@ export function SettingsContent({ initialSection }: SettingsContentProps) {
 
   // Default workspace state
   const { workspaces } = useWorkspaces()
-  const { updateDefaultWorkspace, clearDefaultWorkspace } = useAuthStore()
   const [defaultWorkspaceValue, setDefaultWorkspaceValue] = useState<string>("")
   const [savingDefaultWorkspace, setSavingDefaultWorkspace] = useState(false)
 
@@ -358,14 +357,14 @@ export function SettingsContent({ initialSection }: SettingsContentProps) {
       setSavingDefaultWorkspace(true)
 
       if (!value) {
-        await clearDefaultWorkspace()
+        await updateProfile({ default_workspace_type: null, default_workspace_id: null })
         toast({ title: "Success", description: "Default workspace cleared" })
       } else {
         const [workspaceType, workspaceId] = value.split(':')
-        await updateDefaultWorkspace(
-          workspaceType as 'personal' | 'team' | 'organization',
-          workspaceId || null
-        )
+        await updateProfile({
+          default_workspace_type: workspaceType as 'personal' | 'team' | 'organization',
+          default_workspace_id: workspaceId || null,
+        })
 
         const selectedWorkspace = workspaces.find((w: any) =>
           w.type === workspaceType && (w.id || '') === (workspaceId || '')
@@ -385,7 +384,7 @@ export function SettingsContent({ initialSection }: SettingsContentProps) {
   const handleClearDefaultWorkspace = async () => {
     try {
       setSavingDefaultWorkspace(true)
-      await clearDefaultWorkspace()
+      await updateProfile({ default_workspace_type: null, default_workspace_id: null })
       setDefaultWorkspaceValue("")
       toast({ title: "Success", description: "Default workspace cleared" })
     } catch (error) {

@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Loader2, Upload, Link, Database, X, File } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { supabase } from "@/utils/supabaseClient";
+import { getAuthHeader } from "@/lib/auth/getAuthHeader";
 import VariablePicker from "../../../VariablePicker";
 
 import { logger } from '@/lib/utils/logger'
@@ -114,21 +114,19 @@ export function GoogleDriveFileField({
     if (uploadedFile) {
       logger.info('🔄 [GoogleDriveFileField] Removing previous file before uploading new one');
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session) {
-          const fileNodeId = uploadedFile.nodeId || nodeId || currentNodeId || crypto.randomUUID();
-          let actualWorkflowId = workflowIdFromUrl || workflowId || '';
-          if (!actualWorkflowId || actualWorkflowId === 'undefined' || actualWorkflowId === 'null' || actualWorkflowId === '') {
-            actualWorkflowId = crypto.randomUUID();
-          }
-          
-          await fetch(`/api/workflows/files/upload?nodeId=${fileNodeId}&workflowId=${actualWorkflowId}`, {
-            method: 'DELETE',
-            headers: {
-              'Authorization': `Bearer ${session.access_token}`,
-            },
-          });
+        // PR-AUTH-5: cached auth header. Best-effort cleanup; ignore failures.
+        const fileNodeId = uploadedFile.nodeId || nodeId || currentNodeId || crypto.randomUUID();
+        let actualWorkflowId = workflowIdFromUrl || workflowId || '';
+        if (!actualWorkflowId || actualWorkflowId === 'undefined' || actualWorkflowId === 'null' || actualWorkflowId === '') {
+          actualWorkflowId = crypto.randomUUID();
         }
+
+        await fetch(`/api/workflows/files/upload?nodeId=${fileNodeId}&workflowId=${actualWorkflowId}`, {
+          method: 'DELETE',
+          headers: {
+            ...(await getAuthHeader()),
+          },
+        });
       } catch (error) {
         logger.warn('⚠️ [GoogleDriveFileField] Failed to remove previous file:', error);
         // Continue with upload even if cleanup failed
@@ -138,11 +136,8 @@ export function GoogleDriveFileField({
     setUploading(true);
 
     try {
-      // Get the current session for auth token
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-      if (sessionError || !session) {
-        throw new Error('Not authenticated. Please sign in and try again.');
-      }
+      // PR-AUTH-5: cached auth header. Missing token → server returns 401 →
+      // !response.ok branch surfaces the error via alert().
 
       // Generate a proper node ID if we have a pending action
       let actualNodeId = nodeId || currentNodeId || '';
@@ -179,7 +174,7 @@ export function GoogleDriveFileField({
       const response = await fetch('/api/workflows/files/upload', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${session.access_token}`,
+          ...(await getAuthHeader()),
         },
         body: formData,
       });
@@ -252,26 +247,20 @@ export function GoogleDriveFileField({
     if (!uploadedFile) return;
 
     try {
-      // Get the current session for auth token
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-      if (sessionError || !session) {
-        throw new Error('Not authenticated. Please sign in and try again.');
-      }
-
-      // Use the stored nodeId from uploadedFile (which has the proper UUID)
+      // PR-AUTH-5: cached auth header.
       const fileNodeId = uploadedFile.nodeId || nodeId || currentNodeId || crypto.randomUUID();
-      
+
       // Use workflow ID from URL first, then prop, then generate if needed
       let actualWorkflowId = workflowIdFromUrl || workflowId || '';
       if (!actualWorkflowId || actualWorkflowId === 'undefined' || actualWorkflowId === 'null' || actualWorkflowId === '') {
         actualWorkflowId = crypto.randomUUID();
       }
-      
+
       // Delete the file from storage
       await fetch(`/api/workflows/files/upload?nodeId=${fileNodeId}&workflowId=${actualWorkflowId}`, {
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${session.access_token}`,
+          ...(await getAuthHeader()),
         },
       });
 

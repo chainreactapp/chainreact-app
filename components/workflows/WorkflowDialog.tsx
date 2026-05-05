@@ -54,7 +54,7 @@ export default function WorkflowDialog({
   const { createNewWorkflow, updateWorkflowById } = useWorkflows()
   const { workspaces, loading: workspacesLoading } = useWorkspaces()
   const { setWorkspaceContext } = useWorkflowStore()
-  const { profile, updateDefaultWorkspace } = useAuthStore()
+  const { profile, updateProfile } = useAuthStore()
   const router = useRouter()
 
   const isEditMode = !!workflow
@@ -120,10 +120,10 @@ export default function WorkflowDialog({
         // If user checked "set as default", save it
         if (setAsDefault) {
           try {
-            await updateDefaultWorkspace(
-              workspaceType as 'personal' | 'team' | 'organization',
-              workspaceId || null
-            )
+            await updateProfile({
+              default_workspace_type: workspaceType as 'personal' | 'team' | 'organization',
+              default_workspace_id: workspaceId || null,
+            })
             logger.info("✅ [WorkflowDialog] Default workspace updated:", {
               workspaceType,
               workspaceId: workspaceId || null

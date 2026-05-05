@@ -35,7 +35,9 @@ export const useActivityStore = create<ActivityState>((set) => ({
         throw new Error("Supabase client not available")
       }
 
-      const { data: { user } } = await supabase.auth.getUser()
+      // PR-AUTH-5: read user id from cached auth store (no lock).
+      const { useAuthStore } = await import("./authStore")
+      const user = useAuthStore.getState().user
       if (!user) {
         set({ activities: [], loading: false })
         return

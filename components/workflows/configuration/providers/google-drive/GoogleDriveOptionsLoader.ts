@@ -1,22 +1,12 @@
 import { ProviderOptionsLoader } from '../types'
-import { supabase } from '@/utils/supabaseClient'
+import { getAuthHeader } from '@/lib/auth/getAuthHeader'
 
 import { logger } from '@/lib/utils/logger'
 
 export class GoogleDriveOptionsLoader implements ProviderOptionsLoader {
   private async getAuthHeaders(): Promise<HeadersInit> {
-    try {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (session?.access_token) {
-        return {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`
-        }
-      }
-    } catch (error) {
-      logger.error('[GoogleDriveOptionsLoader] Error getting auth session:', error)
-    }
-    return { 'Content-Type': 'application/json' }
+    // PR-AUTH-5: cached token path. Server returns 401 if token missing.
+    return { 'Content-Type': 'application/json', ...(await getAuthHeader()) }
   }
 
   async loadOptions(params: {

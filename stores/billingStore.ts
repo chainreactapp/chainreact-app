@@ -118,12 +118,10 @@ export const useBillingStore = create<BillingState & BillingActions>((set, get) 
         return
       }
 
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser()
-
-      if (userError || !user) {
+      // PR-AUTH-5: cached user id; no getUser() lock contention.
+      const { useAuthStore } = await import('./authStore')
+      const user = useAuthStore.getState().user
+      if (!user) {
         logger.info("User not authenticated for subscription fetch")
         return
       }
@@ -161,12 +159,10 @@ export const useBillingStore = create<BillingState & BillingActions>((set, get) 
         return
       }
 
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser()
-
-      if (userError || !user) {
+      // PR-AUTH-5: cached user id.
+      const { useAuthStore } = await import('./authStore')
+      const user = useAuthStore.getState().user
+      if (!user) {
         logger.info("User not authenticated for usage fetch")
         return
       }
@@ -256,18 +252,13 @@ export const useBillingStore = create<BillingState & BillingActions>((set, get) 
     try {
       logger.info("Creating checkout session for plan:", planId, "billing cycle:", billingCycle)
 
-      // Get the current session token
-      const supabase = createClient()
-      logger.info("Getting session...")
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession()
-      
-      if (sessionError || !session) {
-        logger.error("Session error:", sessionError)
+      // PR-AUTH-5: cached auth header.
+      const { getAuthHeader } = await import('@/lib/auth/getAuthHeader')
+      const authHeader = await getAuthHeader()
+      if (!authHeader.Authorization) {
         throw new Error("No active session found. Please sign in again.")
       }
-      
-      logger.info("Session obtained, making API request...")
-      
+
       // Use fetchWithTimeout for better timeout handling
       const response = await fetchWithTimeout(
         "/api/billing/checkout",
@@ -275,7 +266,7 @@ export const useBillingStore = create<BillingState & BillingActions>((set, get) 
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${session.access_token}`,
+            ...authHeader,
           },
           body: JSON.stringify({ planId, billingCycle }),
         },

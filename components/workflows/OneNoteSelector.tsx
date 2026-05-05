@@ -5,7 +5,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { InfoIcon } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '@/hooks/use-auth';
-import { supabase } from '@/utils/supabaseClient';
+import { getAuthHeader } from '@/lib/auth/getAuthHeader';
 
 import { logger } from '@/lib/utils/logger'
 
@@ -42,28 +42,16 @@ export function OneNoteSelector({
   const [isLoading, setIsLoading] = useState(true);
   const [items, setItems] = useState<OneNoteItem[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [token, setToken] = useState<string | null>(null);
-  
+
   const { user, isAuthenticated } = useAuth();
-  // Using supabase from @supabase/ssr (migrated from deprecated @supabase/auth-helpers-nextjs)
-  
-  // Get the auth token when component mounts
-  useEffect(() => {
-    async function getToken() {
-      if (!isAuthenticated || !user) return;
-      
-      const { data } = await supabase.auth.getSession();
-      if (data?.session?.access_token) {
-        setToken(data.session.access_token);
-      }
-    }
-    
-    getToken();
-  }, [isAuthenticated, user]);
-  
+
+  // PR-AUTH-5: removed the local-token-state workaround. Auth header comes
+  // from the cached getAuthHeader() per request — no separate getSession()
+  // round-trip on mount.
+
   useEffect(() => {
     async function loadData() {
-      if (!isAuthenticated || !user || !token) {
+      if (!isAuthenticated || !user) {
         setIsLoading(false);
         setError("Authentication required");
         return;
@@ -98,12 +86,12 @@ export function OneNoteSelector({
           }
         }
         
-        // Use fetch with Authorization header
+        // PR-AUTH-5: cached token; falls back to {} if missing → server 401.
         const response = await fetch('/api/integrations/fetch-user-data', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
+            ...(await getAuthHeader())
           },
           body: JSON.stringify({
             integrationId,
@@ -149,7 +137,7 @@ export function OneNoteSelector({
     }
     
     loadData();
-  }, [integrationId, type, dependsOn?.notebookId, dependsOn?.sectionId, value, onChange, user, isAuthenticated, token]);
+  }, [integrationId, type, dependsOn?.notebookId, dependsOn?.sectionId, value, onChange, user, isAuthenticated]);
   
   if (isLoading) {
     return (
