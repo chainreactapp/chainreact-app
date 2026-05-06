@@ -86,7 +86,7 @@ jest.mock("@/repositories/supabase/serviceRoleClient", () => ({
   getServiceRoleClient: jest.fn(() => mockSupabaseClient.current),
 }));
 
-import { upsertActive } from "@/repositories/integrations";
+import { updateTokens, upsertActive } from "@/repositories/integrations";
 
 describe("repositories/integrations.upsertActive", () => {
   it("INSERTs when no active row exists for (user, provider, account)", async () => {
@@ -171,5 +171,122 @@ describe("repositories/integrations.upsertActive", () => {
     });
 
     expect(captured.expiresAt).toBe(isoExpected);
+  });
+});
+
+describe("repositories/integrations.updateTokens (Slice 2b)", () => {
+  it("UPDATEs token columns filtering by id + disconnected_at IS NULL", async () => {
+    const captured: { update?: Record<string, unknown>; eqArgs: Array<[string, unknown]>; isArgs: Array<[string, unknown]> } = {
+      eqArgs: [],
+      isArgs: [],
+    };
+    const refreshedRow = {
+      ...baseRow,
+      access_token_encrypted: "ENC-NEW-ACCESS",
+      refresh_token_encrypted: "ENC-NEW-REFRESH",
+    };
+
+    const fromMock = jest.fn().mockImplementation(() => {
+      const b: Record<string, jest.Mock> = {
+        update: jest.fn().mockImplementation((row) => {
+          captured.update = row as Record<string, unknown>;
+          return b;
+        }),
+        eq: jest.fn().mockImplementation((col, val) => {
+          captured.eqArgs.push([col as string, val]);
+          return b;
+        }),
+        is: jest.fn().mockImplementation((col, val) => {
+          captured.isArgs.push([col as string, val]);
+          return b;
+        }),
+        select: jest.fn().mockReturnThis(),
+        single: jest.fn().mockResolvedValue({ data: refreshedRow, error: null }),
+      };
+      return b;
+    });
+    mockSupabaseClient.current = { from: fromMock } as ReturnType<typeof makeMockClient>;
+
+    const result = await updateTokens({
+      id: "int-1",
+      tokens: {
+        accessTokenEncrypted: "ENC-NEW-ACCESS",
+        refreshTokenEncrypted: "ENC-NEW-REFRESH",
+        accessTokenExpiresAt: 1_780_000_000,
+        scopes: ["chat:write"],
+      },
+    });
+
+    expect(captured.update).toEqual({
+      access_token_encrypted: "ENC-NEW-ACCESS",
+      refresh_token_encrypted: "ENC-NEW-REFRESH",
+      access_token_expires_at: new Date(1_780_000_000 * 1000).toISOString(),
+      scopes: ["chat:write"],
+    });
+    expect(captured.eqArgs).toContainEqual(["id", "int-1"]);
+    expect(captured.isArgs).toContainEqual(["disconnected_at", null]);
+    expect(result.accessTokenEncrypted).toBe("ENC-NEW-ACCESS");
+    expect(result.refreshTokenEncrypted).toBe("ENC-NEW-REFRESH");
+  });
+
+  it("writes refreshTokenEncrypted: null when provider returned null (preserves provider's choice)", async () => {
+    const captured: { update?: Record<string, unknown> } = {};
+    const fromMock = jest.fn().mockImplementation(() => {
+      const b: Record<string, jest.Mock> = {
+        update: jest.fn().mockImplementation((row) => {
+          captured.update = row as Record<string, unknown>;
+          return b;
+        }),
+        eq: jest.fn().mockReturnThis(),
+        is: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        single: jest.fn().mockResolvedValue({
+          data: { ...baseRow, refresh_token_encrypted: null },
+          error: null,
+        }),
+      };
+      return b;
+    });
+    mockSupabaseClient.current = { from: fromMock } as ReturnType<typeof makeMockClient>;
+
+    await updateTokens({
+      id: "int-1",
+      tokens: {
+        accessTokenEncrypted: "ENC-X",
+        refreshTokenEncrypted: null,
+        accessTokenExpiresAt: null,
+        scopes: [],
+      },
+    });
+
+    expect(captured.update).toMatchObject({ refresh_token_encrypted: null });
+  });
+
+  it("throws when no row matches the filter (row missing or disconnected)", async () => {
+    const fromMock = jest.fn().mockImplementation(() => {
+      const b: Record<string, jest.Mock> = {
+        update: jest.fn().mockReturnThis(),
+        eq: jest.fn().mockReturnThis(),
+        is: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        single: jest
+          .fn()
+          .mockResolvedValue({ data: null, error: { message: "no rows" } }),
+      };
+      return b;
+    });
+    mockSupabaseClient.current = { from: fromMock } as ReturnType<typeof makeMockClient>;
+
+    await expect(
+      updateTokens({
+        id: "int-gone",
+        tokens: {
+          accessTokenEncrypted: "x",
+          refreshTokenEncrypted: null,
+          accessTokenExpiresAt: null,
+          scopes: [],
+        },
+      }),
+    ).rejects.toThrow(/updateTokens failed/i);
   });
 });

@@ -64,7 +64,7 @@ Scopes live in `integrations/<provider>/manifest.ts` as the single source of tru
 
 - Per-provider OAuth implementation: `integrations/<provider>/oauth.ts`.
 - Per-provider scopes: `integrations/<provider>/manifest.ts` (`scopes.required`, `scopes.optional`, `scopes.deprecated`).
-- Generic refresh-and-retry contract: `core/integrations/refreshAndRetry.ts` (Q3 invariant carried forward).
+- Generic refresh-and-retry contract: `services/oauth/refreshAndRetry.ts` (Q3 invariant carried forward). Lives under `services/` because it orchestrates `repositories/integrations` + `services/oauth/dispatcher` + `core/encryption/tokens`; `core/` is reserved for pure code that imports only from `contracts/` per [project-structure-and-module-boundaries.md](./project-structure-and-module-boundaries.md) §4.
 - Token storage: `repositories/integrations.ts` (encrypted tokens at rest, AES-256 with V2 key; `upsertActive` uses service-role per the OAuth-callback rationale above).
 - State-token signing + verify-and-consume: `services/oauth/state.ts` (`createState` writes the `oauth_states` row; `consumeState` does verify + atomic DB consume).
 - State-row persistence: `repositories/oauthStates.ts` (`create`, `consumeByNonce` atomic delete-if-fresh, `reapExpired`).
@@ -73,7 +73,7 @@ Scopes live in `integrations/<provider>/manifest.ts` as the single source of tru
 
 - **Connect:** `POST /api/integrations/oauth/[provider]/connect` → dispatcher.`connect(provider, userId, requestedScopes)` → reads manifest scopes → `createState(...)` signs the JWT AND inserts the `oauth_states` row → calls `provider.buildAuthUrl()` → returns redirect URL with signed state.
 - **Callback:** `GET /api/integrations/oauth/[provider]/callback?code=...&state=...` → dispatcher.`handleCallback` calls `consumeState(state)` (atomic verify + DB-row delete-if-fresh) → checks provider mismatch → calls `provider.handleCallback()` → encrypts tokens → repository writes integration row via service-role → emits health-engine `recovered` signal → redirect base from `NEXT_PUBLIC_APP_URL` (proxy/tunnel-safe).
-- **Refresh:** Action handler hits 401 → `core/integrations/refreshAndRetry` → dispatcher.`refresh(provider, userId)` → reads stored refresh token → calls `provider.refreshToken()` → repository updates with new tokens (atomic, per-user lock).
+- **Refresh:** Action handler hits 401 → `services/oauth/refreshAndRetry` → dispatcher.`refresh(provider, userId)` → reads stored refresh token → calls `provider.refreshToken()` → repository updates with new tokens (atomic, per-user lock).
 - **Revoke:** User clicks disconnect → dispatcher.`revoke(provider, userId)` → calls `provider.revoke()` (best-effort) → repository deletes/soft-deletes integration row → cascade lifecycle for affected workflows (per workflow-lifecycle rule).
 
 ## Disallowed behavior
