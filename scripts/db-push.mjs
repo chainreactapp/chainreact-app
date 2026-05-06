@@ -40,12 +40,12 @@ if (!dbUrl) {
 const hostMatch = dbUrl.match(/@([^/:]+):(\d+)/);
 console.log(`Pushing migrations to: ${hostMatch ? hostMatch[1] + ":" + hostMatch[2] : "(unparsed)"}`);
 
-// supabase db push prompts before applying. Pre-feed "y\n" via stdin so this
-// script is non-interactive (works in CI and `npm run db:push`).
-const result = spawnSync(
-  process.platform === "win32" ? "npx.cmd" : "npx",
-  ["supabase", "db", "push", "--db-url", dbUrl, "--include-all"],
-  { input: "y\n", stdio: ["pipe", "inherit", "inherit"] },
-);
+// supabase db push prompts before applying. Node's spawnSync `input` option
+// doesn't reach the supabase CLI reliably on Windows (the CLI checks isTTY).
+// Use a real shell pipe instead. The URL is JSON-quoted to escape special
+// chars; it briefly appears in the process command line on the dev machine
+// (acceptable trade-off for non-interactive `npm run db:push`).
+const cmd = `echo y | npx supabase db push --db-url ${JSON.stringify(dbUrl)} --include-all`;
+const result = spawnSync(cmd, { stdio: "inherit", shell: true });
 
 process.exit(result.status ?? 1);

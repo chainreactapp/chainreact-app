@@ -1,0 +1,67 @@
+import {
+  WorkflowStateSchema,
+  WorkflowDisabledReasonSchema,
+  WorkflowDefinitionSchema,
+} from "@/contracts/workflow";
+
+describe("WorkflowStateSchema", () => {
+  it("accepts every state in the locked six-state set", () => {
+    for (const s of [
+      "draft",
+      "active",
+      "paused",
+      "disabled",
+      "eligible_to_resume",
+      "deleted",
+    ]) {
+      expect(WorkflowStateSchema.safeParse(s).success).toBe(true);
+    }
+  });
+
+  it("rejects archived (V2 does not support archive initially)", () => {
+    expect(WorkflowStateSchema.safeParse("archived").success).toBe(false);
+  });
+
+  it("rejects unknown states", () => {
+    expect(WorkflowStateSchema.safeParse("ACTIVE").success).toBe(false);
+    expect(WorkflowStateSchema.safeParse("running").success).toBe(false);
+  });
+});
+
+describe("WorkflowDisabledReasonSchema", () => {
+  it("accepts the four locked reasons", () => {
+    for (const r of [
+      "integration_revoked",
+      "billing_exhausted",
+      "repeated_failure",
+      "manual_admin",
+    ]) {
+      expect(WorkflowDisabledReasonSchema.safeParse(r).success).toBe(true);
+    }
+  });
+
+  it("rejects free-text reasons", () => {
+    expect(WorkflowDisabledReasonSchema.safeParse("user_paused").success).toBe(false);
+    expect(WorkflowDisabledReasonSchema.safeParse("").success).toBe(false);
+  });
+});
+
+describe("WorkflowDefinitionSchema", () => {
+  it("accepts an empty definition with default nodes/edges", () => {
+    const r = WorkflowDefinitionSchema.parse({});
+    expect(r.nodes).toEqual([]);
+    expect(r.edges).toEqual([]);
+  });
+
+  it("preserves arbitrary node + edge shapes (opaque for Slice 1H)", () => {
+    const def = WorkflowDefinitionSchema.parse({
+      nodes: [{ id: "n1", type: "trigger" }],
+      edges: [{ from: "n1", to: "n2" }],
+      meta: { version: 1 },
+    });
+    expect(def.nodes).toHaveLength(1);
+    expect(def.edges).toHaveLength(1);
+    // passthrough preserves extra fields
+    expect((def as Record<string, unknown>).meta).toEqual({ version: 1 });
+  });
+});
