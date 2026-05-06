@@ -40,3 +40,34 @@ export const WorkflowDefinitionSchema = z
   })
   .passthrough();
 export type WorkflowDefinition = z.infer<typeof WorkflowDefinitionSchema>;
+
+/**
+ * Wire shape returned by the workflow API endpoints. Excludes server-only
+ * fields like the full draft_definition, user_id, and active_revision_id —
+ * the list / lifecycle endpoints don't need them. The edit page (Slice 1H.4+)
+ * loads the full record via a dedicated endpoint.
+ */
+export const WorkflowSummarySchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  state: WorkflowStateSchema,
+  disabledReason: WorkflowDisabledReasonSchema.nullable(),
+  disabledContext: z.string().nullable(),
+  deletedAt: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type WorkflowSummary = z.infer<typeof WorkflowSummarySchema>;
+
+// ── API request schemas ─────────────────────────────────────────────────────
+
+export const CreateWorkflowRequestSchema = z.object({
+  name: z.string().trim().min(1, "Workflow name is required.").max(120),
+});
+export type CreateWorkflowRequest = z.infer<typeof CreateWorkflowRequestSchema>;
+
+export const DisableWorkflowRequestSchema = z.object({
+  reason: WorkflowDisabledReasonSchema,
+  context: z.string().max(500).optional(),
+});
+export type DisableWorkflowRequest = z.infer<typeof DisableWorkflowRequestSchema>;
