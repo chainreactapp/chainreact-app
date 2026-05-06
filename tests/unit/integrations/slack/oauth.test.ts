@@ -14,7 +14,7 @@ afterEach(() => {
 
 describe("slackOAuth.buildAuthUrl", () => {
   it("produces a Slack v2 authorize URL with all required params", () => {
-    const url = slackOAuth.buildAuthUrl("STATE-TOKEN", ["chat:write", "channels:read"]);
+    const url = slackOAuth.buildAuthUrl("STATE-TOKEN", ["chat:write", "channels:read"], null);
     const u = new URL(url);
     expect(u.origin + u.pathname).toBe("https://slack.com/oauth/v2/authorize");
     expect(u.searchParams.get("client_id")).toBe("test-slack-client-id");
@@ -27,7 +27,7 @@ describe("slackOAuth.buildAuthUrl", () => {
 
   it("falls back to localhost redirect_uri when NEXT_PUBLIC_APP_URL is not set", () => {
     delete process.env.NEXT_PUBLIC_APP_URL;
-    const url = slackOAuth.buildAuthUrl("S", ["chat:write"]);
+    const url = slackOAuth.buildAuthUrl("S", ["chat:write"], null);
     expect(new URL(url).searchParams.get("redirect_uri")).toBe(
       "http://localhost:3000/api/integrations/oauth/slack/callback",
     );
@@ -35,12 +35,12 @@ describe("slackOAuth.buildAuthUrl", () => {
 
   it("throws when SLACK_CLIENT_ID is not set", () => {
     delete process.env.SLACK_CLIENT_ID;
-    expect(() => slackOAuth.buildAuthUrl("S", ["chat:write"])).toThrow(/SLACK_CLIENT_ID/);
+    expect(() => slackOAuth.buildAuthUrl("S", ["chat:write"], null)).toThrow(/SLACK_CLIENT_ID/);
   });
 
   it("uses SLACK_AUTHORIZE_BASE override when set (e2e mock surface)", () => {
     process.env.SLACK_AUTHORIZE_BASE = "http://localhost:9876";
-    const url = slackOAuth.buildAuthUrl("S", ["chat:write"]);
+    const url = slackOAuth.buildAuthUrl("S", ["chat:write"], null);
     const u = new URL(url);
     expect(u.origin + u.pathname).toBe(
       "http://localhost:9876/oauth/v2/authorize",
@@ -49,12 +49,12 @@ describe("slackOAuth.buildAuthUrl", () => {
 
   it("defaults to slack.com when SLACK_AUTHORIZE_BASE is unset (production-safe)", () => {
     delete process.env.SLACK_AUTHORIZE_BASE;
-    const url = slackOAuth.buildAuthUrl("S", ["chat:write"]);
+    const url = slackOAuth.buildAuthUrl("S", ["chat:write"], null);
     expect(new URL(url).origin).toBe("https://slack.com");
   });
 
   it("URL-encodes scopes with special characters", () => {
-    const url = slackOAuth.buildAuthUrl("S", ["channels:history", "chat:write.public"]);
+    const url = slackOAuth.buildAuthUrl("S", ["channels:history", "chat:write.public"], null);
     const u = new URL(url);
     expect(u.searchParams.get("scope")).toBe("channels:history,chat:write.public");
   });

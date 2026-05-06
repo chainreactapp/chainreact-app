@@ -1,5 +1,6 @@
 import { type ProviderOAuth } from "@/contracts/integration";
 import { decryptToken } from "@/core/encryption/tokens";
+import { gmailOAuth } from "@/integrations/gmail/oauth";
 import { getProvider } from "@/integrations/_registry";
 import { slackOAuth } from "@/integrations/slack/oauth";
 import {
@@ -22,6 +23,7 @@ import { createState, consumeState, InvalidStateError } from "./state";
 
 const OAUTH_BY_PROVIDER: Readonly<Record<string, ProviderOAuth>> = Object.freeze({
   slack: slackOAuth,
+  gmail: gmailOAuth,
 });
 
 export interface ConnectInput {
@@ -50,12 +52,33 @@ export async function connect(input: ConnectInput): Promise<ConnectOutput> {
   }
 
   const requestedScopes = [...manifest.scopes.required, ...manifest.scopes.optional];
+
+  // Provider-owned PKCE. Providers that need PKCE implement generatePkce
+  // and the dispatcher routes the verifier to createState (persisted on
+  // the oauth_states row) and the challenge into buildAuthUrl. Non-PKCE
+  // providers (Slack default v2) omit generatePkce entirely → no PKCE
+  // metadata flows anywhere.
+  const pkceGen = oauth.generatePkce?.();
   const { token: state } = await createState({
     userId: input.userId,
     provider: input.provider,
     requestedScopes,
+    ...(pkceGen !== undefined
+      ? {
+          pkce: {
+            codeVerifier: pkceGen.codeVerifier,
+            codeChallengeMethod: pkceGen.codeChallengeMethod,
+          },
+        }
+      : {}),
   });
-  const redirectUrl = oauth.buildAuthUrl(state, requestedScopes);
+  const redirectUrl = oauth.buildAuthUrl(
+    state,
+    requestedScopes,
+    pkceGen !== undefined
+      ? { codeChallenge: pkceGen.codeChallenge, codeChallengeMethod: pkceGen.codeChallengeMethod }
+      : null,
+  );
   return { redirectUrl };
 }
 

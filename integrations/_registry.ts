@@ -3,6 +3,7 @@ import {
   type ProviderManifest,
   ProviderManifestSchema,
 } from "@/contracts/integration";
+import { gmailManifest } from "./gmail/manifest";
 import { slackManifest } from "./slack/manifest";
 
 /**
@@ -16,7 +17,7 @@ import { slackManifest } from "./slack/manifest";
  *   - The exported PROVIDERS object is frozen — no runtime mutation.
  */
 
-const ALL_MANIFESTS: readonly ProviderManifest[] = [slackManifest];
+const ALL_MANIFESTS: readonly ProviderManifest[] = [slackManifest, gmailManifest];
 
 // Validate every manifest against the schema at module load. parse() throws
 // on any malformed manifest; loading any importer of this module fails the
