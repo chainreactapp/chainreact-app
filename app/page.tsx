@@ -1,12 +1,18 @@
 import Link from "next/link";
 import { createClient } from "@/utils/supabase/server";
 import { signOut } from "@/app/auth/actions";
+import * as notificationsRepo from "@/repositories/notifications";
 
 export default async function HomePage() {
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
+
+  // Unread-notification count surfaces here until V2 has a shared
+  // authenticated header layout (Slice 2+). Cheap server-side count via
+  // the partial index on (user_id) WHERE read_at IS NULL.
+  const unreadCount = user ? await notificationsRepo.countUnreadForUser(user.id) : 0;
 
   return (
     <main className="flex min-h-screen items-center justify-center p-8">
@@ -25,6 +31,20 @@ export default async function HomePage() {
                 className="rounded bg-primary text-primary-foreground px-4 py-2 text-sm font-medium"
               >
                 Manage integrations
+              </Link>
+              <Link
+                href="/notifications"
+                className="relative rounded border border-input px-4 py-2 text-sm font-medium hover:bg-accent"
+              >
+                Notifications
+                {unreadCount > 0 && (
+                  <span
+                    aria-label={`${unreadCount} unread`}
+                    className="absolute -top-2 -right-2 rounded-full bg-red-500 dark:bg-red-400 px-2 py-0.5 text-xs font-semibold text-white"
+                  >
+                    {unreadCount}
+                  </span>
+                )}
               </Link>
               <form action={signOut}>
                 <button

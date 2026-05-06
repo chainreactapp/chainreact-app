@@ -31,6 +31,11 @@ jest.mock("@/services/billing/executionBillingGate", () => ({
   executionBillingGate: (...args: unknown[]) => mockBillingGate(...args),
 }));
 
+const mockNotifyOnFailedRun = jest.fn();
+jest.mock("@/services/notifications/notifyOnFailedRun", () => ({
+  notifyOnFailedRun: (...args: unknown[]) => mockNotifyOnFailedRun(...args),
+}));
+
 import { WorkflowEngine } from "@/services/execution/engine";
 import { MissingVariableError } from "@/workflow-engine/variables/resolveValue";
 import type { TriggerEvent } from "@/contracts/triggerEvent";
@@ -93,6 +98,8 @@ beforeEach(() => {
   // Default: gate allows. Individual tests override for the refusal path.
   mockBillingGate.mockReset();
   mockBillingGate.mockResolvedValue({ ok: true, used: 1, limit: 100 });
+  mockNotifyOnFailedRun.mockReset();
+  mockNotifyOnFailedRun.mockResolvedValue(undefined);
 });
 
 describe("WorkflowEngine — fatal errors", () => {
@@ -567,5 +574,105 @@ describe("WorkflowEngine — billing gate (Slice 1N)", () => {
       triggerEvent,
     });
     expect(mockBillingGate).not.toHaveBeenCalled();
+  });
+});
+
+describe("WorkflowEngine — failure notifications (Slice 1)", () => {
+  it("inserts a workflow_failed notification on failed runs with humanized title forwarded", async () => {
+    mockGetByIdServiceRole.mockResolvedValueOnce({
+      ...baseWorkflow,
+      draftDefinition: {
+        nodes: [trigger("t1"), action("a1", "step", { channel: "{{trigger.unknown}}" })],
+        edges: [edge("e1", "t1", "a1")],
+      },
+    });
+    mockGetActionHandler.mockReturnValueOnce(jest.fn());
+    const resolveStrict = jest.fn(() => {
+      throw new MissingVariableError("trigger.unknown", "missing_field");
+    });
+
+    await new WorkflowEngine({ resolveStrict }).runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "t1",
+      triggerEvent,
+    });
+
+    expect(mockNotifyOnFailedRun).toHaveBeenCalledTimes(1);
+    const call = mockNotifyOnFailedRun.mock.calls[0]![0] as {
+      userId: string;
+      workflowId: string;
+      runId: string;
+      errorClassification: { title: string; severity: string };
+    };
+    expect(call.userId).toBe("user-1");
+    expect(call.workflowId).toBe("wf-1");
+    expect(call.errorClassification.title).toMatch(/variable/i);
+    expect(call.errorClassification.severity).toBe("error");
+  });
+
+  it("does NOT notify on successful runs (only failure surfaces are notification-worthy in Slice 1)", async () => {
+    mockGetByIdServiceRole.mockResolvedValueOnce({
+      ...baseWorkflow,
+      draftDefinition: {
+        nodes: [trigger("t1"), action("a1", "step")],
+        edges: [edge("e1", "t1", "a1")],
+      },
+    });
+    mockGetActionHandler.mockReturnValueOnce(async () => ({ output: { ok: true } }));
+    await new WorkflowEngine({ resolveStrict: (v) => v }).runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "t1",
+      triggerEvent,
+    });
+    expect(mockNotifyOnFailedRun).not.toHaveBeenCalled();
+  });
+
+  it("does NOT notify when there is no userId to attribute (workflow missing)", async () => {
+    mockGetByIdServiceRole.mockResolvedValueOnce(null);
+    await new WorkflowEngine({ resolveStrict: (v) => v }).runWorkflow({
+      workflowId: "missing",
+      triggerNodeId: "t1",
+      triggerEvent,
+    });
+    expect(mockNotifyOnFailedRun).not.toHaveBeenCalled();
+  });
+
+  it("notification failure is swallowed — engine still completes the run", async () => {
+    mockGetByIdServiceRole.mockResolvedValueOnce({
+      ...baseWorkflow,
+      draftDefinition: { nodes: [trigger("t1")], edges: [] },
+    });
+    // Trigger-node-not-found → fatal → notification path runs
+    mockNotifyOnFailedRun.mockRejectedValueOnce(new Error("notif DB down"));
+    const result = await new WorkflowEngine({ resolveStrict: (v) => v }).runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "ghost",
+      triggerEvent,
+    });
+    expect(result.fatalError?.code).toBe("TRIGGER_NODE_NOT_FOUND");
+    // Engine returned cleanly despite the notification crash.
+  });
+
+  it("notifies on BILLING_EXHAUSTED fatal too (gate refusal is still a failed run users should know about)", async () => {
+    mockGetByIdServiceRole.mockResolvedValueOnce({
+      ...baseWorkflow,
+      draftDefinition: { nodes: [trigger("t1")], edges: [] },
+    });
+    mockBillingGate.mockResolvedValueOnce({
+      ok: false,
+      reason: "limit_reached",
+      used: 100,
+      limit: 100,
+    });
+    await new WorkflowEngine({ resolveStrict: (v) => v }).runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "t1",
+      triggerEvent,
+    });
+    expect(mockNotifyOnFailedRun).toHaveBeenCalledTimes(1);
+    const call = mockNotifyOnFailedRun.mock.calls[0]![0] as {
+      errorClassification: { action?: string; severity: string };
+    };
+    expect(call.errorClassification.action).toBe("upgrade_plan");
   });
 });

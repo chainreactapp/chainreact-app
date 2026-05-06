@@ -16,6 +16,7 @@ import {
 import * as workflowsRepo from "@/repositories/workflows";
 import * as workflowRunsRepo from "@/repositories/workflowRuns";
 import { executionBillingGate } from "@/services/billing/executionBillingGate";
+import { notifyOnFailedRun } from "@/services/notifications/notifyOnFailedRun";
 import { getActionHandler } from "./handlers/_registry";
 
 /**
@@ -343,6 +344,23 @@ async function persistRun(
     });
   } catch (err) {
     log("execution.run.persist_failed", { error: (err as Error).message });
+  }
+
+  // In-app notification fan-out for failed runs (Slice 1). Email / Slack /
+  // Discord / SMS deferred to a later slice. Best-effort: notification
+  // failure must not propagate — the run already persisted, the user can
+  // still see it on the workflow detail page.
+  if (result.status === "failed" && errorClassification) {
+    try {
+      await notifyOnFailedRun({
+        userId,
+        workflowId: result.workflowId,
+        runId: result.runId,
+        errorClassification,
+      });
+    } catch (err) {
+      log("execution.run.notify_failed", { error: (err as Error).message });
+    }
   }
 }
 
