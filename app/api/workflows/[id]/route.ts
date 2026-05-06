@@ -68,11 +68,19 @@ export async function PATCH(
   const loaded = await loadOrNotFound(id);
   if (!loaded.ok) return loaded.response;
 
-  // Slice 1H.4 ships with name-only updates. Adding more fields = extend
-  // the schema in contracts/workflow.ts and the dispatch chain below.
+  // Slice 1I extends PATCH beyond name-only with draftDefinition. Each
+  // field is independent and skipped when unchanged (no-op writes are
+  // noise). Both updates land before the response — the final read of the
+  // row reflects every applied change.
   let next = loaded.record;
   if (parsed.data.name !== undefined && parsed.data.name !== loaded.record.name) {
     next = await workflowsRepo.updateName(id, parsed.data.name);
+  }
+  if (parsed.data.draftDefinition !== undefined) {
+    next = await workflowsRepo.updateDraftDefinition(
+      id,
+      parsed.data.draftDefinition,
+    );
   }
   return NextResponse.json(toWorkflowDetail(next));
 }

@@ -18,9 +18,12 @@ jest.mock("@/utils/supabase/server", () => ({
 
 const mockGetById = jest.fn();
 const mockUpdateName = jest.fn();
+const mockUpdateDraftDefinition = jest.fn();
 jest.mock("@/repositories/workflows", () => ({
   getById: (...args: unknown[]) => mockGetById(...args),
   updateName: (...args: unknown[]) => mockUpdateName(...args),
+  updateDraftDefinition: (...args: unknown[]) =>
+    mockUpdateDraftDefinition(...args),
 }));
 
 import { GET, PATCH } from "@/app/api/workflows/[id]/route";
@@ -43,6 +46,7 @@ beforeEach(() => {
   mockGetUser.mockReset();
   mockGetById.mockReset();
   mockUpdateName.mockReset();
+  mockUpdateDraftDefinition.mockReset();
 });
 
 function authedUser(): void {
@@ -159,5 +163,79 @@ describe("PATCH /api/workflows/[id]", () => {
       params: Promise.resolve({ id: "wf-1" }),
     });
     expect(res.status).toBe(400);
+  });
+
+  it("writes a valid draftDefinition via the repository", async () => {
+    const validDef = {
+      nodes: [
+        {
+          id: "n1",
+          kind: "trigger",
+          provider: "slack",
+          type: "message_received",
+          config: {},
+          position: { x: 0, y: 0 },
+        },
+      ],
+      edges: [],
+    };
+    authedUser();
+    mockGetById.mockResolvedValueOnce(baseRecord);
+    mockUpdateDraftDefinition.mockResolvedValueOnce({
+      ...baseRecord,
+      draftDefinition: validDef,
+    });
+    const res = await PATCH(patchRequest({ draftDefinition: validDef }), {
+      params: Promise.resolve({ id: "wf-1" }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockUpdateDraftDefinition).toHaveBeenCalledWith(
+      "wf-1",
+      expect.objectContaining({ nodes: expect.any(Array), edges: [] }),
+    );
+    const body = await res.json();
+    expect(body.draftDefinition.nodes[0].id).toBe("n1");
+  });
+
+  it("rejects an invalid draftDefinition (e.g. duplicate-trigger) with 400", async () => {
+    authedUser();
+    const trigger = {
+      id: "n1",
+      kind: "trigger",
+      provider: "slack",
+      type: "message_received",
+      config: {},
+      position: { x: 0, y: 0 },
+    };
+    const res = await PATCH(
+      patchRequest({
+        draftDefinition: {
+          nodes: [trigger, { ...trigger, id: "n2" }],
+          edges: [],
+        },
+      }),
+      { params: Promise.resolve({ id: "wf-1" }) },
+    );
+    expect(res.status).toBe(400);
+    expect(mockUpdateDraftDefinition).not.toHaveBeenCalled();
+  });
+
+  it("applies both name and draftDefinition in a single PATCH", async () => {
+    const validDef = { nodes: [], edges: [] };
+    authedUser();
+    mockGetById.mockResolvedValueOnce(baseRecord);
+    mockUpdateName.mockResolvedValueOnce({ ...baseRecord, name: "Renamed" });
+    mockUpdateDraftDefinition.mockResolvedValueOnce({
+      ...baseRecord,
+      name: "Renamed",
+      draftDefinition: validDef,
+    });
+    const res = await PATCH(
+      patchRequest({ name: "Renamed", draftDefinition: validDef }),
+      { params: Promise.resolve({ id: "wf-1" }) },
+    );
+    expect(res.status).toBe(200);
+    expect(mockUpdateName).toHaveBeenCalledWith("wf-1", "Renamed");
+    expect(mockUpdateDraftDefinition).toHaveBeenCalledWith("wf-1", validDef);
   });
 });

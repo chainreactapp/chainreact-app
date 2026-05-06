@@ -53,15 +53,11 @@ describe("WorkflowDefinitionSchema", () => {
     expect(r.edges).toEqual([]);
   });
 
-  it("preserves arbitrary node + edge shapes (opaque for Slice 1H)", () => {
-    const def = WorkflowDefinitionSchema.parse({
-      nodes: [{ id: "n1", type: "trigger" }],
-      edges: [{ from: "n1", to: "n2" }],
-      meta: { version: 1 },
+  it("rejects unstructured nodes from the pre-1I opaque era", () => {
+    const result = WorkflowDefinitionSchema.safeParse({
+      nodes: [{ id: "n1" }],
+      edges: [],
     });
-    expect(def.nodes).toHaveLength(1);
-    expect(def.edges).toHaveLength(1);
-    // passthrough preserves extra fields
-    expect((def as Record<string, unknown>).meta).toEqual({ version: 1 });
+    expect(result.success).toBe(false);
   });
 });

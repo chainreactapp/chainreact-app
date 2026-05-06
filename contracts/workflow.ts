@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { WorkflowDefinitionSchema } from "./workflowDefinition";
 
 /**
  * Cross-layer workflow contracts.
@@ -7,7 +8,21 @@ import { z } from "zod";
  *   - Six lifecycle states: draft, active, paused, disabled, eligible_to_resume, deleted.
  *   - Soft-delete is the `deleted` lifecycle state itself, not a separate flag.
  *   - `disabled_reason` is a typed enum + optional context string.
+ *
+ * The structured node + edge schemas live in `contracts/workflowDefinition.ts`
+ * (Slice 1I). This file re-exports the type so existing imports keep working.
  */
+export {
+  WorkflowDefinitionSchema,
+  type WorkflowDefinition,
+  WorkflowNodeSchema,
+  type WorkflowNode,
+  WorkflowEdgeSchema,
+  type WorkflowEdge,
+  WorkflowNodeKindSchema,
+  type WorkflowNodeKind,
+  EMPTY_WORKFLOW_DEFINITION,
+} from "./workflowDefinition";
 
 export const WorkflowStateSchema = z.enum([
   "draft",
@@ -27,19 +42,6 @@ export const WorkflowDisabledReasonSchema = z.enum([
 ]);
 export type WorkflowDisabledReason = z.infer<typeof WorkflowDisabledReasonSchema>;
 
-/**
- * The shape stored in `workflows.draft_definition` and `workflow_revisions.definition`.
- * Slice 1H stores an opaque JSON object so the schema can evolve with the builder
- * (Slice 1I+); a strict shape will be enforced by `contracts/workflow-definition.ts`
- * once nodes / edges are formalized.
- */
-export const WorkflowDefinitionSchema = z
-  .object({
-    nodes: z.array(z.unknown()).default([]),
-    edges: z.array(z.unknown()).default([]),
-  })
-  .passthrough();
-export type WorkflowDefinition = z.infer<typeof WorkflowDefinitionSchema>;
 
 /**
  * Wire shape returned by the workflow API endpoints. Excludes server-only
@@ -84,16 +86,18 @@ export const WorkflowDetailSchema = WorkflowSummarySchema.extend({
 export type WorkflowDetail = z.infer<typeof WorkflowDetailSchema>;
 
 /**
- * PATCH /api/workflows/[id] body. Slice 1H.4 supports only `name`; future
- * editable fields (e.g. draftDefinition once the builder ships) extend this
- * schema. The orchestrator owns lifecycle transitions via the dedicated
- * action endpoints — `state` is intentionally NOT editable here.
+ * PATCH /api/workflows/[id] body. Slice 1I extended this beyond name-only
+ * to accept the full `draftDefinition` so the builder can save graph edits.
+ * The orchestrator owns lifecycle transitions via the dedicated action
+ * endpoints — `state` is intentionally NOT editable here.
  */
 export const UpdateWorkflowRequestSchema = z
   .object({
     name: z.string().trim().min(1, "Workflow name is required.").max(120).optional(),
+    draftDefinition: WorkflowDefinitionSchema.optional(),
   })
-  .refine((v) => v.name !== undefined, {
-    message: "At least one field must be provided.",
-  });
+  .refine(
+    (v) => v.name !== undefined || v.draftDefinition !== undefined,
+    { message: "At least one field must be provided." },
+  );
 export type UpdateWorkflowRequest = z.infer<typeof UpdateWorkflowRequestSchema>;

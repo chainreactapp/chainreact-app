@@ -168,7 +168,19 @@ describe("toWorkflowSummary", () => {
       disabledReason: null,
       disabledContext: null,
       activeRevisionId: "rev-1",
-      draftDefinition: { nodes: [{ id: "n1" }], edges: [] },
+      draftDefinition: {
+        nodes: [
+          {
+            id: "n1",
+            kind: "trigger" as const,
+            provider: "slack",
+            type: "message_received",
+            config: {},
+            position: { x: 0, y: 0 },
+          },
+        ],
+        edges: [],
+      },
       deletedAt: null,
       createdAt: "2026-05-06T00:00:00Z",
       updatedAt: "2026-05-06T01:00:00Z",
@@ -200,14 +212,27 @@ describe("toWorkflowDetail", () => {
       disabledReason: null,
       disabledContext: null,
       activeRevisionId: "rev-1",
-      draftDefinition: { nodes: [{ id: "n1" }], edges: [] },
+      draftDefinition: {
+        nodes: [
+          {
+            id: "n1",
+            kind: "trigger" as const,
+            provider: "slack",
+            type: "message_received",
+            config: {},
+            position: { x: 0, y: 0 },
+          },
+        ],
+        edges: [],
+      },
       deletedAt: null,
       createdAt: "2026-05-06T00:00:00Z",
       updatedAt: "2026-05-06T01:00:00Z",
     };
     const detail = toWorkflowDetail(record);
     expect(detail.activeRevisionId).toBe("rev-1");
-    expect(detail.draftDefinition).toEqual({ nodes: [{ id: "n1" }], edges: [] });
+    expect(detail.draftDefinition.nodes[0]?.id).toBe("n1");
+    expect(detail.draftDefinition.edges).toEqual([]);
     expect(detail).not.toHaveProperty("userId");
   });
 });
