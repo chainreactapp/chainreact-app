@@ -163,12 +163,17 @@ export default [
   },
 
   // BOUNDARY: zero-arg supabase.auth.getSession() / getUser() — PR-AUTH-7 invariant.
+  // The rule targets CLIENT code; server-side SSR contexts (app/**/page.tsx,
+  // app/**/layout.tsx, app/api/**, app/auth/**, middleware) read the user via
+  // the canonical Supabase SSR pattern with no argument.
   {
     files: ["**/*.{ts,tsx}"],
     ignores: [
       "core/auth/**",
       "stores/auth*.ts",
       "stores/authBootMachine.ts",
+      "app/**/page.tsx",
+      "app/**/layout.tsx",
       "app/auth/**",
       "features/auth/**",
       "app/api/**",
@@ -183,7 +188,7 @@ export default [
           selector:
             "CallExpression[callee.property.name=/^(getSession|getUser)$/][arguments.length=0]",
           message:
-            "Zero-arg auth.getSession()/getUser() forbidden outside auth subsystem. Use core/auth/getAuthHeader(). (PR-AUTH-7 invariant)",
+            "Zero-arg auth.getSession()/getUser() forbidden in client code. Use core/auth/getAuthHeader(). (PR-AUTH-7 invariant)",
         },
       ],
     },
