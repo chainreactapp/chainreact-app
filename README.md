@@ -12,9 +12,10 @@ Next.js 15 (App Router) · TypeScript strict + `noUncheckedIndexedAccess` · Sup
 
 ## Rule docs
 
-The architecture is governed by nine rule docs at [`docs/rules/`](./docs/rules):
+The architecture is governed by ten rule docs at [`docs/rules/`](./docs/rules):
 
 - [project-structure-and-module-boundaries.md](./docs/rules/project-structure-and-module-boundaries.md) — whole-codebase rule (folders, imports, file size, single source of truth)
+- [database-security.md](./docs/rules/database-security.md) — RLS on every user-data table, tenant isolation, token encryption, service-role boundaries
 - [variable-resolver.md](./docs/rules/variable-resolver.md)
 - [oauth-dispatcher.md](./docs/rules/oauth-dispatcher.md)
 - [provider-registry.md](./docs/rules/provider-registry.md)

@@ -114,6 +114,7 @@ chainreact-v2/
 - No business rules.
 - No React, no hooks, no UI imports.
 - Server-side only. Never imported by client code.
+- The single service-role client helper lives at `repositories/supabase/serviceRoleClient.ts`. Other repositories import from here when they legitimately need RLS bypass — they never construct their own service-role client. (See [database-security.md](./database-security.md).)
 
 ### `contracts/` — shared cross-layer types and Zod schemas
 
@@ -152,6 +153,7 @@ chainreact-v2/
 ### `supabase/migrations/` — clean V2 migration sequence
 
 - No blind replay of V1's incremental migration history. V2 starts with a consolidated initial migration plus forward-only additions.
+- **Every migration that creates a user-data or tenant-data table MUST enable RLS and define at least one policy in the same migration.** CI lints for this. See [database-security.md](./database-security.md) for the migration template, encryption rules, service-role boundaries, and per-table policy tests.
 
 ## Import boundary rules
 
@@ -246,6 +248,9 @@ Each row below names the canonical owner of one concern. New code with overlappi
 | Builder state | `features/workflow-builder/state/` |
 | Client API calls | `lib/api/<domain>.ts` |
 | Database access | `repositories/<table>.ts` |
+| Service-role Supabase client (RLS bypass) | `repositories/supabase/serviceRoleClient.ts` (sole construction point) |
+| Application-layer token encryption | `core/encryption/tokens.ts` |
+| Database security policy (RLS, tenant isolation, encryption, audit) | [database-security.md](./database-security.md) |
 
 ## Naming conventions
 
@@ -287,6 +292,9 @@ Implemented as part of the repo skeleton:
 - **No `console.log` in `components/`, `hooks/`, `stores/`** (ESLint `no-console` with allow-list for server-side logger).
 - **Provider folder without manifest fails CI** — every directory in `integrations/` must contain a `manifest.ts`.
 - **Provider manifest not registered in `_registry.ts` fails CI** — a provider directory exists but is not imported in `_registry.ts` is a build error.
+- **Migration RLS lint** — every migration creating a user-data or tenant-data table must include `ENABLE ROW LEVEL SECURITY` and at least one `CREATE POLICY` in the same file (per [database-security.md](./database-security.md)).
+- **Service-role import guard** — `createClient` calls with `SERVICE_ROLE_KEY` are restricted to `repositories/supabase/serviceRoleClient.ts`.
+- **No service-role exposure in client bundle** — static check scans the build output for any reference to `SUPABASE_SERVICE_ROLE_KEY`. Fails if found.
 
 ## Required tests
 
@@ -300,8 +308,10 @@ Boundary tests / static checks that complement the lint guards:
 6. **Slice-action repo/service guard:** scan `features/**/state/**` for imports of `repositories/` or `services/`. Fails if any are found (per workflow-state-store rule).
 7. **Integration cross-provider import test:** a file under `integrations/slack/` may not import from `integrations/gmail/`, etc. Fails with the offending path.
 8. **`core/` purity test:** `core/**` files may not import from `app/`, `features/`, `components/`, `repositories/`, `services/`, or `stores/`. Fails with the offending path.
+9. **Service-role single-construction test:** scan the codebase for `createClient(...SERVICE_ROLE_KEY...)` calls; fail if any exist outside `repositories/supabase/serviceRoleClient.ts`.
+10. **No service-role in client bundle:** scan `.next/static/**` after build for the literal string `SUPABASE_SERVICE_ROLE_KEY` or any service-role JWT pattern. Fails if found.
 
-These tests live in `tests/structure/` and run on every PR.
+These tests live in `tests/structure/` and run on every PR. RLS-policy and tenant-isolation tests live in `tests/integration/security/` per [database-security.md](./database-security.md).
 
 ## Open questions
 
