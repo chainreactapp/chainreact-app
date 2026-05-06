@@ -1,7 +1,11 @@
 import { type ProviderOAuth } from "@/contracts/integration";
 import { getProvider } from "@/integrations/_registry";
 import { slackOAuth } from "@/integrations/slack/oauth";
-import { createState } from "./state";
+import {
+  upsertActive,
+  type IntegrationRecord,
+} from "@/repositories/integrations";
+import { createState, verifyState, InvalidStateError } from "./state";
 
 /**
  * Generic OAuth dispatcher.
@@ -49,4 +53,46 @@ export async function connect(input: ConnectInput): Promise<ConnectOutput> {
   });
   const redirectUrl = oauth.buildAuthUrl(state, requestedScopes);
   return { redirectUrl };
+}
+
+export interface HandleCallbackInput {
+  provider: string;
+  code: string;
+  state: string;
+}
+
+export interface HandleCallbackOutput {
+  integration: IntegrationRecord;
+}
+
+export async function handleCallback(
+  input: HandleCallbackInput,
+): Promise<HandleCallbackOutput> {
+  // Verify state — this re-runs the signature/expiry check the dispatcher
+  // promises. A malformed or expired state token throws InvalidStateError
+  // (the route layer maps this to a redirect with ?integration_error=...).
+  const payload = verifyState(input.state);
+  if (payload.provider !== input.provider) {
+    throw new InvalidStateError("provider mismatch between state and route");
+  }
+
+  const oauth = OAUTH_BY_PROVIDER[input.provider];
+  if (!oauth) {
+    throw new Error(
+      `No OAuth implementation registered for provider '${input.provider}'.`,
+    );
+  }
+
+  const { tokens, account } = await oauth.handleCallback(input.code, input.state);
+
+  const integration = await upsertActive({
+    userId: payload.userId,
+    provider: input.provider,
+    providerAccountId: account.providerAccountId,
+    displayName: account.displayName,
+    tokens,
+    accountMetadata: account.metadata,
+  });
+
+  return { integration };
 }

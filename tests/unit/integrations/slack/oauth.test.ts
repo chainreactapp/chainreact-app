@@ -45,16 +45,13 @@ describe("slackOAuth.buildAuthUrl", () => {
   });
 });
 
-describe("slackOAuth — refresh + handleCallback", () => {
+describe("slackOAuth — refresh + revoke", () => {
+  // handleCallback has its own dedicated test file (oauth-callback.test.ts).
   it("refreshToken throws RefreshNotSupportedError (Slack default v2)", async () => {
     await expect(slackOAuth.refreshToken("any")).rejects.toThrow(RefreshNotSupportedError);
   });
 
-  it("handleCallback throws (deferred to Slice 1E)", async () => {
-    await expect(slackOAuth.handleCallback("code", "state")).rejects.toThrow(/not implemented/);
-  });
-
-  it("revoke is a no-op (deferred to Slice 1E)", async () => {
+  it("revoke is a no-op (Slice 1E+)", async () => {
     await expect(slackOAuth.revoke("any-token")).resolves.toBeUndefined();
   });
 });
