@@ -16,7 +16,7 @@ import {
 import * as workflowsRepo from "@/repositories/workflows";
 import * as workflowRunsRepo from "@/repositories/workflowRuns";
 import { executionBillingGate } from "@/services/billing/executionBillingGate";
-import { notifyOnFailedRun } from "@/services/notifications/notifyOnFailedRun";
+import { notifyWorkflowFailure } from "@/services/notifications/notifyWorkflowFailure";
 import { getActionHandler } from "./handlers/_registry";
 
 /**
@@ -140,7 +140,7 @@ export class WorkflowEngine {
           message: `Trigger node ${input.triggerNodeId} not present in workflow definition.`,
         },
       };
-      await persistRun(fatalResult, workflow.userId, input, log);
+      await persistRun(fatalResult, workflow.userId, workflow.name, input, log);
       return fatalResult;
     }
 
@@ -167,7 +167,7 @@ export class WorkflowEngine {
           message: `Task quota exhausted: ${gateOutcome.used}/${gateOutcome.limit} tasks used this period.`,
         },
       };
-      await persistRun(fatalResult, workflow.userId, input, log);
+      await persistRun(fatalResult, workflow.userId, workflow.name, input, log);
       return fatalResult;
     }
 
@@ -306,7 +306,7 @@ export class WorkflowEngine {
       startedAt,
       finishedAt,
     };
-    await persistRun(result, workflow.userId, input, log);
+    await persistRun(result, workflow.userId, workflow.name, input, log);
     return result;
   }
 }
@@ -324,6 +324,7 @@ export class WorkflowEngine {
 async function persistRun(
   result: RunResult,
   userId: string,
+  workflowName: string,
   input: RunWorkflowInput,
   log: (event: string, extra?: Record<string, unknown>) => void,
 ): Promise<void> {
@@ -346,18 +347,24 @@ async function persistRun(
     log("execution.run.persist_failed", { error: (err as Error).message });
   }
 
-  // In-app notification fan-out for failed runs (Slice 1). Email / Slack /
-  // Discord / SMS deferred to a later slice. Best-effort: notification
-  // failure must not propagate — the run already persisted, the user can
-  // still see it on the workflow detail page.
+  // Workflow-failure notification orchestrator. One classified event →
+  // atomic dedup claim → fan out to enabled channels. Slice 1 fans out to
+  // in-app only; Slice 2 adds email / Slack / Discord / SMS without
+  // changing this call site. Best-effort: orchestrator failures don't
+  // propagate (the run already persisted; the user can still see it on
+  // the workflow detail page).
   if (result.status === "failed" && errorClassification) {
     try {
-      await notifyOnFailedRun({
+      const outcome = await notifyWorkflowFailure({
         userId,
         workflowId: result.workflowId,
+        workflowName,
         runId: result.runId,
         errorClassification,
       });
+      if (!outcome.claimed) {
+        log("execution.run.notify_skipped", { reason: outcome.reason });
+      }
     } catch (err) {
       log("execution.run.notify_failed", { error: (err as Error).message });
     }

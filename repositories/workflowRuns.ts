@@ -127,6 +127,36 @@ export interface ListRunsOptions {
   limit?: number;
 }
 
+/**
+ * Atomically claim the notification-fanout slot for a run.
+ *
+ * Returns true if THIS call won the claim (caller proceeds to fan out
+ * notifications). Returns false if the slot was already claimed (caller
+ * skips silently — another invocation already fanned out).
+ *
+ * Race-safe via the WHERE error_notifications_sent_at IS NULL predicate
+ * combined with the row's PK lock during UPDATE — concurrent claims
+ * collapse to one winner. Service-role: this runs from background
+ * execution (engine.persistRun) with no user session.
+ *
+ * Per V2 notifications platform plan §3 (Dedup strategy).
+ */
+export async function claimNotificationFanout(runId: string): Promise<boolean> {
+  const supabase = getServiceRoleClient(
+    `notifications: claimNotificationFanout ${runId}`,
+  );
+  const { data, error } = await supabase
+    .from("workflow_runs")
+    .update({ error_notifications_sent_at: new Date().toISOString() })
+    .eq("id", runId)
+    .is("error_notifications_sent_at", null)
+    .select("id");
+  if (error) {
+    throw new Error(`workflow_runs.claimNotificationFanout failed: ${error.message}`);
+  }
+  return (data?.length ?? 0) > 0;
+}
+
 export async function listByWorkflow(
   workflowId: string,
   opts: ListRunsOptions = {},

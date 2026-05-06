@@ -31,9 +31,9 @@ jest.mock("@/services/billing/executionBillingGate", () => ({
   executionBillingGate: (...args: unknown[]) => mockBillingGate(...args),
 }));
 
-const mockNotifyOnFailedRun = jest.fn();
-jest.mock("@/services/notifications/notifyOnFailedRun", () => ({
-  notifyOnFailedRun: (...args: unknown[]) => mockNotifyOnFailedRun(...args),
+const mockNotifyWorkflowFailure = jest.fn();
+jest.mock("@/services/notifications/notifyWorkflowFailure", () => ({
+  notifyWorkflowFailure: (...args: unknown[]) => mockNotifyWorkflowFailure(...args),
 }));
 
 import { WorkflowEngine } from "@/services/execution/engine";
@@ -98,8 +98,8 @@ beforeEach(() => {
   // Default: gate allows. Individual tests override for the refusal path.
   mockBillingGate.mockReset();
   mockBillingGate.mockResolvedValue({ ok: true, used: 1, limit: 100 });
-  mockNotifyOnFailedRun.mockReset();
-  mockNotifyOnFailedRun.mockResolvedValue(undefined);
+  mockNotifyWorkflowFailure.mockReset();
+  mockNotifyWorkflowFailure.mockResolvedValue({ claimed: true, results: [] });
 });
 
 describe("WorkflowEngine — fatal errors", () => {
@@ -597,8 +597,8 @@ describe("WorkflowEngine — failure notifications (Slice 1)", () => {
       triggerEvent,
     });
 
-    expect(mockNotifyOnFailedRun).toHaveBeenCalledTimes(1);
-    const call = mockNotifyOnFailedRun.mock.calls[0]![0] as {
+    expect(mockNotifyWorkflowFailure).toHaveBeenCalledTimes(1);
+    const call = mockNotifyWorkflowFailure.mock.calls[0]![0] as {
       userId: string;
       workflowId: string;
       runId: string;
@@ -624,7 +624,7 @@ describe("WorkflowEngine — failure notifications (Slice 1)", () => {
       triggerNodeId: "t1",
       triggerEvent,
     });
-    expect(mockNotifyOnFailedRun).not.toHaveBeenCalled();
+    expect(mockNotifyWorkflowFailure).not.toHaveBeenCalled();
   });
 
   it("does NOT notify when there is no userId to attribute (workflow missing)", async () => {
@@ -634,7 +634,7 @@ describe("WorkflowEngine — failure notifications (Slice 1)", () => {
       triggerNodeId: "t1",
       triggerEvent,
     });
-    expect(mockNotifyOnFailedRun).not.toHaveBeenCalled();
+    expect(mockNotifyWorkflowFailure).not.toHaveBeenCalled();
   });
 
   it("notification failure is swallowed — engine still completes the run", async () => {
@@ -643,7 +643,7 @@ describe("WorkflowEngine — failure notifications (Slice 1)", () => {
       draftDefinition: { nodes: [trigger("t1")], edges: [] },
     });
     // Trigger-node-not-found → fatal → notification path runs
-    mockNotifyOnFailedRun.mockRejectedValueOnce(new Error("notif DB down"));
+    mockNotifyWorkflowFailure.mockRejectedValueOnce(new Error("notif DB down"));
     const result = await new WorkflowEngine({ resolveStrict: (v) => v }).runWorkflow({
       workflowId: "wf-1",
       triggerNodeId: "ghost",
@@ -669,8 +669,8 @@ describe("WorkflowEngine — failure notifications (Slice 1)", () => {
       triggerNodeId: "t1",
       triggerEvent,
     });
-    expect(mockNotifyOnFailedRun).toHaveBeenCalledTimes(1);
-    const call = mockNotifyOnFailedRun.mock.calls[0]![0] as {
+    expect(mockNotifyWorkflowFailure).toHaveBeenCalledTimes(1);
+    const call = mockNotifyWorkflowFailure.mock.calls[0]![0] as {
       errorClassification: { action?: string; severity: string };
     };
     expect(call.errorClassification.action).toBe("upgrade_plan");
