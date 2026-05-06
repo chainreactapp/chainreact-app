@@ -1,25 +1,31 @@
-import type { ProviderOAuth, PkceInputs } from "@/contracts/integration";
+import type {
+  EncryptedTokens,
+  PkceInputs,
+  ProviderOAuth,
+} from "@/contracts/integration";
 
 /**
- * Test-only PKCE-aware mock provider.
+ * Test-only mock provider used by Slice 2a (PKCE plumbing) and Slice 2b
+ * (refresh + refresh-and-retry). The factory returns a `ProviderOAuth`
+ * whose methods capture every call into `MockState`, so tests can assert
+ * the dispatcher's threading without coupling to a real provider's
+ * network shape.
  *
- * Slice 2a ships PKCE plumbing through the OAuth dispatcher but no real
- * PKCE-using provider yet (Gmail lands in 2c). This factory returns a
- * `ProviderOAuth` whose `handleCallback` captures whatever `pkce` argument
- * the dispatcher threads through, so tests can assert the plumbing without
- * coupling to a real provider's network shape.
- *
- * NOT registered in `integrations/_registry.ts` — it lives under
+ * NOT registered in `integrations/_registry.ts` — lives under
  * `tests/__mocks__` and is only imported by tests. Production code never
  * sees it.
  *
- * Reusable beyond the dispatcher tests: future Gmail tests (Slice 2c) can
- * borrow this factory or swap in their own ProviderOAuth — the capture
- * shape `PkceMockState` doubles as a contract-level assertion.
+ * Slice 2c (Gmail) can borrow this factory directly or build a parallel
+ * Google-shaped factory — both patterns are fine. The factory's name still
+ * mentions "Pkce" for now; once it grows beyond mock-provider basics, a
+ * cleanup commit will rename to a generic name (deferred per Slice 2b
+ * plan).
  */
 export interface PkceMockState {
   buildAuthUrlCalls: Array<{ state: string; scopes: readonly string[] }>;
   handleCallbackCalls: Array<{ code: string; state: string; pkce: PkceInputs | null }>;
+  refreshTokenCalls: Array<{ refreshToken: string }>;
+  revokeCalls: Array<{ token: string }>;
 }
 
 export interface CreatePkceMockProviderOptions {
@@ -27,6 +33,19 @@ export interface CreatePkceMockProviderOptions {
   refreshTokenEncrypted?: string | null;
   providerAccountId?: string;
   scopes?: readonly string[];
+  /**
+   * Custom refresh implementation. Overrides the default behavior. When
+   * unset and `refreshTokenThrows` is also unset, `refreshToken` throws
+   * a clear "not configured" error so a test that didn't intend to
+   * exercise refresh fails loudly.
+   */
+  refreshTokenImpl?: (refreshToken: string) => Promise<EncryptedTokens>;
+  /**
+   * Shortcut for the refresh-not-supported / refresh-error test paths.
+   * When set, `refreshToken` throws this error verbatim. Tests for
+   * `RefreshNotSupportedError` pass that class instance here.
+   */
+  refreshTokenThrows?: Error;
 }
 
 export function createPkceMockProvider(
@@ -35,6 +54,8 @@ export function createPkceMockProvider(
   const state: PkceMockState = {
     buildAuthUrlCalls: [],
     handleCallbackCalls: [],
+    refreshTokenCalls: [],
+    revokeCalls: [],
   };
   const provider: ProviderOAuth = {
     buildAuthUrl(jwtState, scopes) {
@@ -60,11 +81,20 @@ export function createPkceMockProvider(
         },
       };
     },
-    async refreshToken(_refreshToken) {
-      throw new Error("refreshToken not exercised in Slice 2a");
+    async refreshToken(refreshToken) {
+      state.refreshTokenCalls.push({ refreshToken });
+      if (options.refreshTokenThrows) {
+        throw options.refreshTokenThrows;
+      }
+      if (options.refreshTokenImpl) {
+        return options.refreshTokenImpl(refreshToken);
+      }
+      throw new Error(
+        "createPkceMockProvider: refreshTokenImpl / refreshTokenThrows not configured for this test.",
+      );
     },
-    async revoke(_token) {
-      // no-op for tests
+    async revoke(token) {
+      state.revokeCalls.push({ token });
     },
   };
   return { provider, state };

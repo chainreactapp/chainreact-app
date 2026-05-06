@@ -198,6 +198,55 @@ export async function getActiveForExecution(
   return data ? rowToRecord(data) : null;
 }
 
+export interface UpdateTokensInput {
+  /** Integration row id (from getActiveForExecution / upsertActive). */
+  id: string;
+  tokens: EncryptedTokens;
+}
+
+/**
+ * Atomically replace the token columns on an active integration row.
+ * Used by the OAuth dispatcher's refresh path after a provider returns
+ * fresh tokens.
+ *
+ * Filter: `id = $1 AND disconnected_at IS NULL`. A disconnected row can't
+ * be silently re-tokened — that would resurrect dead state. If the row was
+ * disconnected mid-refresh, the update returns no row and we throw a clear
+ * error rather than write to a dead row.
+ *
+ * Refresh-token rotation policy (per Slice 2 plan, Decision 2b-5): the
+ * provider's `refreshToken()` always returns a populated
+ * `refreshTokenEncrypted` — providers that don't rotate (Google default
+ * flow) re-encrypt and return the input refresh token. Repository writes
+ * whatever the provider returned without inspecting it.
+ *
+ * Service-role: action handlers run in background after a webhook returns
+ * 200, no user session — same rationale as `getActiveForExecution`.
+ */
+export async function updateTokens(input: UpdateTokensInput): Promise<IntegrationRecord> {
+  const supabase = getServiceRoleClient(
+    `oauth refresh: updateTokens for integration ${input.id}`,
+  );
+  const { data, error } = await supabase
+    .from("integrations")
+    .update({
+      access_token_encrypted: input.tokens.accessTokenEncrypted,
+      refresh_token_encrypted: input.tokens.refreshTokenEncrypted,
+      access_token_expires_at: expiresAtIso(input.tokens.accessTokenExpiresAt),
+      scopes: [...input.tokens.scopes],
+    })
+    .eq("id", input.id)
+    .is("disconnected_at", null)
+    .select()
+    .single<IntegrationsRow>();
+  if (error || !data) {
+    throw new Error(
+      `integrations.updateTokens failed: ${error?.message ?? "no row returned (row missing or disconnected)"}`,
+    );
+  }
+  return rowToRecord(data);
+}
+
 export async function listActiveByUser(userId: string): Promise<readonly IntegrationRecord[]> {
   const supabase = await createClient();
   const { data, error } = await supabase

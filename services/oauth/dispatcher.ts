@@ -1,10 +1,14 @@
 import { type ProviderOAuth } from "@/contracts/integration";
+import { decryptToken } from "@/core/encryption/tokens";
 import { getProvider } from "@/integrations/_registry";
 import { slackOAuth } from "@/integrations/slack/oauth";
 import {
+  getActiveForExecution,
+  updateTokens,
   upsertActive,
   type IntegrationRecord,
 } from "@/repositories/integrations";
+import { refreshLockKey, withRefreshLock } from "./refreshLock";
 import { createState, consumeState, InvalidStateError } from "./state";
 
 /**
@@ -105,4 +109,87 @@ export async function handleCallback(
   });
 
   return { integration };
+}
+
+export interface RefreshInput {
+  userId: string;
+  provider: string;
+  /**
+   * Optional account discriminator for multi-account users (Slack
+   * workspaces, multiple Gmail inboxes). When omitted and the user has a
+   * single active row for the provider, that row is refreshed; when
+   * multiple active rows exist, the repository's lookup picks one
+   * arbitrarily — callers with multi-account users SHOULD pass an
+   * accountId to disambiguate.
+   */
+  accountId?: string | null;
+}
+
+export interface RefreshOutput {
+  integration: IntegrationRecord;
+}
+
+/**
+ * Refresh an integration's access token via the provider's refresh flow.
+ *
+ * Concurrent calls for the same `(userId, provider, accountId)` triple
+ * collapse into one provider call via the in-process single-flight lock
+ * (`services/oauth/refreshLock.ts`). All callers receive the same
+ * `RefreshOutput`.
+ *
+ * Throws:
+ *   - `RefreshNotSupportedError` (from the provider's `refreshToken()`)
+ *     for non-refreshable providers (Slack default v2). The wrapper
+ *     `core/integrations/refreshAndRetry.ts` catches and translates this
+ *     into `IntegrationActionRequiredError`.
+ *   - `Error("No active integration ...")` when the lookup returns null.
+ *   - `Error("No refresh token stored ...")` when the row exists but its
+ *     `refresh_token_encrypted` is null (provider was non-refreshable at
+ *     connect time, or token has been wiped).
+ *   - Any error the provider's `refreshToken()` throws (network, 4xx, 5xx).
+ */
+export async function refresh(input: RefreshInput): Promise<RefreshOutput> {
+  if (!input.userId) throw new Error("refresh: userId is required.");
+  const manifest = getProvider(input.provider);
+  if (!manifest) throw new Error(`Unknown provider: ${input.provider}`);
+  if (!manifest.capabilities.oauth) {
+    throw new Error(`Provider '${input.provider}' does not support OAuth.`);
+  }
+
+  const oauth = OAUTH_BY_PROVIDER[input.provider];
+  if (!oauth) {
+    throw new Error(
+      `No OAuth implementation registered for provider '${input.provider}'.`,
+    );
+  }
+
+  const accountId = input.accountId ?? null;
+  const lockKey = refreshLockKey({
+    userId: input.userId,
+    provider: input.provider,
+    accountId,
+  });
+
+  return withRefreshLock(lockKey, async () => {
+    const row = await getActiveForExecution(input.userId, input.provider, accountId);
+    if (!row) {
+      throw new Error(
+        `refresh: no active integration found for user ${input.userId} provider ${input.provider}${
+          accountId !== null ? ` account ${accountId}` : ""
+        }.`,
+      );
+    }
+    if (!row.refreshTokenEncrypted) {
+      throw new Error(
+        `refresh: no refresh token stored on integration ${row.id} (provider ${input.provider}).`,
+      );
+    }
+    const refreshTokenPlaintext = decryptToken(row.refreshTokenEncrypted);
+    // Provider may throw RefreshNotSupportedError or any provider-specific
+    // error. We don't catch — callers (refreshAndRetry) own the
+    // translation to IntegrationActionRequiredError.
+    const newTokens = await oauth.refreshToken(refreshTokenPlaintext);
+    const integration = await updateTokens({ id: row.id, tokens: newTokens });
+    return { integration };
+  });
 }
