@@ -18,6 +18,12 @@ import type { TriggerEvent } from "@/contracts/triggerEvent";
 export interface ActionHandlerInput {
   /** Workflow id (for logging / future billing attribution). */
   workflowId: string;
+  /**
+   * Owner of the workflow. Handlers use this to look up the user's
+   * integration row + decrypt the provider token. Threaded through from
+   * workflow.userId at engine entry.
+   */
+  userId: string;
   /** Run id assigned at engine entry; carried through every handler call. */
   runId: string;
   /** Node id of the action being executed. */

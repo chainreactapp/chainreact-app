@@ -3,9 +3,9 @@
  *
  * Tests for services/execution/handlers/_registry.ts.
  *
- * Slice 1K.2 ships an empty registry by design — the engine's
- * MISSING_HANDLER path is exercised in engine tests. Slice 1L will add
- * Slack handlers; this file's tests document the contract that survives.
+ * Slice 1L registered the first handler (slack:send_channel_message).
+ * Future provider slices append entries; this test pins the contract that
+ * survives provider additions.
  */
 import {
   getActionHandler,
@@ -13,19 +13,24 @@ import {
 } from "@/services/execution/handlers/_registry";
 
 describe("action handler registry", () => {
-  it("returns undefined for unregistered (provider, type) pairs", () => {
-    expect(getActionHandler("slack", "send_channel_message")).toBeUndefined();
-    expect(getActionHandler("gmail", "send_email")).toBeUndefined();
+  it("returns the Slack send_channel_message handler (registered in 1L)", () => {
+    expect(getActionHandler("slack", "send_channel_message")).toBeDefined();
   });
 
-  it("listRegisteredHandlers reflects the current static set (empty in Slice 1K.2)", () => {
-    expect(listRegisteredHandlers()).toEqual([]);
+  it("returns undefined for (provider, type) pairs that no slice has registered yet", () => {
+    expect(getActionHandler("gmail", "send_email")).toBeUndefined();
+    expect(getActionHandler("slack", "create_channel")).toBeUndefined();
+  });
+
+  it("listRegisteredHandlers includes Slack send_channel_message", () => {
+    const registered = listRegisteredHandlers();
+    expect(registered).toContainEqual({
+      provider: "slack",
+      type: "send_channel_message",
+    });
   });
 
   it("the lookup namespace is (provider, type) — same type from different providers does not collide", () => {
-    // Both lookups go through the same map without conflicting; both
-    // return undefined now, but the contract is "namespaced by provider."
-    expect(getActionHandler("slack", "send")).toBeUndefined();
-    expect(getActionHandler("gmail", "send")).toBeUndefined();
+    expect(getActionHandler("gmail", "send_channel_message")).toBeUndefined();
   });
 });

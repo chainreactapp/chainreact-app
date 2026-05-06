@@ -1,4 +1,5 @@
 import { createClient } from "@/utils/supabase/server";
+import { getServiceRoleClient } from "./supabase/serviceRoleClient";
 import type { EncryptedTokens, ProviderAccountInfo } from "@/contracts/integration";
 
 /**
@@ -142,6 +143,48 @@ export async function upsertActive(input: UpsertActiveInput): Promise<Integratio
     throw new Error(`integrations insert failed: ${error?.message ?? "no row returned"}`);
   }
   return rowToRecord(data);
+}
+
+/**
+ * Engine path: look up the active integration for (userId, provider,
+ * accountId) without a user session. Action handlers run in background
+ * after a webhook returns 200, so the SSR-cookie client would have no
+ * auth context — service-role bypasses RLS for this lookup.
+ *
+ * `accountId` may be null — when omitted we return the first active row
+ * for the (userId, provider) pair, which is what action handlers do when
+ * their trigger event has no account scope (manual / scheduled triggers).
+ *
+ * Returns null when nothing matches. Handlers map null to a clear "connect
+ * <provider> first" error. Activation preconditions
+ * (services/triggers/preconditions.ts) normally catch this upstream, but
+ * the handler-level guard is defense-in-depth for the disconnect-while-
+ * running race.
+ */
+export async function getActiveForExecution(
+  userId: string,
+  provider: string,
+  accountId: string | null,
+): Promise<IntegrationRecord | null> {
+  const supabase = getServiceRoleClient(
+    `action handler integration lookup: ${provider} for user ${userId}`,
+  );
+  let query = supabase
+    .from("integrations")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("provider", provider)
+    .is("disconnected_at", null);
+  if (accountId !== null) {
+    query = query.eq("provider_account_id", accountId);
+  }
+  const { data, error } = await query.limit(1).maybeSingle<IntegrationsRow>();
+  if (error) {
+    throw new Error(
+      `integrations.getActiveForExecution failed: ${error.message}`,
+    );
+  }
+  return data ? rowToRecord(data) : null;
 }
 
 export async function listActiveByUser(userId: string): Promise<readonly IntegrationRecord[]> {

@@ -1,3 +1,4 @@
+import { sendChannelMessage } from "@/integrations/slack/actions/sendChannelMessage";
 import type { ActionHandler } from "./types";
 
 /**
@@ -5,11 +6,7 @@ import type { ActionHandler } from "./types";
  *
  * Per docs/rules/provider-registry.md (same convention as the integration
  * manifest registry): explicit imports surface in PRs. Each provider's
- * action slice (1L for Slack, future slices for others) appends an entry
- * to ALL_HANDLERS below.
- *
- * Slice 1K.2 ships an empty registry — the engine's "handler missing"
- * path is exercised in tests. Slice 1L adds the first real entry.
+ * action slice appends an entry to ALL_HANDLERS below.
  */
 
 interface HandlerEntry {
@@ -20,8 +17,7 @@ interface HandlerEntry {
 }
 
 const ALL_HANDLERS: ReadonlyArray<HandlerEntry> = [
-  // Slack handlers will be added in Slice 1L:
-  //   { provider: "slack", type: "send_channel_message", handler: sendChannelMessage },
+  { provider: "slack", type: "send_channel_message", handler: sendChannelMessage },
 ];
 
 const byKey: ReadonlyMap<string, ActionHandler> = (() => {
