@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { DisableWorkflowRequestSchema } from "@/contracts/workflow";
-import { LifecycleOrchestrator } from "@/services/workflows/lifecycleOrchestrator";
+import { createLifecycleOrchestrator } from "@/services/workflows/orchestratorFactory";
 import {
   parseJsonBody,
   requireUser,
@@ -19,7 +19,7 @@ export async function POST(
   if (!parsed.ok) return parsed.response;
 
   const { id } = await params;
-  const orch = new LifecycleOrchestrator();
+  const orch = createLifecycleOrchestrator();
   return runLifecycle(
     () =>
       orch.disable({

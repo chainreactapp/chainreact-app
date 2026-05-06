@@ -18,24 +18,27 @@ interface ChainState {
 }
 
 function makeMockClient(state: ChainState) {
-  const builder: Record<string, jest.Mock> = {
+  const builder: Record<string, unknown> = {};
+  Object.assign(builder, {
     select: jest.fn(() => builder),
-    upsert: jest.fn((payload, options) => {
+    upsert: jest.fn((payload: unknown, options: unknown) => {
       state.insertPayload = payload;
       state.upsertOptions = options;
       return builder;
     }),
     delete: jest.fn(() => builder),
-    eq: jest.fn((col, val) => {
+    eq: jest.fn((col: string, val: unknown) => {
       state.filters.push({ op: "eq", args: [col, val] });
       return builder;
     }),
-    single: jest.fn(() => Promise.resolve({ data: state.resultData, error: state.resultError })),
+    single: jest.fn(() =>
+      Promise.resolve({ data: state.resultData, error: state.resultError }),
+    ),
     // Supabase returns a thenable from terminal builder ops too (.delete()
     // / .select() that aren't .single()). Make the chain awaitable.
     then: (resolve: (v: unknown) => void) =>
       resolve({ data: state.resultData, error: state.resultError }),
-  };
+  });
   return { from: jest.fn(() => builder), state };
 }
 

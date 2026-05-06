@@ -17,21 +17,22 @@ interface ChainState {
 }
 
 function makeMockClient(state: ChainState) {
-  const builder: Record<string, jest.Mock> = {
-    upsert: jest.fn((payload, options) => {
+  const builder: Record<string, unknown> = {};
+  Object.assign(builder, {
+    upsert: jest.fn((payload: unknown, options: unknown) => {
       state.upsertPayload = payload;
       state.upsertOptions = options;
       return builder;
     }),
     delete: jest.fn(() => builder),
     select: jest.fn(() => builder),
-    lt: jest.fn((col, val) => {
+    lt: jest.fn((col: string, val: unknown) => {
       state.filters.push({ op: "lt", args: [col, val] });
       return builder;
     }),
     then: (resolve: (v: unknown) => void) =>
       resolve({ data: state.resultData, error: state.resultError }),
-  };
+  });
   return { from: jest.fn(() => builder), state };
 }
 

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { LifecycleOrchestrator } from "@/services/workflows/lifecycleOrchestrator";
+import { createLifecycleOrchestrator } from "@/services/workflows/orchestratorFactory";
 import {
   requireUser,
   runLifecycle,
@@ -14,7 +14,7 @@ export async function POST(
   if (!auth.ok) return auth.response;
 
   const { id } = await params;
-  const orch = new LifecycleOrchestrator();
+  const orch = createLifecycleOrchestrator();
   return runLifecycle(
     () => orch.pause(id),
     (record) => NextResponse.json(toWorkflowSummary(record)),
