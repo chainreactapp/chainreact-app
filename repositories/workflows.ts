@@ -241,6 +241,30 @@ export interface ApplyTransitionInput {
 }
 
 /**
+ * Engine path: load the full workflow record without a user session. Used by
+ * services/execution/engine.ts after a webhook dispatches a run — by then we
+ * already verified state===active in the dispatcher, so the engine just
+ * needs the full draftDefinition + name + user id (for billing in 1N) to
+ * walk the graph.
+ */
+export async function getByIdServiceRole(
+  workflowId: string,
+): Promise<WorkflowRecord | null> {
+  const supabase = getServiceRoleClient(
+    `workflow execution: getByIdServiceRole ${workflowId}`,
+  );
+  const { data, error } = await supabase
+    .from("workflows")
+    .select("*")
+    .eq("id", workflowId)
+    .maybeSingle<WorkflowsRow>();
+  if (error) {
+    throw new Error(`workflows.getByIdServiceRole failed: ${error.message}`);
+  }
+  return data ? rowToRecord(data) : null;
+}
+
+/**
  * Webhook-dispatcher path: look up just the lifecycle state for a workflow
  * without a user session. Used by core/triggers/dispatch.ts to drop events
  * for paused / disabled / deleted workflows even when the trigger_resources

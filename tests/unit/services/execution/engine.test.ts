@@ -1,0 +1,337 @@
+/**
+ * @jest-environment node
+ *
+ * Tests for services/execution/engine.ts.
+ *
+ * The engine is built with dependency-injected resolveStrict + a hand-
+ * maintained handler registry. Tests:
+ *   - Mock workflowsRepo.getByIdServiceRole to seed the workflow.
+ *   - Mock the handler registry to inject test handlers.
+ *   - Inject a stub resolveStrict so this slice can ship before 1K.1's
+ *     resolver lands.
+ */
+
+const mockGetByIdServiceRole = jest.fn();
+jest.mock("@/repositories/workflows", () => ({
+  getByIdServiceRole: (...args: unknown[]) => mockGetByIdServiceRole(...args),
+}));
+
+const mockGetActionHandler = jest.fn();
+jest.mock("@/services/execution/handlers/_registry", () => ({
+  getActionHandler: (...args: unknown[]) => mockGetActionHandler(...args),
+}));
+
+import { WorkflowEngine } from "@/services/execution/engine";
+import { MissingVariableError } from "@/workflow-engine/variables/resolveValue";
+import type { TriggerEvent } from "@/contracts/triggerEvent";
+import type { WorkflowNode, WorkflowEdge } from "@/contracts/workflow";
+
+const triggerEvent: TriggerEvent = {
+  provider: "slack",
+  eventType: "message",
+  eventId: "Ev1",
+  occurredAt: "2026-05-07T00:00:00Z",
+  accountId: "T0001",
+  payload: { text: "hello", channel: "C123" },
+};
+
+function trigger(id: string): WorkflowNode {
+  return {
+    id,
+    kind: "trigger",
+    provider: "slack",
+    type: "message",
+    config: {},
+    position: { x: 0, y: 0 },
+  };
+}
+
+function action(id: string, type: string, config: Record<string, unknown> = {}): WorkflowNode {
+  return {
+    id,
+    kind: "action",
+    provider: "slack",
+    type,
+    config,
+    position: { x: 0, y: 100 },
+  };
+}
+
+function edge(id: string, from: string, to: string): WorkflowEdge {
+  return { id, from, to };
+}
+
+const baseWorkflow = {
+  id: "wf-1",
+  userId: "user-1",
+  name: "Test",
+  state: "active" as const,
+  disabledReason: null,
+  disabledContext: null,
+  activeRevisionId: null,
+  draftDefinition: { nodes: [trigger("t1")], edges: [] },
+  deletedAt: null,
+  createdAt: "2026-05-07T00:00:00Z",
+  updatedAt: "2026-05-07T00:00:00Z",
+};
+
+beforeEach(() => {
+  mockGetByIdServiceRole.mockReset();
+  mockGetActionHandler.mockReset();
+});
+
+describe("WorkflowEngine — fatal errors", () => {
+  it("returns WORKFLOW_NOT_FOUND when getByIdServiceRole returns null", async () => {
+    mockGetByIdServiceRole.mockResolvedValueOnce(null);
+    const engine = new WorkflowEngine({ resolveStrict: (v) => v });
+    const result = await engine.runWorkflow({
+      workflowId: "missing",
+      triggerNodeId: "t1",
+      triggerEvent,
+    });
+    expect(result.status).toBe("failed");
+    expect(result.fatalError?.code).toBe("WORKFLOW_NOT_FOUND");
+    expect(result.steps).toEqual([]);
+  });
+
+  it("returns TRIGGER_NODE_NOT_FOUND when the dispatched node id is not in the definition", async () => {
+    mockGetByIdServiceRole.mockResolvedValueOnce(baseWorkflow);
+    const engine = new WorkflowEngine({ resolveStrict: (v) => v });
+    const result = await engine.runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "ghost",
+      triggerEvent,
+    });
+    expect(result.fatalError?.code).toBe("TRIGGER_NODE_NOT_FOUND");
+  });
+});
+
+describe("WorkflowEngine — happy path (linear chain)", () => {
+  it("executes trigger → action1 → action2 in BFS order, threading outputs through variables", async () => {
+    const t = trigger("t1");
+    const a1 = action("a1", "step_one");
+    const a2 = action("a2", "step_two");
+    const definition = {
+      nodes: [t, a1, a2],
+      edges: [edge("e1", "t1", "a1"), edge("e2", "a1", "a2")],
+    };
+    mockGetByIdServiceRole.mockResolvedValueOnce({
+      ...baseWorkflow,
+      draftDefinition: definition,
+    });
+
+    const handlerOne = jest.fn(async () => ({ output: { messageId: "m1" } }));
+    const handlerTwo = jest.fn(async () => ({ output: { messageId: "m2" } }));
+    mockGetActionHandler.mockImplementation((p: string, t: string) => {
+      if (p === "slack" && t === "step_one") return handlerOne;
+      if (p === "slack" && t === "step_two") return handlerTwo;
+      return undefined;
+    });
+
+    const resolveStrict = jest.fn((v: unknown) => v);
+    const engine = new WorkflowEngine({ resolveStrict });
+    const result = await engine.runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "t1",
+      triggerEvent,
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(result.steps.map((s) => s.nodeId)).toEqual(["t1", "a1", "a2"]);
+    expect(handlerOne).toHaveBeenCalledTimes(1);
+    expect(handlerTwo).toHaveBeenCalledTimes(1);
+
+    // Variable propagation: when a2's resolveStrict ran, the context
+    // should have included a1's output. Verify via the call args.
+    const a2Call = resolveStrict.mock.calls.find(
+      (c) => (c[0] as Record<string, unknown>) === a2.config,
+    );
+    expect(a2Call).toBeDefined();
+    const a2Context = a2Call![1] as { variables: Record<string, unknown> };
+    expect(a2Context.variables.a1).toEqual({ messageId: "m1" });
+    expect(a2Context.variables.trigger).toBe(triggerEvent);
+  });
+
+  it("exposes the trigger event under both 'trigger' and the trigger node's id", async () => {
+    const t = trigger("custom_trigger");
+    const a1 = action("a1", "noop");
+    mockGetByIdServiceRole.mockResolvedValueOnce({
+      ...baseWorkflow,
+      draftDefinition: { nodes: [t, a1], edges: [edge("e1", "custom_trigger", "a1")] },
+    });
+    mockGetActionHandler.mockReturnValueOnce(async () => ({ output: {} }));
+
+    const resolveStrict = jest.fn((v: unknown) => v);
+    await new WorkflowEngine({ resolveStrict }).runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "custom_trigger",
+      triggerEvent,
+    });
+
+    const ctx = resolveStrict.mock.calls[0]![1] as { variables: Record<string, unknown> };
+    expect(ctx.variables.trigger).toBe(triggerEvent);
+    expect(ctx.variables.custom_trigger).toBe(triggerEvent);
+  });
+});
+
+describe("WorkflowEngine — failure modes (rule §Engine pre-resolution)", () => {
+  it("MissingVariableError aborts the run with a MISSING_VARIABLE step + path/reason details", async () => {
+    const a1 = action("a1", "step_one", { channel: "{{trigger.unknown}}" });
+    mockGetByIdServiceRole.mockResolvedValueOnce({
+      ...baseWorkflow,
+      draftDefinition: {
+        nodes: [trigger("t1"), a1],
+        edges: [edge("e1", "t1", "a1")],
+      },
+    });
+    const handler = jest.fn();
+    mockGetActionHandler.mockReturnValueOnce(handler);
+
+    const resolveStrict = jest.fn(() => {
+      throw new MissingVariableError("trigger.unknown", "missing_field");
+    });
+    const result = await new WorkflowEngine({ resolveStrict }).runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "t1",
+      triggerEvent,
+    });
+
+    expect(result.status).toBe("failed");
+    expect(handler).not.toHaveBeenCalled();
+    const failed = result.steps.find((s) => s.status === "failed");
+    expect(failed).toMatchObject({
+      nodeId: "a1",
+      error: {
+        code: "MISSING_VARIABLE",
+        details: { path: "trigger.unknown", reason: "missing_field" },
+      },
+    });
+  });
+
+  it("MISSING_HANDLER when the registry has no handler for (provider, type)", async () => {
+    mockGetByIdServiceRole.mockResolvedValueOnce({
+      ...baseWorkflow,
+      draftDefinition: {
+        nodes: [trigger("t1"), action("a1", "unknown_action")],
+        edges: [edge("e1", "t1", "a1")],
+      },
+    });
+    mockGetActionHandler.mockReturnValueOnce(undefined);
+
+    const result = await new WorkflowEngine({
+      resolveStrict: (v) => v,
+    }).runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "t1",
+      triggerEvent,
+    });
+    expect(result.status).toBe("failed");
+    const failed = result.steps.find((s) => s.status === "failed");
+    expect(failed?.error?.code).toBe("MISSING_HANDLER");
+  });
+
+  it("HANDLER_FAILED when the handler throws", async () => {
+    mockGetByIdServiceRole.mockResolvedValueOnce({
+      ...baseWorkflow,
+      draftDefinition: {
+        nodes: [trigger("t1"), action("a1", "step_one")],
+        edges: [edge("e1", "t1", "a1")],
+      },
+    });
+    mockGetActionHandler.mockReturnValueOnce(async () => {
+      throw new Error("Slack rate limited");
+    });
+
+    const result = await new WorkflowEngine({
+      resolveStrict: (v) => v,
+    }).runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "t1",
+      triggerEvent,
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.steps[1]).toMatchObject({
+      status: "failed",
+      error: { code: "HANDLER_FAILED", message: "Slack rate limited" },
+    });
+  });
+
+  it("stops on first failure — downstream steps are not executed", async () => {
+    mockGetByIdServiceRole.mockResolvedValueOnce({
+      ...baseWorkflow,
+      draftDefinition: {
+        nodes: [trigger("t1"), action("a1", "fail"), action("a2", "should_not_run")],
+        edges: [edge("e1", "t1", "a1"), edge("e2", "a1", "a2")],
+      },
+    });
+    const failingHandler = jest.fn(async () => {
+      throw new Error("boom");
+    });
+    const downstreamHandler = jest.fn();
+    mockGetActionHandler.mockImplementation((_p: string, t: string) =>
+      t === "fail" ? failingHandler : downstreamHandler,
+    );
+
+    const result = await new WorkflowEngine({
+      resolveStrict: (v) => v,
+    }).runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "t1",
+      triggerEvent,
+    });
+
+    expect(result.status).toBe("failed");
+    expect(failingHandler).toHaveBeenCalledTimes(1);
+    expect(downstreamHandler).not.toHaveBeenCalled();
+    expect(result.steps).toHaveLength(2); // trigger + a1; a2 skipped
+  });
+});
+
+describe("WorkflowEngine — graph traversal", () => {
+  it("visited-set prevents infinite loops on cyclic graphs (visits each node once)", async () => {
+    // Cycle: t1 → a1 → a2 → a1 (back to a1).
+    mockGetByIdServiceRole.mockResolvedValueOnce({
+      ...baseWorkflow,
+      draftDefinition: {
+        nodes: [trigger("t1"), action("a1", "step"), action("a2", "step")],
+        edges: [
+          edge("e1", "t1", "a1"),
+          edge("e2", "a1", "a2"),
+          edge("e3", "a2", "a1"),
+        ],
+      },
+    });
+    const handler = jest.fn(async () => ({ output: {} }));
+    mockGetActionHandler.mockReturnValue(handler);
+
+    const result = await new WorkflowEngine({
+      resolveStrict: (v) => v,
+    }).runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "t1",
+      triggerEvent,
+    });
+    // Each action visited once despite the back-edge.
+    expect(handler).toHaveBeenCalledTimes(2);
+    expect(result.status).toBe("succeeded");
+  });
+
+  it("manual-only workflow (zero non-trigger nodes) succeeds with one step", async () => {
+    mockGetByIdServiceRole.mockResolvedValueOnce({
+      ...baseWorkflow,
+      draftDefinition: { nodes: [trigger("t1")], edges: [] },
+    });
+    const result = await new WorkflowEngine({
+      resolveStrict: (v) => v,
+    }).runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "t1",
+      triggerEvent,
+    });
+    expect(result.status).toBe("succeeded");
+    expect(result.steps).toEqual([
+      expect.objectContaining({ nodeId: "t1", status: "succeeded" }),
+    ]);
+  });
+});

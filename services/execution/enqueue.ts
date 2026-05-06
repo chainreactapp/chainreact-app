@@ -1,20 +1,25 @@
+import { randomUUID } from "node:crypto";
 import type { TriggerEvent } from "@/contracts/triggerEvent";
+import { resolveStrict } from "@/workflow-engine/variables/resolveValue";
+import { WorkflowEngine } from "./engine";
 
 /**
- * Stub for the execution enqueue path.
+ * Webhook → execution handoff.
  *
- * Per docs/rules/webhook-receipt-routes.md §"Async dispatch only": webhook
- * routes enqueue and return; execution runs asynchronously.
+ * Per docs/rules/webhook-receipt-routes.md §"Async dispatch only":
+ *   - Webhook routes enqueue and return; execution runs asynchronously.
+ *   - The route MUST return 200 once events are durably enqueued (here:
+ *     once we've assigned a runId and kicked off the engine). The engine's
+ *     own failures are logged out-of-band and never propagate back to the
+ *     provider's webhook delivery.
  *
- * Slice 1J ships the trigger lifecycle + dispatch path. Slice 1K wires this
- * function to the real execution engine. For now it logs a structured event
- * and returns immediately so the dispatcher's contract can be exercised
- * end-to-end (webhook → dedup → match → "enqueued").
- *
- * The signature is intentional: the executor will receive workflowId,
- * triggerNodeId (so it knows which node fired), and the canonical event
- * payload that variable resolution will read from.
+ * For Slice 1 the "queue" is in-process: we fire-and-forget the engine
+ * promise. This trades durability for simplicity — a node restart between
+ * enqueue and engine completion drops the run. Real durability lands when
+ * the queue (BullMQ / Inngest / equivalent) ships, with no API change to
+ * the dispatcher (it still calls enqueueRun and gets back { runId }).
  */
+
 export interface EnqueueRunInput {
   workflowId: string;
   triggerNodeId: string;
@@ -22,17 +27,18 @@ export interface EnqueueRunInput {
 }
 
 export interface EnqueueRunResult {
-  /** Server-assigned id for the queued run; `null` from the stub. */
-  runId: string | null;
+  runId: string;
   enqueuedAt: string;
 }
 
 export async function enqueueRun(input: EnqueueRunInput): Promise<EnqueueRunResult> {
-  // Structured log so the Slice 1J observability path is visible end-to-end.
-  // PII-safe: we log shape (provider, eventType, workflowId), never the full payload.
+  const runId = randomUUID();
+  const enqueuedAt = new Date().toISOString();
+
   console.info(
     JSON.stringify({
-      event: "execution.enqueue.stub",
+      event: "execution.run.enqueued",
+      runId,
       workflowId: input.workflowId,
       triggerNodeId: input.triggerNodeId,
       provider: input.event.provider,
@@ -40,5 +46,34 @@ export async function enqueueRun(input: EnqueueRunInput): Promise<EnqueueRunResu
       eventId: input.event.eventId,
     }),
   );
-  return { runId: null, enqueuedAt: new Date().toISOString() };
+
+  // Fire-and-forget. The webhook caller already returned 200; the engine
+  // owns its own errors via structured logs.
+  void runWorkflowInBackground(input, runId);
+
+  return { runId, enqueuedAt };
+}
+
+async function runWorkflowInBackground(
+  input: EnqueueRunInput,
+  runId: string,
+): Promise<void> {
+  try {
+    const engine = new WorkflowEngine({ resolveStrict });
+    await engine.runWorkflow({
+      workflowId: input.workflowId,
+      triggerNodeId: input.triggerNodeId,
+      triggerEvent: input.event,
+      runId,
+    });
+  } catch (err) {
+    console.error(
+      JSON.stringify({
+        event: "execution.run.crashed",
+        runId,
+        workflowId: input.workflowId,
+        error: (err as Error).message,
+      }),
+    );
+  }
 }
