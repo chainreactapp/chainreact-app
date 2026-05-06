@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "lint:structure": "node scripts/check-leaf-folder-counts.mjs",
+    "lint:migrations": "node scripts/check-migration-rls.mjs",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:e2e": "playwright test",

@@ -33,6 +33,20 @@ cp .env.example .env.local   # fill in Supabase + Slack values
 npm run dev
 ```
 
+## Apply migrations to the V2 Supabase project
+
+Migrations live in [`supabase/migrations/`](./supabase/migrations) and follow the template in [database-security.md](./docs/rules/database-security.md). Apply with the Supabase CLI against the V2 project:
+
+```bash
+# one-time link to the project
+npx supabase link --project-ref <your-v2-project-ref>
+
+# push all pending migrations
+npx supabase db push --db-url "$POSTGRES_URL_NON_POOLING"
+```
+
+Or paste each `*.sql` file into the Supabase Dashboard → SQL Editor in order. Migrations are forward-only after merge.
+
 ## Scripts
 
 | Command | What it does |
@@ -41,6 +55,7 @@ npm run dev
 | `npm run build` | Production build |
 | `npm run lint` | ESLint (boundary rules + style) |
 | `npm run lint:structure` | Leaf-folder file-count check (≤ 50 per leaf) |
+| `npm run lint:migrations` | Migration RLS lint — every user-data table enables RLS + has policies in the same file |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm test` | Jest unit / integration / parity / structure tests |
 | `npm run test:e2e` | Playwright E2E |

@@ -168,6 +168,7 @@ export default [
       "features/auth/**",
       "app/api/**",
       "middleware.ts",
+      "utils/supabase/**",
       "tests/**",
     ],
     rules: {
