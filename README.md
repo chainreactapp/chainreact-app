@@ -35,17 +35,15 @@ npm run dev
 
 ## Apply migrations to the V2 Supabase project
 
-Migrations live in [`supabase/migrations/`](./supabase/migrations) and follow the template in [database-security.md](./docs/rules/database-security.md). Apply with the Supabase CLI against the V2 project:
+Migrations live in [`supabase/migrations/`](./supabase/migrations) and follow the template in [database-security.md](./docs/rules/database-security.md).
 
 ```bash
-# one-time link to the project
-npx supabase link --project-ref <your-v2-project-ref>
-
-# push all pending migrations
-npx supabase db push --db-url "$POSTGRES_URL_NON_POOLING"
+npm run db:push
 ```
 
-Or paste each `*.sql` file into the Supabase Dashboard → SQL Editor in order. Migrations are forward-only after merge.
+This reads `POSTGRES_URL_NON_POOLING` from `.env.local` and applies any pending migrations via the Supabase CLI. Migrations are forward-only after merge.
+
+**Connection-string note:** `POSTGRES_URL_NON_POOLING` should be the **Session pooler** URL from Supabase Dashboard → Project Settings → Database → "Connect" panel. New projects sit behind `aws-1-<region>.pooler.supabase.com:5432` (Supavisor v2); the direct `db.<ref>.supabase.co` hostname is IPv6-only and won't resolve from most networks.
 
 ## Scripts
 
@@ -56,6 +54,7 @@ Or paste each `*.sql` file into the Supabase Dashboard → SQL Editor in order. 
 | `npm run lint` | ESLint (boundary rules + style) |
 | `npm run lint:structure` | Leaf-folder file-count check (≤ 50 per leaf) |
 | `npm run lint:migrations` | Migration RLS lint — every user-data table enables RLS + has policies in the same file |
+| `npm run db:push` | Apply pending migrations to the V2 Supabase project (reads `POSTGRES_URL_NON_POOLING` from `.env.local`) |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm test` | Jest unit / integration / parity / structure tests |
 | `npm run test:e2e` | Playwright E2E |
