@@ -84,3 +84,49 @@ export const ProviderManifestSchema = z
   });
 
 export type ProviderManifest = z.infer<typeof ProviderManifestSchema>;
+
+// ─── OAuth contracts ──────────────────────────────────────────────────────────
+// Server-side only. Client code never imports types that hold token material.
+
+/** Provider returns these tokens after a successful OAuth callback. */
+export interface EncryptedTokens {
+  accessTokenEncrypted: string;
+  refreshTokenEncrypted: string | null;
+  /** Epoch seconds, or null if the provider doesn't expose token expiry. */
+  accessTokenExpiresAt: number | null;
+  scopes: readonly string[];
+}
+
+/** Identifying fields about the connected account, parsed from the OAuth callback. */
+export interface ProviderAccountInfo {
+  providerAccountId: string;
+  displayName: string | null;
+  metadata: Record<string, unknown>;
+}
+
+/**
+ * Per-provider OAuth implementation. Each provider in `integrations/<id>/oauth.ts`
+ * exports an object that satisfies this shape. The generic dispatcher in
+ * `services/oauth/dispatcher.ts` is the only caller.
+ */
+export interface ProviderOAuth {
+  /** Builds the redirect URL the user is sent to. `state` is the signed token from createState(). */
+  buildAuthUrl(state: string, scopes: readonly string[]): string;
+  /** Exchanges the authorization code for tokens. */
+  handleCallback(
+    code: string,
+    state: string,
+  ): Promise<{ tokens: EncryptedTokens; account: ProviderAccountInfo }>;
+  /** Returns fresh tokens, or throws RefreshNotSupportedError on non-refreshable providers. */
+  refreshToken(refreshToken: string): Promise<EncryptedTokens>;
+  /** Best-effort token revocation at the provider; safe to call on disconnect. */
+  revoke(token: string): Promise<void>;
+}
+
+/** Thrown by refreshToken() on providers whose flow does not return refresh tokens. */
+export class RefreshNotSupportedError extends Error {
+  constructor(provider: string) {
+    super(`Provider '${provider}' does not support token refresh.`);
+    this.name = "RefreshNotSupportedError";
+  }
+}
