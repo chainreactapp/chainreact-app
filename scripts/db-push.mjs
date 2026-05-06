@@ -40,10 +40,12 @@ if (!dbUrl) {
 const hostMatch = dbUrl.match(/@([^/:]+):(\d+)/);
 console.log(`Pushing migrations to: ${hostMatch ? hostMatch[1] + ":" + hostMatch[2] : "(unparsed)"}`);
 
+// supabase db push prompts before applying. Pre-feed "y\n" via stdin so this
+// script is non-interactive (works in CI and `npm run db:push`).
 const result = spawnSync(
   process.platform === "win32" ? "npx.cmd" : "npx",
   ["supabase", "db", "push", "--db-url", dbUrl, "--include-all"],
-  { stdio: "inherit" },
+  { input: "y\n", stdio: ["pipe", "inherit", "inherit"] },
 );
 
 process.exit(result.status ?? 1);
