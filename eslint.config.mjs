@@ -63,6 +63,11 @@ export default [
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
       "@typescript-eslint/no-explicit-any": "warn",
+      // The base no-redeclare rule fires on the common Zod pattern of declaring
+      // a value and an inferred type with the same name. typescript-eslint's
+      // version understands TS declaration merging.
+      "no-redeclare": "off",
+      "@typescript-eslint/no-redeclare": "error",
       "max-lines": [
         "warn",
         { max: 400, skipBlankLines: true, skipComments: true },
