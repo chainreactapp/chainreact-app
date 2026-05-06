@@ -9,7 +9,12 @@ import {
   MissingVariableError,
   type ResolveContext,
 } from "@/workflow-engine/variables/resolveValue";
+import {
+  humanizeActionError,
+  type HumanizedError,
+} from "@/core/errors/humanizeActionError";
 import * as workflowsRepo from "@/repositories/workflows";
+import * as workflowRunsRepo from "@/repositories/workflowRuns";
 import { getActionHandler } from "./handlers/_registry";
 
 /**
@@ -35,8 +40,10 @@ import { getActionHandler } from "./handlers/_registry";
  * later); for now visited-set prevents infinite loops without rejecting
  * arbitrary graphs.
  *
- * Persistence of run history lives in Slice 1M; the engine emits structured
- * console events keyed on runId so 1M can wire up a row-per-run table.
+ * Persistence: at the end of every run that has a workflow loaded, the
+ * engine writes one row to workflow_runs with steps + humanized
+ * error_classification (Slice 1M). Persistence failures are logged but
+ * never propagate — the engine completes the run regardless.
  */
 
 export type RunFailureCode =
@@ -118,7 +125,7 @@ export class WorkflowEngine {
     if (!triggerNode) {
       const finishedAt = new Date().toISOString();
       log("execution.run.fatal", { code: "TRIGGER_NODE_NOT_FOUND" });
-      return {
+      const fatalResult: RunResult = {
         runId,
         workflowId: input.workflowId,
         status: "failed",
@@ -130,6 +137,8 @@ export class WorkflowEngine {
           message: `Trigger node ${input.triggerNodeId} not present in workflow definition.`,
         },
       };
+      await persistRun(fatalResult, workflow.userId, input, log);
+      return fatalResult;
     }
 
     // The trigger event is exposed under both 'trigger' (canonical alias used
@@ -259,7 +268,7 @@ export class WorkflowEngine {
     const status: RunResult["status"] = runFailed ? "failed" : "succeeded";
     log("execution.run.finished", { status, stepCount: steps.length });
 
-    return {
+    const result: RunResult = {
       runId,
       workflowId: input.workflowId,
       status,
@@ -267,7 +276,69 @@ export class WorkflowEngine {
       startedAt,
       finishedAt,
     };
+    await persistRun(result, workflow.userId, input, log);
+    return result;
   }
+}
+
+/**
+ * Write the run row + humanized error_classification. Logs and swallows
+ * persistence errors — the engine has done the work; a recordRun crash
+ * shouldn't take down the dispatcher.
+ *
+ * The classification picks the first failed step's error (or the fatal
+ * error when there are no steps). One classification per run is enough for
+ * the UI's "show what went wrong" surface; per-step error details remain
+ * available inside the steps[] payload for deeper diagnostics.
+ */
+async function persistRun(
+  result: RunResult,
+  userId: string,
+  input: RunWorkflowInput,
+  log: (event: string, extra?: Record<string, unknown>) => void,
+): Promise<void> {
+  const errorClassification = classifyForPersistence(result);
+  try {
+    await workflowRunsRepo.recordRun({
+      runId: result.runId,
+      workflowId: result.workflowId,
+      userId,
+      status: result.status,
+      triggerNodeId: input.triggerNodeId,
+      triggerEvent: input.triggerEvent,
+      steps: result.steps,
+      fatalError: result.fatalError ?? null,
+      errorClassification,
+      startedAt: result.startedAt,
+      finishedAt: result.finishedAt,
+    });
+  } catch (err) {
+    log("execution.run.persist_failed", { error: (err as Error).message });
+  }
+}
+
+function classifyForPersistence(result: RunResult): HumanizedError | null {
+  if (result.status === "succeeded") return null;
+
+  // Prefer the first failed step (per-node specificity); fall back to the
+  // run-level fatal when no step ran.
+  const firstFailed = result.steps.find((s) => s.status === "failed");
+  if (firstFailed?.error) {
+    return humanizeActionError({
+      code: firstFailed.error.code,
+      message: firstFailed.error.message,
+      ...(firstFailed.error.details !== undefined
+        ? { details: firstFailed.error.details }
+        : {}),
+    });
+  }
+  if (result.fatalError) {
+    return humanizeActionError({
+      code: result.fatalError.code,
+      message: result.fatalError.message,
+    });
+  }
+  return null;
 }
 
 /**

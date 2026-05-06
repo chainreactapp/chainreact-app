@@ -21,6 +21,11 @@ jest.mock("@/services/execution/handlers/_registry", () => ({
   getActionHandler: (...args: unknown[]) => mockGetActionHandler(...args),
 }));
 
+const mockRecordRun = jest.fn();
+jest.mock("@/repositories/workflowRuns", () => ({
+  recordRun: (...args: unknown[]) => mockRecordRun(...args),
+}));
+
 import { WorkflowEngine } from "@/services/execution/engine";
 import { MissingVariableError } from "@/workflow-engine/variables/resolveValue";
 import type { TriggerEvent } from "@/contracts/triggerEvent";
@@ -78,6 +83,8 @@ const baseWorkflow = {
 beforeEach(() => {
   mockGetByIdServiceRole.mockReset();
   mockGetActionHandler.mockReset();
+  mockRecordRun.mockReset();
+  mockRecordRun.mockResolvedValue(undefined);
 });
 
 describe("WorkflowEngine — fatal errors", () => {
@@ -333,5 +340,117 @@ describe("WorkflowEngine — graph traversal", () => {
     expect(result.steps).toEqual([
       expect.objectContaining({ nodeId: "t1", status: "succeeded" }),
     ]);
+  });
+});
+
+describe("WorkflowEngine — run persistence (Slice 1M)", () => {
+  it("records a 'succeeded' run row with steps + null error_classification", async () => {
+    mockGetByIdServiceRole.mockResolvedValueOnce({
+      ...baseWorkflow,
+      draftDefinition: {
+        nodes: [trigger("t1"), action("a1", "step")],
+        edges: [edge("e1", "t1", "a1")],
+      },
+    });
+    mockGetActionHandler.mockReturnValueOnce(async () => ({ output: { ok: true } }));
+
+    const result = await new WorkflowEngine({ resolveStrict: (v) => v }).runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "t1",
+      triggerEvent,
+    });
+
+    expect(mockRecordRun).toHaveBeenCalledTimes(1);
+    expect(mockRecordRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: result.runId,
+        workflowId: "wf-1",
+        userId: "user-1",
+        status: "succeeded",
+        triggerNodeId: "t1",
+        triggerEvent,
+        errorClassification: null,
+        fatalError: null,
+      }),
+    );
+  });
+
+  it("records a 'failed' run with humanized error_classification derived from the first failed step", async () => {
+    mockGetByIdServiceRole.mockResolvedValueOnce({
+      ...baseWorkflow,
+      draftDefinition: {
+        nodes: [trigger("t1"), action("a1", "step", { channel: "{{trigger.unknown}}" })],
+        edges: [edge("e1", "t1", "a1")],
+      },
+    });
+    mockGetActionHandler.mockReturnValueOnce(jest.fn());
+
+    const resolveStrict = jest.fn(() => {
+      throw new MissingVariableError("trigger.unknown", "missing_field");
+    });
+
+    await new WorkflowEngine({ resolveStrict }).runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "t1",
+      triggerEvent,
+    });
+
+    expect(mockRecordRun).toHaveBeenCalledTimes(1);
+    const call = mockRecordRun.mock.calls[0]![0] as {
+      status: string;
+      errorClassification: { title: string; action?: string; severity: string };
+    };
+    expect(call.status).toBe("failed");
+    expect(call.errorClassification.title).toMatch(/variable/i);
+    expect(call.errorClassification.action).toBe("open_node");
+  });
+
+  it("records a 'failed' run with classification derived from fatalError when no steps ran", async () => {
+    mockGetByIdServiceRole.mockResolvedValueOnce({
+      ...baseWorkflow,
+      draftDefinition: { nodes: [trigger("t1")], edges: [] },
+    });
+
+    await new WorkflowEngine({ resolveStrict: (v) => v }).runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "ghost", // not in definition → TRIGGER_NODE_NOT_FOUND
+      triggerEvent,
+    });
+
+    expect(mockRecordRun).toHaveBeenCalledTimes(1);
+    const call = mockRecordRun.mock.calls[0]![0] as {
+      status: string;
+      fatalError: { code: string };
+      errorClassification: { title: string };
+    };
+    expect(call.fatalError.code).toBe("TRIGGER_NODE_NOT_FOUND");
+    expect(call.errorClassification.title).toMatch(/trigger node missing/i);
+  });
+
+  it("does NOT record a run when the workflow itself is missing (no userId to attribute)", async () => {
+    mockGetByIdServiceRole.mockResolvedValueOnce(null);
+    await new WorkflowEngine({ resolveStrict: (v) => v }).runWorkflow({
+      workflowId: "missing",
+      triggerNodeId: "t1",
+      triggerEvent,
+    });
+    expect(mockRecordRun).not.toHaveBeenCalled();
+  });
+
+  it("swallows recordRun errors so the engine completes the run regardless", async () => {
+    mockGetByIdServiceRole.mockResolvedValueOnce({
+      ...baseWorkflow,
+      draftDefinition: { nodes: [trigger("t1")], edges: [] },
+    });
+    mockRecordRun.mockRejectedValueOnce(new Error("DB write failed"));
+
+    const result = await new WorkflowEngine({ resolveStrict: (v) => v }).runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "t1",
+      triggerEvent,
+    });
+
+    // Engine still returns a result; recordRun failure logged + swallowed.
+    expect(result.status).toBe("succeeded");
   });
 });
