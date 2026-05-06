@@ -128,7 +128,7 @@ describe("WorkflowEngine — happy path (linear chain)", () => {
       return undefined;
     });
 
-    const resolveStrict = jest.fn((v: unknown) => v);
+    const resolveStrict = jest.fn((v: unknown, _ctx?: unknown) => v);
     const engine = new WorkflowEngine({ resolveStrict });
     const result = await engine.runWorkflow({
       workflowId: "wf-1",
@@ -161,7 +161,7 @@ describe("WorkflowEngine — happy path (linear chain)", () => {
     });
     mockGetActionHandler.mockReturnValueOnce(async () => ({ output: {} }));
 
-    const resolveStrict = jest.fn((v: unknown) => v);
+    const resolveStrict = jest.fn((v: unknown, _ctx?: unknown) => v);
     await new WorkflowEngine({ resolveStrict }).runWorkflow({
       workflowId: "wf-1",
       triggerNodeId: "custom_trigger",
