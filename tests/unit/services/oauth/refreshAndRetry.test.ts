@@ -6,14 +6,6 @@
  * dispatcher's refresh and the integrations repo so we can drive every
  * branch (200, 401-then-200, 401-then-401, refresh-not-supported,
  * non-401-error, concurrent-401-coalesce).
- *
- * Note on placement: this lives in services/, not core/, because it
- * orchestrates repository + dispatcher + encryption — `core/` is restricted
- * to imports from `contracts/` only per
- * project-structure-and-module-boundaries.md §4 (the whole-codebase rule
- * that overrides subsystem rule docs). The OAuth-dispatcher rule doc names
- * `core/integrations/refreshAndRetry.ts` aspirationally; the structure
- * lint enforces the override.
  */
 import { RefreshNotSupportedError } from "@/contracts/integration";
 

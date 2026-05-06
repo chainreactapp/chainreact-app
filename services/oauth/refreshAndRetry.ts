@@ -11,14 +11,12 @@ import { refresh as dispatcherRefresh } from "@/services/oauth/dispatcher";
  * refresh + retry cycle. Adopted by Slice 2c's Gmail handler; existing
  * Slack handlers are unaffected (Slack tokens don't expire by default).
  *
- * Placement note: the OAuth-dispatcher rules doc names
- * `core/integrations/refreshAndRetry.ts`. The whole-codebase rule
+ * Placement: lives in `services/oauth/` co-located with `state.ts`,
+ * `dispatcher.ts`, and `refreshLock.ts`. The whole-codebase rule
  * (project-structure-and-module-boundaries.md §4) restricts `core/` to
- * imports from `contracts/` only — and this wrapper orchestrates the
- * repository + dispatcher + encryption. Project-structure overrides the
- * subsystem doc, so the file lives in `services/oauth/` co-located with
- * `state.ts`, `dispatcher.ts`, and `refreshLock.ts`. The rule doc will be
- * brought in line in a follow-up.
+ * imports from `contracts/` only, and this wrapper orchestrates the
+ * repository + dispatcher + encryption — so it cannot satisfy `core/`'s
+ * purity constraint.
  *
  * Contract (Slice 2 plan, decisions 2b-2 + 2b-3):
  *   - Caller's `apiCall` is opaque from this layer's perspective. It must
