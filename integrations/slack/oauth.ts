@@ -17,7 +17,20 @@ import { encryptToken } from "@/core/encryption/tokens";
  *     repository to persist.
  */
 
-const SLACK_TOKEN_URL = "https://slack.com/api/oauth.v2.access";
+/**
+ * Base URLs are env-overridable for e2e testing only. Production sets
+ * neither variable; defaults point at real Slack. The override is opt-in
+ * (must be explicitly set), can't be reached accidentally, and lives at
+ * the network boundary — V2's signed-state + token-encryption + dispatcher
+ * paths all run unchanged regardless.
+ */
+function slackApiBase(): string {
+  return process.env.SLACK_API_BASE ?? "https://slack.com";
+}
+
+function slackAuthorizeBase(): string {
+  return process.env.SLACK_AUTHORIZE_BASE ?? "https://slack.com";
+}
 
 interface SlackOAuthV2Success {
   ok: true;
@@ -35,8 +48,6 @@ interface SlackOAuthV2Error {
 }
 
 type SlackOAuthV2Response = SlackOAuthV2Success | SlackOAuthV2Error;
-
-const SLACK_AUTHORIZE_URL = "https://slack.com/oauth/v2/authorize";
 
 function getRedirectUrl(): string {
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
@@ -63,7 +74,7 @@ export const slackOAuth: ProviderOAuth = {
       state,
       redirect_uri: getRedirectUrl(),
     });
-    return `${SLACK_AUTHORIZE_URL}?${params.toString()}`;
+    return `${slackAuthorizeBase()}/oauth/v2/authorize?${params.toString()}`;
   },
 
   async handleCallback(code, _state) {
@@ -73,7 +84,7 @@ export const slackOAuth: ProviderOAuth = {
       code,
       redirect_uri: getRedirectUrl(),
     });
-    const res = await fetch(SLACK_TOKEN_URL, {
+    const res = await fetch(`${slackApiBase()}/api/oauth.v2.access`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: params.toString(),

@@ -24,6 +24,7 @@ afterEach(() => {
   delete process.env.SLACK_CLIENT_SECRET;
   delete process.env.NEXT_PUBLIC_APP_URL;
   delete process.env.TOKEN_ENCRYPTION_KEY;
+  delete process.env.SLACK_API_BASE;
 });
 
 function mockFetchOnce(response: { ok: boolean; status?: number; json: unknown }) {
@@ -172,5 +173,25 @@ describe("slackOAuth.handleCallback", () => {
       json: { ok: true, scope: "chat:write", team: {} },
     });
     await expect(slackOAuth.handleCallback("c", "s")).rejects.toThrow(/missing/);
+  });
+
+  it("uses SLACK_API_BASE override for the token exchange (e2e mock surface)", async () => {
+    process.env.SLACK_API_BASE = "http://localhost:9876";
+    const fetchSpy = jest.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          access_token: "xoxb-x",
+          scope: "chat:write",
+          team: { id: "T", name: "N" },
+        }),
+        { status: 200 },
+      ),
+    );
+    await slackOAuth.handleCallback("c", "s");
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://localhost:9876/api/oauth.v2.access",
+      expect.any(Object),
+    );
   });
 });

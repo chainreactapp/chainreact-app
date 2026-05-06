@@ -109,4 +109,45 @@ describe("chatPostMessage", () => {
     expect(e).toBeInstanceOf(SlackApiError);
     expect(e.name).toBe("SlackApiError");
   });
+
+  it("uses SLACK_API_BASE override when set (e2e mock surface)", async () => {
+    process.env.SLACK_API_BASE = "http://localhost:9876";
+    const fetchSpy = jest.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          ts: "1.0",
+          channel: "C",
+          message: { text: "x" },
+        }),
+        { status: 200 },
+      ),
+    );
+    await chatPostMessage({ botToken: "x", channel: "C", text: "t" });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://localhost:9876/api/chat.postMessage",
+      expect.any(Object),
+    );
+    delete process.env.SLACK_API_BASE;
+  });
+
+  it("defaults to slack.com when SLACK_API_BASE is unset (production-safe)", async () => {
+    delete process.env.SLACK_API_BASE;
+    const fetchSpy = jest.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          ts: "1.0",
+          channel: "C",
+          message: { text: "x" },
+        }),
+        { status: 200 },
+      ),
+    );
+    await chatPostMessage({ botToken: "x", channel: "C", text: "t" });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "https://slack.com/api/chat.postMessage",
+      expect.any(Object),
+    );
+  });
 });

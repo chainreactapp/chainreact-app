@@ -10,7 +10,16 @@
  * engine maps to a HANDLER_FAILED step.
  */
 
-const ENDPOINT = "https://slack.com/api/chat.postMessage";
+/**
+ * Base URL is env-overridable for e2e testing only. Production leaves
+ * SLACK_API_BASE unset; defaults to real Slack. Override is opt-in via env
+ * and lives at the network boundary — handler logic, schema validation,
+ * token decryption all run unchanged regardless.
+ */
+function endpoint(): string {
+  const base = process.env.SLACK_API_BASE ?? "https://slack.com";
+  return `${base}/api/chat.postMessage`;
+}
 
 export interface ChatPostMessageInput {
   /** Slack bot OAuth token (xoxb-…). */
@@ -50,7 +59,7 @@ interface SlackResponseBody {
 export async function chatPostMessage(
   input: ChatPostMessageInput,
 ): Promise<ChatPostMessageResult> {
-  const response = await fetch(ENDPOINT, {
+  const response = await fetch(endpoint(), {
     method: "POST",
     headers: {
       authorization: `Bearer ${input.botToken}`,

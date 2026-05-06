@@ -38,6 +38,21 @@ describe("slackOAuth.buildAuthUrl", () => {
     expect(() => slackOAuth.buildAuthUrl("S", ["chat:write"])).toThrow(/SLACK_CLIENT_ID/);
   });
 
+  it("uses SLACK_AUTHORIZE_BASE override when set (e2e mock surface)", () => {
+    process.env.SLACK_AUTHORIZE_BASE = "http://localhost:9876";
+    const url = slackOAuth.buildAuthUrl("S", ["chat:write"]);
+    const u = new URL(url);
+    expect(u.origin + u.pathname).toBe(
+      "http://localhost:9876/oauth/v2/authorize",
+    );
+  });
+
+  it("defaults to slack.com when SLACK_AUTHORIZE_BASE is unset (production-safe)", () => {
+    delete process.env.SLACK_AUTHORIZE_BASE;
+    const url = slackOAuth.buildAuthUrl("S", ["chat:write"]);
+    expect(new URL(url).origin).toBe("https://slack.com");
+  });
+
   it("URL-encodes scopes with special characters", () => {
     const url = slackOAuth.buildAuthUrl("S", ["channels:history", "chat:write.public"]);
     const u = new URL(url);
