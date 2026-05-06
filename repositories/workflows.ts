@@ -212,3 +212,56 @@ export async function setActiveRevision(
   }
   return rowToRecord(data);
 }
+
+// ── Lifecycle transitions ──────────────────────────────────────────────────
+//
+// applyTransition is the only writer for workflows.state. The orchestrator
+// (services/workflows/lifecycleOrchestrator.ts) calls it after validating
+// the transition against the state machine in core/workflows/lifecycle.ts.
+//
+// Concurrency model: the .eq("state", expectedFromState) predicate gives us
+// optimistic concurrency without an explicit lock. If a concurrent transition
+// already moved the row out of expectedFromState, the UPDATE matches zero
+// rows and we return null; the orchestrator maps that to LIFECYCLE_CONFLICT.
+//
+// Pass-through semantics on optional columns: undefined means "do not write
+// the column". Use `null` to explicitly clear it.
+
+export interface ApplyTransitionInput {
+  workflowId: string;
+  expectedFromState: WorkflowState;
+  toState: WorkflowState;
+  /** `undefined` = leave column untouched. `null` = clear. */
+  disabledReason?: WorkflowDisabledReason | null;
+  /** `undefined` = leave column untouched. `null` = clear. */
+  disabledContext?: string | null;
+  /** When true, set deleted_at = now(). Used by the delete transition. */
+  setDeletedAt?: boolean;
+}
+
+export async function applyTransition(
+  input: ApplyTransitionInput,
+): Promise<WorkflowRecord | null> {
+  const supabase = await createClient();
+  const update: Record<string, unknown> = { state: input.toState };
+  if (input.disabledReason !== undefined) {
+    update.disabled_reason = input.disabledReason;
+  }
+  if (input.disabledContext !== undefined) {
+    update.disabled_context = input.disabledContext;
+  }
+  if (input.setDeletedAt) {
+    update.deleted_at = new Date().toISOString();
+  }
+  const { data, error } = await supabase
+    .from("workflows")
+    .update(update)
+    .eq("id", input.workflowId)
+    .eq("state", input.expectedFromState)
+    .select()
+    .maybeSingle<WorkflowsRow>();
+  if (error) {
+    throw new Error(`workflows.applyTransition failed: ${error.message}`);
+  }
+  return data ? rowToRecord(data) : null;
+}

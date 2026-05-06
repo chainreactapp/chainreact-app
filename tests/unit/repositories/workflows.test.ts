@@ -70,6 +70,7 @@ import {
   updateDraftDefinition,
   createRevision,
   setActiveRevision,
+  applyTransition,
 } from "@/repositories/workflows";
 
 function freshState(resultData: unknown = baseRow): ChainState {
@@ -199,5 +200,105 @@ describe("repositories/workflows.createRevision + setActiveRevision", () => {
     const result = await setActiveRevision("wf-1", "rev-1");
     expect(state.updatePayload).toEqual({ active_revision_id: "rev-1" });
     expect(result.activeRevisionId).toBe("rev-1");
+  });
+});
+
+describe("repositories/workflows.applyTransition", () => {
+  it("filters by id AND expectedFromState (optimistic concurrency)", async () => {
+    const state = freshState({ ...baseRow, state: "active" });
+    mockSupabase.current = makeMockClient(state);
+    await applyTransition({
+      workflowId: "wf-1",
+      expectedFromState: "draft",
+      toState: "active",
+      disabledReason: null,
+      disabledContext: null,
+    });
+    expect(state.filters).toContainEqual({ op: "eq", args: ["id", "wf-1"] });
+    expect(state.filters).toContainEqual({ op: "eq", args: ["state", "draft"] });
+    expect(state.updatePayload).toEqual({
+      state: "active",
+      disabled_reason: null,
+      disabled_context: null,
+    });
+  });
+
+  it("returns null when maybeSingle returns no row (concurrent transition lost)", async () => {
+    const state = freshState(null);
+    mockSupabase.current = makeMockClient(state);
+    const result = await applyTransition({
+      workflowId: "wf-1",
+      expectedFromState: "draft",
+      toState: "active",
+    });
+    expect(result).toBeNull();
+  });
+
+  it("omits disabled_* columns when not provided (preserves history)", async () => {
+    const state = freshState({ ...baseRow, state: "eligible_to_resume" });
+    mockSupabase.current = makeMockClient(state);
+    await applyTransition({
+      workflowId: "wf-1",
+      expectedFromState: "disabled",
+      toState: "eligible_to_resume",
+    });
+    expect(state.updatePayload).toEqual({ state: "eligible_to_resume" });
+  });
+
+  it("writes the disable reason + context when transitioning to disabled", async () => {
+    const state = freshState({
+      ...baseRow,
+      state: "disabled",
+      disabled_reason: "integration_revoked",
+      disabled_context: "Slack token revoked",
+    });
+    mockSupabase.current = makeMockClient(state);
+    await applyTransition({
+      workflowId: "wf-1",
+      expectedFromState: "active",
+      toState: "disabled",
+      disabledReason: "integration_revoked",
+      disabledContext: "Slack token revoked",
+    });
+    expect(state.updatePayload).toEqual({
+      state: "disabled",
+      disabled_reason: "integration_revoked",
+      disabled_context: "Slack token revoked",
+    });
+  });
+
+  it("sets deleted_at when setDeletedAt: true", async () => {
+    const state = freshState({
+      ...baseRow,
+      state: "deleted",
+      deleted_at: "2026-05-06T01:00:00Z",
+    });
+    mockSupabase.current = makeMockClient(state);
+    await applyTransition({
+      workflowId: "wf-1",
+      expectedFromState: "active",
+      toState: "deleted",
+      setDeletedAt: true,
+    });
+    const payload = state.updatePayload as Record<string, unknown>;
+    expect(payload.state).toBe("deleted");
+    expect(typeof payload.deleted_at).toBe("string");
+  });
+
+  it("propagates supabase errors", async () => {
+    const state: ChainState = {
+      filters: [],
+      resultData: null,
+      resultError: { message: "permission denied" },
+      rejectIncludesDeleted: false,
+    };
+    mockSupabase.current = makeMockClient(state);
+    await expect(
+      applyTransition({
+        workflowId: "wf-1",
+        expectedFromState: "draft",
+        toState: "active",
+      }),
+    ).rejects.toThrow(/permission denied/);
   });
 });
