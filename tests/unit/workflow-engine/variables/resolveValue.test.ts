@@ -3,7 +3,10 @@
  *
  * Variable resolver — covers tests #1–#14 from
  * docs/rules/variable-resolver.md "Required tests" section. Test #15
- * (V1 parity) is deferred until the V1 audit lands.
+ * (V1 parity) lives at tests/parity/v1-resolver-drift.test.ts — composition-
+ * level coverage that proves the real resolver + engine + handler chain
+ * doesn't let unresolved {{...}} reach a handler. This file covers the
+ * resolver in isolation; the parity file covers the chain.
  */
 
 import {
