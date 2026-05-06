@@ -87,9 +87,20 @@ function expiresAtIso(epochSeconds: number | null): string | null {
  * Re-connection flow: if a previously-disconnected row exists, this function
  * inserts a new row rather than reviving the disconnected one — preserving
  * the disconnect history.
+ *
+ * Uses service-role: the only caller is the OAuth callback dispatcher, which
+ * has already cryptographically verified the user identity via the signed
+ * state token. The HTTP request hitting the callback was issued by the user's
+ * browser to a redirect URL — the V2 session cookie may or may not be on that
+ * host (ngrok dev, multi-domain prod), so the SSR-cookie client is unreliable
+ * here. Per database-security.md §"Allowed flows" — system writes that have
+ * already proved user identity out-of-band use service-role with an explicit
+ * reason for audit.
  */
 export async function upsertActive(input: UpsertActiveInput): Promise<IntegrationRecord> {
-  const supabase = await createClient();
+  const supabase = getServiceRoleClient(
+    `oauth callback: upsertActive ${input.provider} for user ${input.userId}`,
+  );
 
   // Check for an existing ACTIVE row.
   const { data: existing, error: existingErr } = await supabase

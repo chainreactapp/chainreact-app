@@ -5,7 +5,7 @@ import {
   upsertActive,
   type IntegrationRecord,
 } from "@/repositories/integrations";
-import { createState, verifyState, InvalidStateError } from "./state";
+import { createState, consumeState, InvalidStateError } from "./state";
 
 /**
  * Generic OAuth dispatcher.
@@ -46,7 +46,7 @@ export async function connect(input: ConnectInput): Promise<ConnectOutput> {
   }
 
   const requestedScopes = [...manifest.scopes.required, ...manifest.scopes.optional];
-  const { token: state } = createState({
+  const { token: state } = await createState({
     userId: input.userId,
     provider: input.provider,
     requestedScopes,
@@ -68,10 +68,17 @@ export interface HandleCallbackOutput {
 export async function handleCallback(
   input: HandleCallbackInput,
 ): Promise<HandleCallbackOutput> {
-  // Verify state — this re-runs the signature/expiry check the dispatcher
-  // promises. A malformed or expired state token throws InvalidStateError
-  // (the route layer maps this to a redirect with ?integration_error=...).
-  const payload = verifyState(input.state);
+  // Verify-and-consume the state in one atomic step. consumeState does the
+  // signature + expiry check AND deletes the matching oauth_states row; a
+  // second callback with the same state throws InvalidStateError("already
+  // consumed or expired") — that's the replay-protection layer that the JWT
+  // alone cannot enforce. The route maps this exception to a redirect with
+  // ?integration_error=...
+  //
+  // We consume BEFORE checking provider mismatch on purpose: a malformed
+  // request (wrong provider in URL but valid state) still uses up the nonce
+  // so it can't be replayed against the correct provider's route either.
+  const payload = await consumeState(input.state);
   if (payload.provider !== input.provider) {
     throw new InvalidStateError("provider mismatch between state and route");
   }

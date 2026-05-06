@@ -1,7 +1,9 @@
 /**
  * @jest-environment node
  *
- * Tests for repositories/integrations.ts. Mocks the Supabase SSR client to
+ * Tests for repositories/integrations.ts. Mocks the service-role Supabase
+ * client (upsertActive bypasses RLS because the OAuth callback dispatcher
+ * has already verified the user identity via the signed state token) to
  * verify the upsertActive flow chooses INSERT vs UPDATE based on whether an
  * active row exists, and that the row payload is correctly translated from
  * EncryptedTokens / ProviderAccountInfo into snake_case columns.
@@ -80,8 +82,8 @@ function makeMockClient(opts: {
 
 const mockSupabaseClient: { current: ReturnType<typeof makeMockClient> | null } = { current: null };
 
-jest.mock("@/utils/supabase/server", () => ({
-  createClient: jest.fn(async () => mockSupabaseClient.current),
+jest.mock("@/repositories/supabase/serviceRoleClient", () => ({
+  getServiceRoleClient: jest.fn(() => mockSupabaseClient.current),
 }));
 
 import { upsertActive } from "@/repositories/integrations";
