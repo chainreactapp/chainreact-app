@@ -164,7 +164,8 @@ describe("consumeState — verify-and-consume (replay protection)", () => {
       createdAt: "2026-05-07T00:00:00Z",
     });
     const result = await consumeState(token);
-    expect(result.userId).toBe("user-1");
+    expect(result.payload.userId).toBe("user-1");
+    expect(result.pkce).toBeNull();
     expect(mockConsumeByNonce).toHaveBeenCalledWith(payload.nonce);
   });
 
@@ -245,5 +246,69 @@ describe("consumeState — verify-and-consume (replay protection)", () => {
       .digest("base64url");
     await expect(consumeState(`${data}.${sig}`)).rejects.toThrow(/expired/);
     expect(mockConsumeByNonce).not.toHaveBeenCalled();
+  });
+});
+
+describe("consumeState — PKCE round-trip (Slice 2a plumbing)", () => {
+  it("returns pkce inputs when the row has both verifier + method", async () => {
+    const { token, payload } = await createState({
+      userId: "u-pkce",
+      provider: "google",
+      requestedScopes: ["openid"],
+      pkce: { codeVerifier: "verifier-secret-xyz", codeChallengeMethod: "S256" },
+    });
+    mockConsumeByNonce.mockResolvedValueOnce({
+      nonce: payload.nonce,
+      userId: payload.userId,
+      provider: payload.provider,
+      expiresAt: new Date(payload.expiresAt * 1000).toISOString(),
+      pkceCodeVerifier: "verifier-secret-xyz",
+      pkceCodeChallengeMethod: "S256",
+      createdAt: new Date().toISOString(),
+    });
+    const result = await consumeState(token);
+    expect(result.payload.userId).toBe("u-pkce");
+    expect(result.pkce).toEqual({
+      codeVerifier: "verifier-secret-xyz",
+      codeChallengeMethod: "S256",
+    });
+  });
+
+  it("returns pkce: null when only verifier is present (half-populated row)", async () => {
+    const { token, payload } = await createState({
+      userId: "u",
+      provider: "slack",
+      requestedScopes: [],
+    });
+    mockConsumeByNonce.mockResolvedValueOnce({
+      nonce: payload.nonce,
+      userId: payload.userId,
+      provider: payload.provider,
+      expiresAt: new Date(payload.expiresAt * 1000).toISOString(),
+      pkceCodeVerifier: "stranded-verifier",
+      pkceCodeChallengeMethod: null,
+      createdAt: new Date().toISOString(),
+    });
+    const result = await consumeState(token);
+    expect(result.pkce).toBeNull();
+  });
+
+  it("returns pkce: null when only method is present (half-populated row)", async () => {
+    const { token, payload } = await createState({
+      userId: "u",
+      provider: "slack",
+      requestedScopes: [],
+    });
+    mockConsumeByNonce.mockResolvedValueOnce({
+      nonce: payload.nonce,
+      userId: payload.userId,
+      provider: payload.provider,
+      expiresAt: new Date(payload.expiresAt * 1000).toISOString(),
+      pkceCodeVerifier: null,
+      pkceCodeChallengeMethod: "S256",
+      createdAt: new Date().toISOString(),
+    });
+    const result = await consumeState(token);
+    expect(result.pkce).toBeNull();
   });
 });

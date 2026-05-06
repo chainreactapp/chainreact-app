@@ -105,6 +105,17 @@ export interface ProviderAccountInfo {
 }
 
 /**
+ * PKCE inputs persisted on the `oauth_states` row at connect time and
+ * forwarded to the provider's callback handler at consume time. The
+ * `codeVerifier` is the secret half — it lives only on the row, never in
+ * the signed state JWT.
+ */
+export interface PkceInputs {
+  codeVerifier: string;
+  codeChallengeMethod: string;
+}
+
+/**
  * Per-provider OAuth implementation. Each provider in `integrations/<id>/oauth.ts`
  * exports an object that satisfies this shape. The generic dispatcher in
  * `services/oauth/dispatcher.ts` is the only caller.
@@ -112,10 +123,15 @@ export interface ProviderAccountInfo {
 export interface ProviderOAuth {
   /** Builds the redirect URL the user is sent to. `state` is the signed token from createState(). */
   buildAuthUrl(state: string, scopes: readonly string[]): string;
-  /** Exchanges the authorization code for tokens. */
+  /**
+   * Exchanges the authorization code for tokens. `pkce` is non-null only for
+   * providers that asked the dispatcher to issue a PKCE challenge at connect
+   * time (manifest-driven). Non-PKCE providers receive `null` and ignore it.
+   */
   handleCallback(
     code: string,
     state: string,
+    pkce: PkceInputs | null,
   ): Promise<{ tokens: EncryptedTokens; account: ProviderAccountInfo }>;
   /** Returns fresh tokens, or throws RefreshNotSupportedError on non-refreshable providers. */
   refreshToken(refreshToken: string): Promise<EncryptedTokens>;

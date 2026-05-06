@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import type { PkceInputs } from "@/contracts/integration";
 import * as oauthStatesRepo from "@/repositories/oauthStates";
 
 /**
@@ -153,6 +154,18 @@ export function verifyState(token: string): OAuthStatePayload {
 }
 
 /**
+ * Result of a successful state consume: the verified JWT payload plus any
+ * PKCE inputs persisted on the row at create time. `pkce` is null for
+ * providers whose connect path didn't issue a PKCE challenge (Slack default
+ * v2). PKCE-enabled providers receive a non-null `{ codeVerifier,
+ * codeChallengeMethod }` to forward to their token endpoint.
+ */
+export interface ConsumeStateResult {
+  payload: OAuthStatePayload;
+  pkce: PkceInputs | null;
+}
+
+/**
  * The dispatcher's callback path uses this. It does verifyState (signature +
  * expiry) AND atomically consumes the DB row in one step. A second call with
  * the same token throws InvalidStateError("already consumed or expired") —
@@ -162,7 +175,7 @@ export function verifyState(token: string): OAuthStatePayload {
  * without touching the DB); DB consume second. The atomic delete-if-fresh
  * makes concurrent consumes race-safe — only one wins, the other rejects.
  */
-export async function consumeState(token: string): Promise<OAuthStatePayload> {
+export async function consumeState(token: string): Promise<ConsumeStateResult> {
   const payload = verifyState(token);
   const row = await oauthStatesRepo.consumeByNonce(payload.nonce);
   if (!row) {
@@ -173,5 +186,14 @@ export async function consumeState(token: string): Promise<OAuthStatePayload> {
     // upstream is broken (key rotation mid-flow, DB tampering, …). Fail safe.
     throw new InvalidStateError("state row mismatch");
   }
-  return payload;
+  // createState writes both PKCE fields together (or neither). A
+  // half-populated row indicates upstream corruption — treat as invalid and
+  // ignore by returning pkce: null. This slice doesn't add a stricter mode;
+  // a future provider that requires PKCE can throw on null pkce inside its
+  // own handleCallback.
+  const pkce =
+    row.pkceCodeVerifier !== null && row.pkceCodeChallengeMethod !== null
+      ? { codeVerifier: row.pkceCodeVerifier, codeChallengeMethod: row.pkceCodeChallengeMethod }
+      : null;
+  return { payload, pkce };
 }
