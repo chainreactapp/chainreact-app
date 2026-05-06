@@ -53,7 +53,7 @@ describe("slackOAuth.handleCallback", () => {
         ),
       );
 
-    await slackOAuth.handleCallback("auth-code-xyz", "state-token");
+    await slackOAuth.handleCallback("auth-code-xyz", "state-token", null);
 
     expect(fetchSpy).toHaveBeenCalledWith(
       "https://slack.com/api/oauth.v2.access",
@@ -83,7 +83,7 @@ describe("slackOAuth.handleCallback", () => {
         team: { id: "T123", name: "Acme" },
       },
     });
-    const result = await slackOAuth.handleCallback("code", "state");
+    const result = await slackOAuth.handleCallback("code", "state", null);
     expect(result.tokens.accessTokenEncrypted).not.toContain("xoxb-real-bot-token");
     expect(decryptToken(result.tokens.accessTokenEncrypted)).toBe("xoxb-real-bot-token");
   });
@@ -98,7 +98,7 @@ describe("slackOAuth.handleCallback", () => {
         team: { id: "T", name: "N" },
       },
     });
-    const result = await slackOAuth.handleCallback("c", "s");
+    const result = await slackOAuth.handleCallback("c", "s", null);
     expect(result.tokens.refreshTokenEncrypted).toBeNull();
     expect(result.tokens.accessTokenExpiresAt).toBeNull();
   });
@@ -113,7 +113,7 @@ describe("slackOAuth.handleCallback", () => {
         team: { id: "T", name: "N" },
       },
     });
-    const result = await slackOAuth.handleCallback("c", "s");
+    const result = await slackOAuth.handleCallback("c", "s", null);
     expect(result.tokens.scopes).toEqual([
       "chat:write",
       "channels:read",
@@ -135,7 +135,7 @@ describe("slackOAuth.handleCallback", () => {
         authed_user: { id: "U-user-1" },
       },
     });
-    const result = await slackOAuth.handleCallback("c", "s");
+    const result = await slackOAuth.handleCallback("c", "s", null);
     expect(result.account.providerAccountId).toBe("T-team-123");
     expect(result.account.displayName).toBe("Acme Inc");
     expect(result.account.metadata).toEqual({
@@ -152,19 +152,19 @@ describe("slackOAuth.handleCallback", () => {
       ok: true,
       json: { ok: false, error: "invalid_code" },
     });
-    await expect(slackOAuth.handleCallback("bad-code", "s")).rejects.toThrow(/invalid_code/);
+    await expect(slackOAuth.handleCallback("bad-code", "s", null)).rejects.toThrow(/invalid_code/);
   });
 
   it("throws on HTTP-level failure", async () => {
     jest
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response("ratelimit", { status: 429 }));
-    await expect(slackOAuth.handleCallback("c", "s")).rejects.toThrow(/HTTP 429/);
+    await expect(slackOAuth.handleCallback("c", "s", null)).rejects.toThrow(/HTTP 429/);
   });
 
   it("throws when SLACK_CLIENT_SECRET is missing", async () => {
     delete process.env.SLACK_CLIENT_SECRET;
-    await expect(slackOAuth.handleCallback("c", "s")).rejects.toThrow(/SLACK_CLIENT_SECRET/);
+    await expect(slackOAuth.handleCallback("c", "s", null)).rejects.toThrow(/SLACK_CLIENT_SECRET/);
   });
 
   it("throws when response is missing access_token or team.id", async () => {
@@ -172,7 +172,7 @@ describe("slackOAuth.handleCallback", () => {
       ok: true,
       json: { ok: true, scope: "chat:write", team: {} },
     });
-    await expect(slackOAuth.handleCallback("c", "s")).rejects.toThrow(/missing/);
+    await expect(slackOAuth.handleCallback("c", "s", null)).rejects.toThrow(/missing/);
   });
 
   it("uses SLACK_API_BASE override for the token exchange (e2e mock surface)", async () => {
@@ -188,7 +188,7 @@ describe("slackOAuth.handleCallback", () => {
         { status: 200 },
       ),
     );
-    await slackOAuth.handleCallback("c", "s");
+    await slackOAuth.handleCallback("c", "s", null);
     expect(fetchSpy).toHaveBeenCalledWith(
       "http://localhost:9876/api/oauth.v2.access",
       expect.any(Object),

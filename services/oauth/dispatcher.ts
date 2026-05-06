@@ -78,7 +78,10 @@ export async function handleCallback(
   // We consume BEFORE checking provider mismatch on purpose: a malformed
   // request (wrong provider in URL but valid state) still uses up the nonce
   // so it can't be replayed against the correct provider's route either.
-  const payload = await consumeState(input.state);
+  //
+  // pkce is non-null only for providers whose connect path issued a PKCE
+  // challenge (Gmail and future PKCE providers). Slack default v2 → null.
+  const { payload, pkce } = await consumeState(input.state);
   if (payload.provider !== input.provider) {
     throw new InvalidStateError("provider mismatch between state and route");
   }
@@ -90,7 +93,7 @@ export async function handleCallback(
     );
   }
 
-  const { tokens, account } = await oauth.handleCallback(input.code, input.state);
+  const { tokens, account } = await oauth.handleCallback(input.code, input.state, pkce);
 
   const integration = await upsertActive({
     userId: payload.userId,
