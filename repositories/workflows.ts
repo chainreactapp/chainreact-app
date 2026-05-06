@@ -1,4 +1,5 @@
 import { createClient } from "@/utils/supabase/server";
+import { getServiceRoleClient } from "./supabase/serviceRoleClient";
 import type {
   WorkflowState,
   WorkflowDisabledReason,
@@ -237,6 +238,29 @@ export interface ApplyTransitionInput {
   disabledContext?: string | null;
   /** When true, set deleted_at = now(). Used by the delete transition. */
   setDeletedAt?: boolean;
+}
+
+/**
+ * Webhook-dispatcher path: look up just the lifecycle state for a workflow
+ * without a user session. Used by core/triggers/dispatch.ts to drop events
+ * for paused / disabled / deleted workflows even when the trigger_resources
+ * row hasn't been removed yet (provider deregistration may lag).
+ */
+export async function getStateForDispatch(
+  workflowId: string,
+): Promise<WorkflowState | null> {
+  const supabase = getServiceRoleClient(
+    `webhook dispatcher: state lookup ${workflowId}`,
+  );
+  const { data, error } = await supabase
+    .from("workflows")
+    .select("state")
+    .eq("id", workflowId)
+    .maybeSingle<{ state: WorkflowState }>();
+  if (error) {
+    throw new Error(`workflows.getStateForDispatch failed: ${error.message}`);
+  }
+  return data?.state ?? null;
 }
 
 export async function applyTransition(
