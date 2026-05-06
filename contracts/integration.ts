@@ -116,13 +116,48 @@ export interface PkceInputs {
 }
 
 /**
+ * The PKCE challenge half — what gets embedded in the authorize URL.
+ * Distinct from `PkceInputs` because the verifier (secret) does NOT go in
+ * the URL. Providers that use PKCE return both halves from
+ * `generatePkce()`; the dispatcher routes the verifier to `createState`
+ * and the challenge to `buildAuthUrl`.
+ */
+export interface PkceChallenge {
+  codeChallenge: string;
+  codeChallengeMethod: string;
+}
+
+/**
+ * Full output of a provider's PKCE generation step. Combines the verifier
+ * (persisted server-side) and the challenge (embedded in the authorize URL).
+ */
+export interface PkceGeneration extends PkceInputs, PkceChallenge {}
+
+/**
  * Per-provider OAuth implementation. Each provider in `integrations/<id>/oauth.ts`
  * exports an object that satisfies this shape. The generic dispatcher in
  * `services/oauth/dispatcher.ts` is the only caller.
  */
 export interface ProviderOAuth {
-  /** Builds the redirect URL the user is sent to. `state` is the signed token from createState(). */
-  buildAuthUrl(state: string, scopes: readonly string[]): string;
+  /**
+   * Optional. Providers that use PKCE (Gmail, future PKCE-required
+   * providers) implement this; the dispatcher calls it at connect time
+   * and routes the verifier to `createState` (persisted on the
+   * `oauth_states` row) AND the challenge into the call to `buildAuthUrl`.
+   * Non-PKCE providers (Slack default v2) omit this method.
+   */
+  generatePkce?(): PkceGeneration;
+  /**
+   * Builds the redirect URL the user is sent to. `state` is the signed
+   * token from `createState()`. `pkce` is non-null only when the provider
+   * declared `generatePkce` at connect time; non-PKCE providers receive
+   * `null` and ignore it.
+   */
+  buildAuthUrl(
+    state: string,
+    scopes: readonly string[],
+    pkce: PkceChallenge | null,
+  ): string;
   /**
    * Exchanges the authorization code for tokens. `pkce` is non-null only for
    * providers that asked the dispatcher to issue a PKCE challenge at connect

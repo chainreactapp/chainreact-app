@@ -1,5 +1,7 @@
 import type {
   EncryptedTokens,
+  PkceChallenge,
+  PkceGeneration,
   PkceInputs,
   ProviderOAuth,
 } from "@/contracts/integration";
@@ -22,7 +24,12 @@ import type {
  * plan).
  */
 export interface PkceMockState {
-  buildAuthUrlCalls: Array<{ state: string; scopes: readonly string[] }>;
+  generatePkceCallCount: number;
+  buildAuthUrlCalls: Array<{
+    state: string;
+    scopes: readonly string[];
+    pkce: PkceChallenge | null;
+  }>;
   handleCallbackCalls: Array<{ code: string; state: string; pkce: PkceInputs | null }>;
   refreshTokenCalls: Array<{ refreshToken: string }>;
   revokeCalls: Array<{ token: string }>;
@@ -33,6 +40,13 @@ export interface CreatePkceMockProviderOptions {
   refreshTokenEncrypted?: string | null;
   providerAccountId?: string;
   scopes?: readonly string[];
+  /**
+   * When provided, the mock implements `generatePkce` and returns this
+   * value (or the value produced by this function) on each call. When
+   * omitted, the mock OMITS the generatePkce method entirely — matches
+   * the Slack-shaped (no-PKCE) provider contract.
+   */
+  generatePkce?: PkceGeneration | (() => PkceGeneration);
   /**
    * Custom refresh implementation. Overrides the default behavior. When
    * unset and `refreshTokenThrows` is also unset, `refreshToken` throws
@@ -52,14 +66,25 @@ export function createPkceMockProvider(
   options: CreatePkceMockProviderOptions = {},
 ): { provider: ProviderOAuth; state: PkceMockState } {
   const state: PkceMockState = {
+    generatePkceCallCount: 0,
     buildAuthUrlCalls: [],
     handleCallbackCalls: [],
     refreshTokenCalls: [],
     revokeCalls: [],
   };
   const provider: ProviderOAuth = {
-    buildAuthUrl(jwtState, scopes) {
-      state.buildAuthUrlCalls.push({ state: jwtState, scopes });
+    ...(options.generatePkce !== undefined
+      ? {
+          generatePkce(): PkceGeneration {
+            state.generatePkceCallCount += 1;
+            return typeof options.generatePkce === "function"
+              ? options.generatePkce()
+              : options.generatePkce!;
+          },
+        }
+      : {}),
+    buildAuthUrl(jwtState, scopes, pkce) {
+      state.buildAuthUrlCalls.push({ state: jwtState, scopes, pkce });
       return `https://mock.example.com/authorize?state=${jwtState}`;
     },
     async handleCallback(code, jwtState, pkce) {
