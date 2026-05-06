@@ -19,14 +19,22 @@ export default async function HomePage() {
             <p className="text-sm">
               Signed in as <span className="font-medium">{user.email}</span>
             </p>
-            <form action={signOut}>
-              <button
-                type="submit"
-                className="rounded border border-input px-4 py-2 text-sm hover:bg-accent"
+            <div className="flex gap-3">
+              <Link
+                href="/integrations"
+                className="rounded bg-primary text-primary-foreground px-4 py-2 text-sm font-medium"
               >
-                Sign out
-              </button>
-            </form>
+                Manage integrations
+              </Link>
+              <form action={signOut}>
+                <button
+                  type="submit"
+                  className="rounded border border-input px-4 py-2 text-sm hover:bg-accent"
+                >
+                  Sign out
+                </button>
+              </form>
+            </div>
           </div>
         ) : (
           <div className="flex gap-3">
