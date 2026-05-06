@@ -100,7 +100,19 @@ describe("repositories/workflows.create", () => {
   it("accepts an explicit draftDefinition", async () => {
     const state = freshState(baseRow);
     mockSupabase.current = makeMockClient(state);
-    const def = { nodes: [{ id: "n1" }], edges: [] };
+    const def = {
+      nodes: [
+        {
+          id: "n1",
+          kind: "trigger" as const,
+          provider: "slack",
+          type: "message_received",
+          config: {},
+          position: { x: 0, y: 0 },
+        },
+      ],
+      edges: [],
+    };
     await create({ userId: "user-1", name: "X", draftDefinition: def });
     expect((state.insertPayload as { draft_definition: unknown }).draft_definition).toEqual(def);
   });
@@ -161,7 +173,19 @@ describe("repositories/workflows.updateName", () => {
 
 describe("repositories/workflows.updateDraftDefinition", () => {
   it("writes the full definition to draft_definition", async () => {
-    const def = { nodes: [{ id: "n1" }], edges: [] };
+    const def = {
+      nodes: [
+        {
+          id: "n1",
+          kind: "trigger" as const,
+          provider: "slack",
+          type: "message_received",
+          config: {},
+          position: { x: 0, y: 0 },
+        },
+      ],
+      edges: [],
+    };
     const state = freshState({ ...baseRow, draft_definition: def });
     mockSupabase.current = makeMockClient(state);
     await updateDraftDefinition("wf-1", def);
@@ -171,7 +195,19 @@ describe("repositories/workflows.updateDraftDefinition", () => {
 
 describe("repositories/workflows.createRevision + setActiveRevision", () => {
   it("createRevision inserts an immutable snapshot", async () => {
-    const def = { nodes: [{ id: "n1" }], edges: [] };
+    const def = {
+      nodes: [
+        {
+          id: "n1",
+          kind: "trigger" as const,
+          provider: "slack",
+          type: "message_received",
+          config: {},
+          position: { x: 0, y: 0 },
+        },
+      ],
+      edges: [],
+    };
     const state = freshState({
       id: "rev-1",
       workflow_id: "wf-1",
