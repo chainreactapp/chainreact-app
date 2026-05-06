@@ -120,6 +120,7 @@ Repositories that need it call `getServiceRoleClient("renew-microsoft-graph-subs
 - **Tenant-scoped read/write:** anon-key client → RLS joins `team_members` to verify membership.
 - **Cron / system write that legitimately bypasses user scope:** server-side service calls a repository that explicitly invokes `getServiceRoleClient("<reason>")`. Reason logged.
 - **Webhook receipt insertions:** thin route hands off to `services/webhooks/`; the service uses `getServiceRoleClient("webhook-event-dedup")` to write to `webhook_event_dedup`.
+- **OAuth callback after out-of-band identity proof:** the dispatcher (`services/oauth/dispatcher.ts:handleCallback`) verifies user identity via signed state token + atomic `oauth_states` nonce consume. The `integrations` row insert (`repositories/integrations.ts:upsertActive`) then uses `getServiceRoleClient("oauth callback: upsertActive <provider> for user <id>")` because the SSR-cookie path is unreliable (cookies don't cross hosts in tunnel/proxy/multi-tenant scenarios) AND redundant (identity is already proven). State-token persistence (`oauth_states`) is system-table — service-role only end to end.
 - **Admin tooling:** route uses `requireAdmin({ capabilities: [...] })` plus a service that uses `getServiceRoleClient("admin-action-<name>")` for the writes that need it. Step-up auth as documented in the V1 admin pattern.
 - **Token storage:** repository encrypts before insert; reads decrypt on the way out, only for the immediate caller, never logged.
 
@@ -140,7 +141,7 @@ Repositories that need it call `getServiceRoleClient("renew-microsoft-graph-subs
 ## Edge cases
 
 - **Public-read tables** (predefined templates, public docs): `SELECT` policy `USING (true)` and no INSERT/UPDATE/DELETE policies. RLS still enabled.
-- **System tables** (cron-resource state, webhook dedup): no user RLS scope; service-role only. Document the table's reason in a header comment in the migration. Tests verify anon and authenticated roles cannot read.
+- **System tables** (cron-resource state, webhook dedup, OAuth state nonces): no user RLS scope; service-role only. Document the table's reason in a header comment in the migration (`-- system-table: <table> — <reason>` opts the migration out of the user-data RLS lint). RLS still ENABLE'd as defense-in-depth with a deny-all policy (`FOR ALL USING (false) WITH CHECK (false)`). Tests verify anon and authenticated roles cannot read. Examples: `webhook_event_dedup`, `oauth_states`.
 - **Admin-only tables:** policy joins `user_profiles.admin_capabilities`; admin route uses `requireAdmin({ capabilities: [...] })` upstream.
 - **Multi-tenant user in multiple workspaces:** the membership-join policy handles this cleanly because `team_members` has one row per (user, workspace) pair.
 - **User account deletion (`auth.users` cascade):** `ON DELETE CASCADE` on user-scoped tables removes orphans automatically. Tenant-scoped tables retain rows with the workspace.
