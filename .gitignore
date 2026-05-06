@@ -8,6 +8,7 @@ coverage
 playwright-report
 test-results
 .nyc_output
+tests/e2e/.state/
 
 # next.js
 .next
