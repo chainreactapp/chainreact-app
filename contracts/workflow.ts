@@ -71,3 +71,29 @@ export const DisableWorkflowRequestSchema = z.object({
   context: z.string().max(500).optional(),
 });
 export type DisableWorkflowRequest = z.infer<typeof DisableWorkflowRequestSchema>;
+
+/**
+ * Detailed wire shape returned by GET / PATCH /api/workflows/[id]. Extends
+ * WorkflowSummary with the editable definition + active revision pointer
+ * needed by the edit page (Slice 1H.4) and the builder UI (Slice 1I+).
+ */
+export const WorkflowDetailSchema = WorkflowSummarySchema.extend({
+  activeRevisionId: z.string().uuid().nullable(),
+  draftDefinition: WorkflowDefinitionSchema,
+});
+export type WorkflowDetail = z.infer<typeof WorkflowDetailSchema>;
+
+/**
+ * PATCH /api/workflows/[id] body. Slice 1H.4 supports only `name`; future
+ * editable fields (e.g. draftDefinition once the builder ships) extend this
+ * schema. The orchestrator owns lifecycle transitions via the dedicated
+ * action endpoints — `state` is intentionally NOT editable here.
+ */
+export const UpdateWorkflowRequestSchema = z
+  .object({
+    name: z.string().trim().min(1, "Workflow name is required.").max(120).optional(),
+  })
+  .refine((v) => v.name !== undefined, {
+    message: "At least one field must be provided.",
+  });
+export type UpdateWorkflowRequest = z.infer<typeof UpdateWorkflowRequestSchema>;

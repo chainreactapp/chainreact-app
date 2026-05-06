@@ -5,13 +5,12 @@ import { useState, type FormEvent } from "react";
 import { createWorkflow, WorkflowApiError } from "@/lib/api/workflows";
 
 /**
- * Creates a new draft workflow.
+ * Creates a new draft workflow and navigates to its edit page.
  *
  * Per workflow-builder-ui.md / project-structure-and-module-boundaries.md §4-5:
  *   - Component never calls fetch directly; uses the typed client API.
- *   - On success it triggers `router.refresh()` so the server-rendered list
- *     re-queries with the new entry. The Slice 1H.4 edit page will replace
- *     the refresh with router.push(`/workflows/${id}`).
+ *   - On success it routes to `/workflows/{id}` so the user lands directly
+ *     on the rename / builder surface for the new workflow.
  */
 export function CreateWorkflowButton() {
   const router = useRouter();
@@ -26,10 +25,10 @@ export function CreateWorkflowButton() {
     setPending(true);
     setError(null);
     try {
-      await createWorkflow({ name: name.trim() });
+      const created = await createWorkflow({ name: name.trim() });
       setName("");
       setOpen(false);
-      router.refresh();
+      router.push(`/workflows/${created.id}`);
     } catch (err) {
       const message =
         err instanceof WorkflowApiError

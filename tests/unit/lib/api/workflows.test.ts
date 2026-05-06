@@ -14,9 +14,11 @@ import {
   activateWorkflow,
   createWorkflow,
   disableWorkflow,
+  getWorkflow,
   listWorkflows,
   pauseWorkflow,
   resumeWorkflow,
+  updateWorkflow,
 } from "@/lib/api/workflows";
 
 const SAMPLE: import("@/contracts/workflow").WorkflowSummary = {
@@ -155,6 +157,63 @@ describe("lifecycle action endpoints", () => {
     expect(fetchSpy.mock.calls[0]![0]).toBe(
       "/api/workflows/with%2Fslash%20and%20space/activate",
     );
+  });
+});
+
+describe("getWorkflow / updateWorkflow", () => {
+  const detail = {
+    ...SAMPLE,
+    activeRevisionId: null,
+    draftDefinition: { nodes: [], edges: [] },
+  };
+
+  it("getWorkflow GETs /api/workflows/<id> and returns the detail", async () => {
+    const fetchSpy = jest.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(detail), { status: 200 }),
+    );
+    const result = await getWorkflow(SAMPLE.id);
+    expect(result).toEqual(detail);
+    expect(fetchSpy).toHaveBeenCalledWith(`/api/workflows/${SAMPLE.id}`);
+  });
+
+  it("getWorkflow surfaces 404 as WORKFLOW_NOT_FOUND", async () => {
+    jest.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ error: "Workflow not found.", code: "WORKFLOW_NOT_FOUND" }),
+        { status: 404 },
+      ),
+    );
+    await expect(getWorkflow(SAMPLE.id)).rejects.toMatchObject({
+      code: "WORKFLOW_NOT_FOUND",
+      status: 404,
+    });
+  });
+
+  it("updateWorkflow PATCHes the body and returns the updated detail", async () => {
+    const fetchSpy = jest.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...detail, name: "Renamed" }), { status: 200 }),
+    );
+    const result = await updateWorkflow(SAMPLE.id, { name: "Renamed" });
+    expect(result.name).toBe("Renamed");
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `/api/workflows/${SAMPLE.id}`,
+      expect.objectContaining({
+        method: "PATCH",
+        headers: expect.objectContaining({ "content-type": "application/json" }),
+        body: JSON.stringify({ name: "Renamed" }),
+      }),
+    );
+  });
+
+  it("updateWorkflow surfaces a 400 with the server-provided message", async () => {
+    jest.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: "Workflow name is required." }), {
+        status: 400,
+      }),
+    );
+    await expect(
+      updateWorkflow(SAMPLE.id, { name: "" }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", status: 400 });
   });
 });
 

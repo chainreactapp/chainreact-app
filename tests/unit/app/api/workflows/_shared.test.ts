@@ -22,6 +22,7 @@ import {
   parseJsonBody,
   requireUser,
   runLifecycle,
+  toWorkflowDetail,
   toWorkflowSummary,
 } from "@/app/api/workflows/_shared";
 import type { WorkflowRecord } from "@/repositories/workflows";
@@ -186,5 +187,27 @@ describe("toWorkflowSummary", () => {
     expect(summary).not.toHaveProperty("userId");
     expect(summary).not.toHaveProperty("activeRevisionId");
     expect(summary).not.toHaveProperty("draftDefinition");
+  });
+});
+
+describe("toWorkflowDetail", () => {
+  it("includes activeRevisionId + draftDefinition; still strips userId", () => {
+    const record: WorkflowRecord = {
+      id: "wf-1",
+      userId: "user-1",
+      name: "Test",
+      state: "active",
+      disabledReason: null,
+      disabledContext: null,
+      activeRevisionId: "rev-1",
+      draftDefinition: { nodes: [{ id: "n1" }], edges: [] },
+      deletedAt: null,
+      createdAt: "2026-05-06T00:00:00Z",
+      updatedAt: "2026-05-06T01:00:00Z",
+    };
+    const detail = toWorkflowDetail(record);
+    expect(detail.activeRevisionId).toBe("rev-1");
+    expect(detail.draftDefinition).toEqual({ nodes: [{ id: "n1" }], edges: [] });
+    expect(detail).not.toHaveProperty("userId");
   });
 });

@@ -9,7 +9,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const mockCreateWorkflow = jest.fn();
-const mockRefresh = jest.fn();
+const mockPush = jest.fn();
 
 jest.mock("@/lib/api/workflows", () => {
   // Re-export the real WorkflowApiError so the component's `instanceof` check works.
@@ -21,7 +21,7 @@ jest.mock("@/lib/api/workflows", () => {
 });
 
 jest.mock("next/navigation", () => ({
-  useRouter: () => ({ refresh: mockRefresh }),
+  useRouter: () => ({ push: mockPush }),
 }));
 
 import { CreateWorkflowButton } from "@/features/workflows/CreateWorkflowButton";
@@ -29,7 +29,7 @@ import { WorkflowApiError } from "@/lib/api/workflows";
 
 beforeEach(() => {
   mockCreateWorkflow.mockReset();
-  mockRefresh.mockReset();
+  mockPush.mockReset();
 });
 
 describe("CreateWorkflowButton", () => {
@@ -40,7 +40,7 @@ describe("CreateWorkflowButton", () => {
     expect(screen.getByLabelText(/workflow name/i)).toBeInTheDocument();
   });
 
-  it("submits the trimmed name, refreshes the router on success, and re-collapses", async () => {
+  it("submits the trimmed name and pushes to /workflows/<id> on success", async () => {
     mockCreateWorkflow.mockResolvedValueOnce({
       id: "wf-1",
       name: "Onboarding",
@@ -59,17 +59,11 @@ describe("CreateWorkflowButton", () => {
 
     await waitFor(() => {
       expect(mockCreateWorkflow).toHaveBeenCalledWith({ name: "Onboarding" });
-      expect(mockRefresh).toHaveBeenCalled();
+      expect(mockPush).toHaveBeenCalledWith("/workflows/wf-1");
     });
-    // Form re-collapses; the entry button is back.
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: /create workflow/i }),
-      ).toBeInTheDocument(),
-    );
   });
 
-  it("renders a user-facing error from WorkflowApiError and does NOT refresh", async () => {
+  it("renders a user-facing error from WorkflowApiError and does NOT navigate", async () => {
     mockCreateWorkflow.mockRejectedValueOnce(
       new WorkflowApiError("Workflow name is required.", "BAD_REQUEST", 400),
     );
@@ -80,7 +74,7 @@ describe("CreateWorkflowButton", () => {
     await user.click(screen.getByRole("button", { name: /^create$/i }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/required/i);
-    expect(mockRefresh).not.toHaveBeenCalled();
+    expect(mockPush).not.toHaveBeenCalled();
   });
 
   it("uses a generic message for non-WorkflowApiError failures", async () => {

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
 import { LifecycleError } from "@/core/workflows/lifecycle";
 import type { WorkflowRecord } from "@/repositories/workflows";
-import type { WorkflowSummary } from "@/contracts/workflow";
+import type { WorkflowDetail, WorkflowSummary } from "@/contracts/workflow";
 
 /**
  * Shared route-layer helpers for /api/workflows.
@@ -96,6 +96,14 @@ export function toWorkflowSummary(record: WorkflowRecord): WorkflowSummary {
     deletedAt: record.deletedAt,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+  };
+}
+
+export function toWorkflowDetail(record: WorkflowRecord): WorkflowDetail {
+  return {
+    ...toWorkflowSummary(record),
+    activeRevisionId: record.activeRevisionId,
+    draftDefinition: record.draftDefinition,
   };
 }
 

@@ -1,6 +1,8 @@
 import type {
   CreateWorkflowRequest,
   DisableWorkflowRequest,
+  UpdateWorkflowRequest,
+  WorkflowDetail,
   WorkflowSummary,
 } from "@/contracts/workflow";
 
@@ -86,6 +88,16 @@ async function postJson<TResp>(
   return (await res.json()) as TResp;
 }
 
+async function patchJson<TResp>(url: string, body: unknown): Promise<TResp> {
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await parseError(res);
+  return (await res.json()) as TResp;
+}
+
 // ── operations ──────────────────────────────────────────────────────────────
 
 export async function createWorkflow(
@@ -99,6 +111,22 @@ export async function listWorkflows(): Promise<readonly WorkflowSummary[]> {
   if (!res.ok) throw await parseError(res);
   const body = (await res.json()) as { workflows: WorkflowSummary[] };
   return body.workflows;
+}
+
+export async function getWorkflow(id: string): Promise<WorkflowDetail> {
+  const res = await fetch(`/api/workflows/${encodeURIComponent(id)}`);
+  if (!res.ok) throw await parseError(res);
+  return (await res.json()) as WorkflowDetail;
+}
+
+export async function updateWorkflow(
+  id: string,
+  input: UpdateWorkflowRequest,
+): Promise<WorkflowDetail> {
+  return patchJson<WorkflowDetail>(
+    `/api/workflows/${encodeURIComponent(id)}`,
+    input,
+  );
 }
 
 export async function activateWorkflow(id: string): Promise<WorkflowSummary> {
