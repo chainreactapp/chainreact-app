@@ -100,6 +100,16 @@ function humanizeEngineCode(input: ErrorInput): HumanizedError | null {
         action: "open_node",
         severity: "warning",
       };
+    case "BILLING_EXHAUSTED":
+      return {
+        title: "Task quota exhausted",
+        description:
+          input.message ||
+          "You've reached your task quota for this billing period.",
+        hint: "Upgrade your plan to keep workflows running.",
+        action: "upgrade_plan",
+        severity: "warning",
+      };
     case "HANDLER_FAILED":
       // Slack-ish messages get further refinement below.
       return null;

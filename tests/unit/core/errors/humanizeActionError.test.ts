@@ -69,6 +69,24 @@ describe("humanizeActionError — engine codes", () => {
     expect(result.action).toBe("open_node");
     expect(result.hint).toMatch(/re-?save/i);
   });
+
+  it("BILLING_EXHAUSTED routes to upgrade_plan with a warning severity (not error)", () => {
+    const result = humanizeActionError({
+      code: "BILLING_EXHAUSTED",
+      message: "Task quota exhausted: 100/100 tasks used this period.",
+    });
+    expect(result.title).toMatch(/quota/i);
+    expect(result.description).toMatch(/100\/100/);
+    expect(result.hint).toMatch(/upgrade/i);
+    expect(result.action).toBe("upgrade_plan");
+    expect(result.severity).toBe("warning");
+  });
+
+  it("BILLING_EXHAUSTED falls back to a generic description when message is empty", () => {
+    const result = humanizeActionError({ code: "BILLING_EXHAUSTED", message: "" });
+    expect(result.description).toMatch(/task quota|billing period/i);
+    expect(result.action).toBe("upgrade_plan");
+  });
 });
 
 describe("humanizeActionError — Slack handler errors (HANDLER_FAILED routing)", () => {

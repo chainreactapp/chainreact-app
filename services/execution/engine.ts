@@ -15,6 +15,7 @@ import {
 } from "@/core/errors/humanizeActionError";
 import * as workflowsRepo from "@/repositories/workflows";
 import * as workflowRunsRepo from "@/repositories/workflowRuns";
+import { executionBillingGate } from "@/services/billing/executionBillingGate";
 import { getActionHandler } from "./handlers/_registry";
 
 /**
@@ -49,6 +50,7 @@ import { getActionHandler } from "./handlers/_registry";
 export type RunFailureCode =
   | "WORKFLOW_NOT_FOUND"
   | "TRIGGER_NODE_NOT_FOUND"
+  | "BILLING_EXHAUSTED"
   | "MISSING_HANDLER"
   | "MISSING_VARIABLE"
   | "HANDLER_FAILED";
@@ -135,6 +137,33 @@ export class WorkflowEngine {
         fatalError: {
           code: "TRIGGER_NODE_NOT_FOUND",
           message: `Trigger node ${input.triggerNodeId} not present in workflow definition.`,
+        },
+      };
+      await persistRun(fatalResult, workflow.userId, input, log);
+      return fatalResult;
+    }
+
+    // Billing gate (Slice 1N). Atomic deduct via deduct_tasks_if_available;
+    // refusal aborts before any handler runs so a quota-exhausted user never
+    // produces side effects.
+    const gateOutcome = await executionBillingGate(workflow.userId);
+    if (!gateOutcome.ok) {
+      const finishedAt = new Date().toISOString();
+      log("execution.run.fatal", {
+        code: "BILLING_EXHAUSTED",
+        used: gateOutcome.used,
+        limit: gateOutcome.limit,
+      });
+      const fatalResult: RunResult = {
+        runId,
+        workflowId: input.workflowId,
+        status: "failed",
+        steps: [],
+        startedAt,
+        finishedAt,
+        fatalError: {
+          code: "BILLING_EXHAUSTED",
+          message: `Task quota exhausted: ${gateOutcome.used}/${gateOutcome.limit} tasks used this period.`,
         },
       };
       await persistRun(fatalResult, workflow.userId, input, log);

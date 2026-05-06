@@ -26,6 +26,11 @@ jest.mock("@/repositories/workflowRuns", () => ({
   recordRun: (...args: unknown[]) => mockRecordRun(...args),
 }));
 
+const mockBillingGate = jest.fn();
+jest.mock("@/services/billing/executionBillingGate", () => ({
+  executionBillingGate: (...args: unknown[]) => mockBillingGate(...args),
+}));
+
 import { WorkflowEngine } from "@/services/execution/engine";
 import { MissingVariableError } from "@/workflow-engine/variables/resolveValue";
 import type { TriggerEvent } from "@/contracts/triggerEvent";
@@ -85,6 +90,9 @@ beforeEach(() => {
   mockGetActionHandler.mockReset();
   mockRecordRun.mockReset();
   mockRecordRun.mockResolvedValue(undefined);
+  // Default: gate allows. Individual tests override for the refusal path.
+  mockBillingGate.mockReset();
+  mockBillingGate.mockResolvedValue({ ok: true, used: 1, limit: 100 });
 });
 
 describe("WorkflowEngine — fatal errors", () => {
@@ -452,5 +460,112 @@ describe("WorkflowEngine — run persistence (Slice 1M)", () => {
 
     // Engine still returns a result; recordRun failure logged + swallowed.
     expect(result.status).toBe("succeeded");
+  });
+});
+
+describe("WorkflowEngine — billing gate (Slice 1N)", () => {
+  it("aborts the run with BILLING_EXHAUSTED when the gate refuses, BEFORE invoking any handler", async () => {
+    const t = trigger("t1");
+    const a1 = action("a1", "step_one");
+    mockGetByIdServiceRole.mockResolvedValueOnce({
+      ...baseWorkflow,
+      draftDefinition: { nodes: [t, a1], edges: [edge("e1", "t1", "a1")] },
+    });
+    const handler = jest.fn();
+    mockGetActionHandler.mockReturnValueOnce(handler);
+    mockBillingGate.mockResolvedValueOnce({
+      ok: false,
+      reason: "limit_reached",
+      used: 100,
+      limit: 100,
+    });
+
+    const result = await new WorkflowEngine({ resolveStrict: (v) => v }).runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "t1",
+      triggerEvent,
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.fatalError?.code).toBe("BILLING_EXHAUSTED");
+    expect(result.fatalError?.message).toMatch(/100\/100/);
+    expect(result.steps).toEqual([]);
+    expect(handler).not.toHaveBeenCalled();
+    expect(mockBillingGate).toHaveBeenCalledWith("user-1");
+  });
+
+  it("persists the failed run with humanized BILLING_EXHAUSTED classification (action=upgrade_plan)", async () => {
+    mockGetByIdServiceRole.mockResolvedValueOnce({
+      ...baseWorkflow,
+      draftDefinition: { nodes: [trigger("t1")], edges: [] },
+    });
+    mockBillingGate.mockResolvedValueOnce({
+      ok: false,
+      reason: "limit_reached",
+      used: 100,
+      limit: 100,
+    });
+
+    await new WorkflowEngine({ resolveStrict: (v) => v }).runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "t1",
+      triggerEvent,
+    });
+
+    expect(mockRecordRun).toHaveBeenCalledTimes(1);
+    const call = mockRecordRun.mock.calls[0]![0] as {
+      status: string;
+      fatalError: { code: string };
+      errorClassification: { title: string; action?: string; severity: string };
+    };
+    expect(call.status).toBe("failed");
+    expect(call.fatalError.code).toBe("BILLING_EXHAUSTED");
+    expect(call.errorClassification.action).toBe("upgrade_plan");
+    expect(call.errorClassification.severity).toBe("warning");
+  });
+
+  it("proceeds with the run when the gate returns ok=true", async () => {
+    mockGetByIdServiceRole.mockResolvedValueOnce({
+      ...baseWorkflow,
+      draftDefinition: {
+        nodes: [trigger("t1"), action("a1", "step_one")],
+        edges: [edge("e1", "t1", "a1")],
+      },
+    });
+    const handler = jest.fn(async () => ({ output: { ok: true } }));
+    mockGetActionHandler.mockReturnValueOnce(handler);
+    mockBillingGate.mockResolvedValueOnce({ ok: true, used: 5, limit: 100 });
+
+    const result = await new WorkflowEngine({ resolveStrict: (v) => v }).runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "t1",
+      triggerEvent,
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT call the gate when the workflow itself is missing (no userId to attribute)", async () => {
+    mockGetByIdServiceRole.mockResolvedValueOnce(null);
+    await new WorkflowEngine({ resolveStrict: (v) => v }).runWorkflow({
+      workflowId: "missing",
+      triggerNodeId: "t1",
+      triggerEvent,
+    });
+    expect(mockBillingGate).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call the gate when the trigger node is missing (structural failure unrelated to quota)", async () => {
+    mockGetByIdServiceRole.mockResolvedValueOnce({
+      ...baseWorkflow,
+      draftDefinition: { nodes: [trigger("t1")], edges: [] },
+    });
+    await new WorkflowEngine({ resolveStrict: (v) => v }).runWorkflow({
+      workflowId: "wf-1",
+      triggerNodeId: "ghost",
+      triggerEvent,
+    });
+    expect(mockBillingGate).not.toHaveBeenCalled();
   });
 });
