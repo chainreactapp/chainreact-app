@@ -86,6 +86,36 @@ export const WorkflowDetailSchema = WorkflowSummarySchema.extend({
 export type WorkflowDetail = z.infer<typeof WorkflowDetailSchema>;
 
 /**
+ * Wire shape for the run-history list (Slice 1M.2). Light by design —
+ * strips user_id, the full trigger_event payload, the per-step results,
+ * and run-fatal details. The list view only needs status + timestamps +
+ * humanized error_classification. A future "run detail" endpoint serves
+ * the full record when we add per-run drill-down.
+ */
+export const WorkflowRunStatusSchema = z.enum(["succeeded", "failed"]);
+export type WorkflowRunStatus = z.infer<typeof WorkflowRunStatusSchema>;
+
+export const HumanizedErrorSchema = z.object({
+  title: z.string(),
+  description: z.string(),
+  hint: z.string().optional(),
+  action: z.enum(["reconnect", "open_node", "upgrade_plan"]).optional(),
+  severity: z.enum(["warning", "error"]),
+});
+export type HumanizedErrorSummary = z.infer<typeof HumanizedErrorSchema>;
+
+export const WorkflowRunSummarySchema = z.object({
+  id: z.string().uuid(),
+  workflowId: z.string().uuid(),
+  status: WorkflowRunStatusSchema,
+  triggerNodeId: z.string(),
+  startedAt: z.string(),
+  finishedAt: z.string(),
+  errorClassification: HumanizedErrorSchema.nullable(),
+});
+export type WorkflowRunSummary = z.infer<typeof WorkflowRunSummarySchema>;
+
+/**
  * PATCH /api/workflows/[id] body. Slice 1I extended this beyond name-only
  * to accept the full `draftDefinition` so the builder can save graph edits.
  * The orchestrator owns lifecycle transitions via the dedicated action

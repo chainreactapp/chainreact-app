@@ -3,6 +3,7 @@ import type {
   DisableWorkflowRequest,
   UpdateWorkflowRequest,
   WorkflowDetail,
+  WorkflowRunSummary,
   WorkflowSummary,
 } from "@/contracts/workflow";
 
@@ -127,6 +128,25 @@ export async function updateWorkflow(
     `/api/workflows/${encodeURIComponent(id)}`,
     input,
   );
+}
+
+export interface ListRunsOptions {
+  /** Defaults to server-side default (25); server caps at 100. */
+  limit?: number;
+}
+
+export async function listWorkflowRuns(
+  id: string,
+  opts: ListRunsOptions = {},
+): Promise<readonly WorkflowRunSummary[]> {
+  const params = new URLSearchParams();
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  const qs = params.toString();
+  const url = `/api/workflows/${encodeURIComponent(id)}/runs${qs ? `?${qs}` : ""}`;
+  const res = await fetch(url);
+  if (!res.ok) throw await parseError(res);
+  const body = (await res.json()) as { runs: WorkflowRunSummary[] };
+  return body.runs;
 }
 
 export async function activateWorkflow(id: string): Promise<WorkflowSummary> {

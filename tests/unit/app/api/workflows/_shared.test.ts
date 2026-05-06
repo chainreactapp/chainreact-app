@@ -23,9 +23,12 @@ import {
   requireUser,
   runLifecycle,
   toWorkflowDetail,
+  toWorkflowRunSummary,
   toWorkflowSummary,
 } from "@/app/api/workflows/_shared";
 import type { WorkflowRecord } from "@/repositories/workflows";
+import type { WorkflowRunRecord } from "@/repositories/workflowRuns";
+import type { TriggerEvent } from "@/contracts/triggerEvent";
 
 beforeEach(() => {
   mockGetUser.mockReset();
@@ -234,5 +237,59 @@ describe("toWorkflowDetail", () => {
     expect(detail.draftDefinition.nodes[0]?.id).toBe("n1");
     expect(detail.draftDefinition.edges).toEqual([]);
     expect(detail).not.toHaveProperty("userId");
+  });
+});
+
+describe("toWorkflowRunSummary", () => {
+  const triggerEvent: TriggerEvent = {
+    provider: "slack",
+    eventType: "message",
+    eventId: "Ev1",
+    occurredAt: "2026-05-07T00:00:00Z",
+    accountId: "T0001",
+    payload: { text: "secret" },
+  };
+
+  const baseRecord: WorkflowRunRecord = {
+    id: "11111111-1111-1111-1111-111111111111",
+    workflowId: "22222222-2222-2222-2222-222222222222",
+    userId: "user-1",
+    status: "succeeded",
+    triggerNodeId: "t1",
+    triggerEvent,
+    steps: [
+      { nodeId: "t1", status: "succeeded", output: { event: triggerEvent } },
+    ],
+    fatalError: null,
+    errorClassification: null,
+    startedAt: "2026-05-07T00:00:00Z",
+    finishedAt: "2026-05-07T00:00:01Z",
+    createdAt: "2026-05-07T00:00:00Z",
+  };
+
+  it("strips userId / steps / triggerEvent / fatalError from the wire shape", () => {
+    const summary = toWorkflowRunSummary(baseRecord);
+    expect(summary).not.toHaveProperty("userId");
+    expect(summary).not.toHaveProperty("steps");
+    expect(summary).not.toHaveProperty("triggerEvent");
+    expect(summary).not.toHaveProperty("fatalError");
+  });
+
+  it("forwards the humanized errorClassification verbatim", () => {
+    const summary = toWorkflowRunSummary({
+      ...baseRecord,
+      status: "failed",
+      errorClassification: {
+        title: "Slack channel not found",
+        description: "...",
+        action: "open_node",
+        severity: "error",
+      },
+    });
+    expect(summary.errorClassification).toMatchObject({
+      title: "Slack channel not found",
+      action: "open_node",
+      severity: "error",
+    });
   });
 });

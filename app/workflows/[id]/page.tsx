@@ -4,9 +4,12 @@ import { createClient } from "@/utils/supabase/server";
 import { displayStatus } from "@/core/workflows/projections";
 import { listProviders } from "@/integrations/_registry";
 import * as workflowsRepo from "@/repositories/workflows";
+import * as workflowRunsRepo from "@/repositories/workflowRuns";
+import { toWorkflowRunSummary } from "@/app/api/workflows/_shared";
 import { WorkflowEditForm } from "@/features/workflows/WorkflowEditForm";
 import { WorkflowBuilder } from "@/features/workflow-builder/WorkflowBuilder";
 import { LifecycleActions } from "@/features/workflow-builder/panels/LifecycleActions";
+import { RunHistory } from "@/features/workflow-builder/panels/RunHistory";
 
 interface Props {
   params: Promise<{ id: string }>;
@@ -46,6 +49,9 @@ export default async function WorkflowDetailPage({ params }: Props) {
     .filter((p) => p.isEnabled && p.capabilities.actions)
     .map((p) => ({ id: p.id, displayName: p.displayName }));
 
+  const runRecords = await workflowRunsRepo.listByWorkflow(workflow.id);
+  const runs = runRecords.map(toWorkflowRunSummary);
+
   return (
     <main className="flex min-h-screen flex-col items-center p-8">
       <div className="flex w-full max-w-3xl flex-col gap-6">
@@ -75,6 +81,7 @@ export default async function WorkflowDetailPage({ params }: Props) {
           triggerProviders={triggerProviders}
           actionProviders={actionProviders}
         />
+        <RunHistory runs={runs} />
       </div>
     </main>
   );

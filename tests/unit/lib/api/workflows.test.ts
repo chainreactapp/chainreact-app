@@ -15,6 +15,7 @@ import {
   createWorkflow,
   disableWorkflow,
   getWorkflow,
+  listWorkflowRuns,
   listWorkflows,
   pauseWorkflow,
   resumeWorkflow,
@@ -214,6 +215,46 @@ describe("getWorkflow / updateWorkflow", () => {
     await expect(
       updateWorkflow(SAMPLE.id, { name: "" }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST", status: 400 });
+  });
+});
+
+describe("listWorkflowRuns", () => {
+  const sampleRun = {
+    id: "44444444-4444-4444-4444-444444444444",
+    workflowId: SAMPLE.id,
+    status: "succeeded" as const,
+    triggerNodeId: "t1",
+    startedAt: "2026-05-07T00:00:00Z",
+    finishedAt: "2026-05-07T00:00:01Z",
+    errorClassification: null,
+  };
+
+  it("GETs /api/workflows/<id>/runs and returns the runs array", async () => {
+    const fetchSpy = jest.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ runs: [sampleRun] }), { status: 200 }),
+    );
+    const result = await listWorkflowRuns(SAMPLE.id);
+    expect(result).toEqual([sampleRun]);
+    expect(fetchSpy).toHaveBeenCalledWith(`/api/workflows/${SAMPLE.id}/runs`);
+  });
+
+  it("forwards opts.limit as a query param", async () => {
+    const fetchSpy = jest.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ runs: [] }), { status: 200 }),
+    );
+    await listWorkflowRuns(SAMPLE.id, { limit: 50 });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `/api/workflows/${SAMPLE.id}/runs?limit=50`,
+    );
+  });
+
+  it("propagates a 401 as WorkflowApiError code UNAUTHENTICATED", async () => {
+    jest.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: "unauthenticated" }), { status: 401 }),
+    );
+    await expect(listWorkflowRuns(SAMPLE.id)).rejects.toMatchObject({
+      code: "UNAUTHENTICATED",
+    });
   });
 });
 
