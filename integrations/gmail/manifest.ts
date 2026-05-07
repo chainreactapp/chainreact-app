@@ -3,12 +3,11 @@ import { ProviderManifestSchema, type ProviderManifest } from "@/contracts/integ
 /**
  * Gmail provider manifest.
  *
- * Slice 2c ships OAuth + manifest only. Action handlers (`gmail.send`) and
- * polling triggers (`new_email`) land in Slices 2d and 2e respectively.
- * Capability flags reflect honest current state — `actions` and
- * `pollingTrigger` start `false` and flip when their slices ship. This
- * keeps `tests/structure/integration-manifests.test.ts` truthful and
- * prevents the registry from advertising capabilities that don't exist.
+ * Capability flags reflect honest current state — they flip true only
+ * when a real handler/trigger is registered. As of Slice 2d, `actions`
+ * is `true` (sendEmail handler shipped); `pollingTrigger` flips true
+ * in Slice 2e when newEmail trigger ships. This convention keeps the
+ * manifest from advertising capabilities that don't exist.
  *
  * OAuth shape (via integrations/gmail/oauth.ts):
  *   - PKCE S256 (Slice 2a infra; Gmail is the first real consumer).
@@ -55,7 +54,7 @@ export const gmailManifest: ProviderManifest = ProviderManifestSchema.parse({
     oauth: true,
     webhookTrigger: false,
     pollingTrigger: false, // flips true in Slice 2e when newEmail trigger ships
-    actions: false, // flips true in Slice 2d when sendEmail handler ships
+    actions: true, // Slice 2d: sendEmail handler shipped + registered
   },
   healthCheckIntervalMs: 6 * 60 * 60 * 1000, // 6h
   refreshable: true,

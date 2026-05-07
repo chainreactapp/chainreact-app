@@ -8,6 +8,7 @@
  */
 import { gmailManifest } from "@/integrations/gmail/manifest";
 import { getProvider, providerSupports } from "@/integrations/_registry";
+import { listRegisteredHandlers } from "@/services/execution/handlers/_registry";
 
 describe("gmail manifest", () => {
   it("is registered in the provider registry under id 'gmail'", () => {
@@ -32,20 +33,33 @@ describe("gmail manifest", () => {
     expect(gmailManifest.accountIdField).toBe("email");
   });
 
-  it("declares honest capabilities — only oauth: true in Slice 2c", () => {
-    // Capabilities flip true in Slice 2d (actions: sendEmail) and Slice 2e
-    // (pollingTrigger: newEmail). Until then, the manifest does not
-    // advertise capabilities that don't ship.
+  it("declares honest capabilities post-Slice 2d (oauth + actions)", () => {
+    // Slice 2d shipped sendEmail handler → actions: true.
+    // pollingTrigger flips true in Slice 2e when newEmail trigger ships.
     expect(gmailManifest.capabilities).toEqual({
       oauth: true,
       webhookTrigger: false,
       pollingTrigger: false,
-      actions: false,
+      actions: true,
     });
     expect(providerSupports("gmail", "oauth")).toBe(true);
-    expect(providerSupports("gmail", "actions")).toBe(false);
+    expect(providerSupports("gmail", "actions")).toBe(true);
     expect(providerSupports("gmail", "pollingTrigger")).toBe(false);
     expect(providerSupports("gmail", "webhookTrigger")).toBe(false);
+  });
+
+  it("when actions: true, the action-handler registry contains gmail:send_email", () => {
+    // Honest-capability invariant: the manifest only claims `actions: true`
+    // when there's at least one corresponding handler registered.
+    if (gmailManifest.capabilities.actions) {
+      const registered = listRegisteredHandlers().filter(
+        (h) => h.provider === "gmail",
+      );
+      expect(registered).toContainEqual({
+        provider: "gmail",
+        type: "send_email",
+      });
+    }
   });
 
   it("uses 6h health-check interval matching V1 Google cadence", () => {

@@ -1,3 +1,4 @@
+import { sendEmail } from "@/integrations/gmail/actions/sendEmail";
 import { sendChannelMessage } from "@/integrations/slack/actions/sendChannelMessage";
 import type { ActionHandler } from "./types";
 
@@ -18,6 +19,7 @@ interface HandlerEntry {
 
 const ALL_HANDLERS: ReadonlyArray<HandlerEntry> = [
   { provider: "slack", type: "send_channel_message", handler: sendChannelMessage },
+  { provider: "gmail", type: "send_email", handler: sendEmail },
 ];
 
 const byKey: ReadonlyMap<string, ActionHandler> = (() => {
