@@ -6,6 +6,11 @@ import {
 import { gmailManifest } from "./gmail/manifest";
 import { slackManifest } from "./slack/manifest";
 
+// Side-effect imports: each provider's trigger/handler modules self-register
+// with the polling + activation registries at module load. Adding a new
+// polling-trigger provider means adding its registration import here.
+import "./gmail/triggers/newEmail";
+
 /**
  * Aggregated provider registry.
  *

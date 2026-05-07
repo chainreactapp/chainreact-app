@@ -33,18 +33,18 @@ describe("gmail manifest", () => {
     expect(gmailManifest.accountIdField).toBe("email");
   });
 
-  it("declares honest capabilities post-Slice 2d (oauth + actions)", () => {
+  it("declares honest capabilities post-Slice 2e (oauth + actions + pollingTrigger)", () => {
     // Slice 2d shipped sendEmail handler → actions: true.
-    // pollingTrigger flips true in Slice 2e when newEmail trigger ships.
+    // Slice 2e shipped newEmail polling trigger → pollingTrigger: true.
     expect(gmailManifest.capabilities).toEqual({
       oauth: true,
       webhookTrigger: false,
-      pollingTrigger: false,
+      pollingTrigger: true,
       actions: true,
     });
     expect(providerSupports("gmail", "oauth")).toBe(true);
     expect(providerSupports("gmail", "actions")).toBe(true);
-    expect(providerSupports("gmail", "pollingTrigger")).toBe(false);
+    expect(providerSupports("gmail", "pollingTrigger")).toBe(true);
     expect(providerSupports("gmail", "webhookTrigger")).toBe(false);
   });
 

@@ -155,3 +155,58 @@ export async function listForDispatch(
   }
   return (data ?? []).map((r) => rowToRecord(r as TriggerResourcesRow));
 }
+
+/**
+ * Polling-cron path: called from `/api/cron/poll-triggers` with no user
+ * session. Returns every trigger_resources row whose JSONB `config`
+ * contains `pollingEnabled: true`.
+ *
+ * Slice 2e: V1 used the same `config @> {pollingEnabled: true}` filter
+ * (poll-triggers/route.ts:34); we keep the convention so the JSONB shape
+ * stays portable between V1 and V2 polling triggers.
+ *
+ * Workflow state gate is the caller's responsibility — the polling cron
+ * checks `workflows.state === 'active'` per row before dispatching, same
+ * pattern as the webhook dispatcher (V2 lifecycle deletes the row on
+ * disable, but the gate is belt-and-suspenders for the in-flight window).
+ */
+export async function listForPolling(): Promise<
+  readonly TriggerResourceRecord[]
+> {
+  const supabase = getServiceRoleClient(
+    "polling cron: list trigger_resources where config.pollingEnabled = true",
+  );
+  const { data, error } = await supabase
+    .from("trigger_resources")
+    .select("*")
+    .contains("config", { pollingEnabled: true });
+  if (error) {
+    throw new Error(`trigger_resources.listForPolling failed: ${error.message}`);
+  }
+  return (data ?? []).map((r) => rowToRecord(r as TriggerResourcesRow));
+}
+
+/**
+ * Polling-cron path: persist updated `config` JSONB back to a
+ * trigger_resources row. Slice 2e uses this to advance the historyId
+ * checkpoint and bump `polling.lastPolledAt` after each poll cycle.
+ *
+ * Service-role: runs from cron with no user session. The service-role
+ * write is bounded to a known row id (caller already authenticated the
+ * cron via `requireCronAuth`).
+ */
+export async function updateConfig(
+  id: string,
+  config: Record<string, unknown>,
+): Promise<void> {
+  const supabase = getServiceRoleClient(
+    `polling cron: updateConfig for trigger_resources ${id}`,
+  );
+  const { error } = await supabase
+    .from("trigger_resources")
+    .update({ config, last_renewed_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) {
+    throw new Error(`trigger_resources.updateConfig failed: ${error.message}`);
+  }
+}

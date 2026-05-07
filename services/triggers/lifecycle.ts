@@ -1,5 +1,7 @@
+import { getActiveForExecution } from "@/repositories/integrations";
 import * as triggerResourcesRepo from "@/repositories/triggerResources";
 import type { WorkflowRecord } from "@/repositories/workflows";
+import { findActivation } from "@/services/triggers/activationRegistry";
 
 /**
  * Trigger lifecycle service.
@@ -19,6 +21,14 @@ import type { WorkflowRecord } from "@/repositories/workflows";
  * subscriptions (Microsoft Graph, Stripe webhooks, etc.) extend this
  * service with provider-side API calls when their slice ships.
  *
+ * Slice 2e — activation hook seam: a (provider, eventType) may register an
+ * activation function via `activationRegistry`. When present, lifecycle
+ * calls it BEFORE the upsert and merges its returned partial config into
+ * the node's config. Polling triggers (Gmail new_email) use this to fetch
+ * the initial historyId snapshot — without it, the first poll establishes
+ * a baseline and silently drops events that arrived between activation
+ * and the first poll (V1 CLAUDE.md "first poll miss" bug).
+ *
  * Manual-only workflows (zero trigger nodes) are a no-op — registration
  * doesn't apply, but the precondition checks in services/triggers/
  * preconditions.ts still run.
@@ -33,13 +43,31 @@ export async function registerWorkflowTriggers(
   if (triggers.length === 0) return; // manual-only workflow
 
   for (const node of triggers) {
+    const activation = findActivation(node.provider, node.type);
+    let mergedConfig: Record<string, unknown> = { ...node.config };
+
+    if (activation) {
+      const integration = await getActiveForExecution(
+        workflow.userId,
+        node.provider,
+        null,
+      );
+      if (!integration) {
+        throw new Error(
+          `registerWorkflowTriggers: no active ${node.provider} integration for user ${workflow.userId}.`,
+        );
+      }
+      const patch = await activation({ node, integration });
+      mergedConfig = { ...mergedConfig, ...patch };
+    }
+
     await triggerResourcesRepo.upsert({
       workflowId: workflow.id,
       userId: workflow.userId,
       provider: node.provider,
       eventType: node.type,
       nodeId: node.id,
-      config: node.config,
+      config: mergedConfig,
       // accountId is resolved later via the user's integrations row when the
       // dispatcher needs it; storing null here keeps registration cheap and
       // avoids a stale account_id when the user reconnects with a new account.

@@ -4,10 +4,10 @@ import { ProviderManifestSchema, type ProviderManifest } from "@/contracts/integ
  * Gmail provider manifest.
  *
  * Capability flags reflect honest current state — they flip true only
- * when a real handler/trigger is registered. As of Slice 2d, `actions`
- * is `true` (sendEmail handler shipped); `pollingTrigger` flips true
- * in Slice 2e when newEmail trigger ships. This convention keeps the
- * manifest from advertising capabilities that don't exist.
+ * when a real handler/trigger is registered. As of Slice 2e, both
+ * `actions` (sendEmail, Slice 2d) and `pollingTrigger` (newEmail,
+ * Slice 2e) are `true`. This convention keeps the manifest from
+ * advertising capabilities that don't exist.
  *
  * OAuth shape (via integrations/gmail/oauth.ts):
  *   - PKCE S256 (Slice 2a infra; Gmail is the first real consumer).
@@ -53,7 +53,7 @@ export const gmailManifest: ProviderManifest = ProviderManifestSchema.parse({
   capabilities: {
     oauth: true,
     webhookTrigger: false,
-    pollingTrigger: false, // flips true in Slice 2e when newEmail trigger ships
+    pollingTrigger: true, // Slice 2e: newEmail polling trigger shipped + registered
     actions: true, // Slice 2d: sendEmail handler shipped + registered
   },
   healthCheckIntervalMs: 6 * 60 * 60 * 1000, // 6h
