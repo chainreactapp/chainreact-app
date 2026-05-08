@@ -1,0 +1,71 @@
+name: CI
+
+# Slice 2-OPS: minimal non-e2e CI gate. Runs on every PR targeting
+# v2-foundation and on every push that lands on v2-foundation.
+#
+# Scope (intentionally non-e2e):
+#   - Type-check (npx tsc --noEmit)
+#   - ESLint (npm run lint)
+#   - Structural lint (npm run lint:structure) — ≤50 files per leaf folder
+#   - Migration lint (npm run lint:migrations) — RLS on user-data tables
+#   - Unit + structural Jest (npm test) — currently 91 suites / 811 tests
+#
+# Playwright e2e is intentionally NOT in this workflow. The e2e specs
+# (slice-1-slack-walkthrough.spec.ts, slice-2f-gmail-walkthrough.spec.ts)
+# require a real Supabase project for createTestUser + DB asserts; pointing
+# CI at production is unsafe, and a dedicated test Supabase project
+# doesn't exist yet. When that project lands, e2e gets its own workflow
+# job with the secrets enumerated in docs/ops/cron-wiring.md (the parent
+# OPS doc) — NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
+# SLACK_SIGNING_SECRET, CRON_SECRET, GOOGLE_CLIENT_ID,
+# GOOGLE_CLIENT_SECRET, TOKEN_ENCRYPTION_KEY, OAUTH_STATE_SIGNING_KEY.
+
+on:
+  pull_request:
+    branches:
+      - v2-foundation
+  push:
+    branches:
+      - v2-foundation
+
+concurrency:
+  # One CI run per branch; new pushes cancel in-flight runs to save minutes.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: typecheck + lint + jest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          # Matches local dev (v22.20.0 at time of writing). The repo has
+          # no .nvmrc; pinning to 22.x here keeps CI deterministic without
+          # forcing an .nvmrc on every contributor.
+          node-version: 22.x
+          cache: npm
+
+      - name: Install (npm ci)
+        run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Lint (eslint)
+        run: npm run lint
+
+      - name: Lint structure (≤50 files per leaf folder)
+        run: npm run lint:structure
+
+      - name: Lint migrations (RLS on user-data tables)
+        run: npm run lint:migrations
+
+      - name: Jest (unit + structural)
+        run: npm test
