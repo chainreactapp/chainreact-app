@@ -105,6 +105,81 @@ export async function getNotificationsForUser(
 }
 
 /**
+ * Slice 2f: read trigger_resources rows for the test user. Used to
+ * assert the activation hook populated `config.snapshot.historyId` and
+ * that the polling cycle advanced the cursor + bumped lastPolledAt.
+ */
+export async function getTriggerResourcesForUser(
+  userId: string,
+): Promise<readonly Record<string, unknown>[]> {
+  const { data, error } = await adminClient()
+    .from("trigger_resources")
+    .select("*")
+    .eq("user_id", userId);
+  if (error) throw new Error(`getTriggerResourcesForUser: ${error.message}`);
+  return data ?? [];
+}
+
+/**
+ * Slice 2f: read a single webhook_event_dedup row by (provider, event_id).
+ * Used to assert dedup actually wrote on the first poll AND that the
+ * row is what blocks the duplicate run on the second poll. Returns null
+ * when no row matches. System table — service-role only.
+ */
+export async function getDedupRow(
+  provider: string,
+  eventId: string,
+): Promise<Record<string, unknown> | null> {
+  const { data, error } = await adminClient()
+    .from("webhook_event_dedup")
+    .select("*")
+    .eq("provider", provider)
+    .eq("event_id", eventId)
+    .maybeSingle();
+  if (error) throw new Error(`getDedupRow: ${error.message}`);
+  return data ?? null;
+}
+
+/**
+ * Slice 2f: rewind a trigger_resources row's `config.polling.lastPolledAt`
+ * to a long-past timestamp so the polling scheduler's interval gate
+ * (5-minute default in Slice 2e) doesn't skip the next cron tick.
+ *
+ * Used by the dedup probe — between polls we need to simulate "enough
+ * time has passed to poll again" without sleeping for 5 minutes. The
+ * scheduler reads `config.polling.lastPolledAt` directly, so we just
+ * write a value far enough in the past.
+ *
+ * Service-role: writes a single known row id; the test runner has
+ * already authenticated the user, but the polling cron code path uses
+ * service-role too.
+ */
+export async function rewindTriggerPollingTimestamp(
+  triggerResourceId: string,
+): Promise<void> {
+  const long_ago = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  // Read current config so we update only the polling slice without
+  // accidentally clearing snapshot / other keys.
+  const { data, error: readErr } = await adminClient()
+    .from("trigger_resources")
+    .select("config")
+    .eq("id", triggerResourceId)
+    .single();
+  if (readErr) throw new Error(`rewindTriggerPollingTimestamp read: ${readErr.message}`);
+  const config = (data.config ?? {}) as Record<string, unknown>;
+  const polling = (config.polling ?? {}) as Record<string, unknown>;
+  const newConfig = {
+    ...config,
+    polling: { ...polling, lastPolledAt: long_ago },
+  };
+  const { error } = await adminClient()
+    .from("trigger_resources")
+    .update({ config: newConfig })
+    .eq("id", triggerResourceId);
+  if (error) throw new Error(`rewindTriggerPollingTimestamp write: ${error.message}`);
+}
+
+/**
  * Poll until the predicate returns truthy or timeout. The execution engine
  * runs in a fire-and-forget Promise after the webhook returns 200, so the
  * test must wait for the workflow_runs row to appear.

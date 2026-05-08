@@ -5,31 +5,45 @@ import {
   startMockSlackServer,
   type MockSlackHandle,
 } from "./helpers/mockSlackServer";
+import {
+  startMockGoogleServer,
+  type MockGoogleHandle,
+} from "./helpers/mockGoogleServer";
 
 /**
  * Playwright global setup.
  *
- * Boots the mock Slack server before any tests run. Writes the resolved
- * base URL to a state file so individual specs can read it without
- * cross-process plumbing (Playwright's globalSetup return value isn't
- * accessible from spec files in the same way).
+ * Boots the mock Slack + Google servers before any tests run. Writes each
+ * resolved base URL to its own state file so individual specs can read
+ * them without cross-process plumbing (Playwright's globalSetup return
+ * value isn't accessible from spec files in the same way).
  *
- * The dev server (started via webServer in playwright.config.ts) already
- * has SLACK_API_BASE / SLACK_AUTHORIZE_BASE env vars set in the config,
- * pointing at this same mock URL — that's what makes V2's server-side
- * Slack calls land on the mock.
+ * The dev server (started via webServer in playwright.config.ts) has
+ * SLACK_API_BASE / SLACK_AUTHORIZE_BASE / GMAIL_API_BASE /
+ * GOOGLE_AUTHORIZE_BASE / GOOGLE_TOKEN_BASE env vars pointing at these
+ * same mock URLs — that's what makes V2's server-side calls land on the
+ * mocks.
  *
- * Module-level handle: held in a module-scoped variable for global-teardown
- * to reach. Playwright invokes both setup + teardown in the same Node
- * process, so module state survives.
+ * Module-level handles: held in module-scoped variables for
+ * global-teardown to reach. Playwright invokes both setup + teardown in
+ * the same Node process, so module state survives.
  */
 
-let handle: MockSlackHandle | null = null;
+let slackHandle: MockSlackHandle | null = null;
+let googleHandle: MockGoogleHandle | null = null;
 
 export const STATE_FILE = resolve(__dirname, ".state/mock-slack.json");
+export const GOOGLE_STATE_FILE = resolve(
+  __dirname,
+  ".state/mock-google.json",
+);
 
 export function getMockHandle(): MockSlackHandle | null {
-  return handle;
+  return slackHandle;
+}
+
+export function getGoogleMockHandle(): MockGoogleHandle | null {
+  return googleHandle;
 }
 
 /**
@@ -57,6 +71,11 @@ const SPEC_PROCESS_ENV_KEYS = [
   "NEXT_PUBLIC_SUPABASE_URL",
   "SUPABASE_SERVICE_ROLE_KEY",
   "SLACK_SIGNING_SECRET",
+  // Slice 2f: the spec POSTs to /api/cron/poll-triggers with
+  // `Authorization: Bearer $CRON_SECRET`. The dev server reads
+  // CRON_SECRET from .env.local automatically; the spec process needs
+  // it lifted explicitly.
+  "CRON_SECRET",
 ];
 
 function loadDotEnvLocal(): void {
@@ -86,21 +105,44 @@ export default async function globalSetup(): Promise<void> {
   // Match playwright.config.ts E2E_PORT default.
   const e2ePort = Number(process.env.E2E_PORT ?? "3001");
   const appBaseUrl = `http://localhost:${e2ePort}`;
-  const port = Number(process.env.SLACK_MOCK_PORT ?? "9876");
-  handle = await startMockSlackServer({ appBaseUrl, port });
+
+  const slackPort = Number(process.env.SLACK_MOCK_PORT ?? "9876");
+  slackHandle = await startMockSlackServer({ appBaseUrl, port: slackPort });
   await mkdir(dirname(STATE_FILE), { recursive: true });
   await writeFile(
     STATE_FILE,
-    JSON.stringify({ port, baseUrl: handle.baseUrl, appBaseUrl }),
+    JSON.stringify({
+      port: slackPort,
+      baseUrl: slackHandle.baseUrl,
+      appBaseUrl,
+    }),
     "utf8",
   );
   console.log(
-    `[e2e] mock Slack listening at ${handle.baseUrl} (V2 callbacks land on ${appBaseUrl})`,
+    `[e2e] mock Slack listening at ${slackHandle.baseUrl} (V2 callbacks land on ${appBaseUrl})`,
+  );
+
+  const googlePort = Number(process.env.GMAIL_MOCK_PORT ?? "9877");
+  googleHandle = await startMockGoogleServer({
+    appBaseUrl,
+    port: googlePort,
+  });
+  await writeFile(
+    GOOGLE_STATE_FILE,
+    JSON.stringify({
+      port: googlePort,
+      baseUrl: googleHandle.baseUrl,
+      appBaseUrl,
+    }),
+    "utf8",
+  );
+  console.log(
+    `[e2e] mock Google listening at ${googleHandle.baseUrl} (V2 callbacks land on ${appBaseUrl})`,
   );
 }
 
 /**
- * Spec-side helper to read the mock URL written by global-setup.
+ * Spec-side helper to read the Slack mock URL written by global-setup.
  * Specs that need to assert on the mock's recorded calls go through the
  * shared `getMockHandle()` import — it's the same module instance because
  * Jest/Playwright isolates per-process, not per-import.
@@ -111,6 +153,19 @@ export async function readMockState(): Promise<{
   appBaseUrl: string;
 }> {
   const raw = await readFile(STATE_FILE, "utf8");
+  return JSON.parse(raw) as {
+    port: number;
+    baseUrl: string;
+    appBaseUrl: string;
+  };
+}
+
+export async function readGoogleMockState(): Promise<{
+  port: number;
+  baseUrl: string;
+  appBaseUrl: string;
+}> {
+  const raw = await readFile(GOOGLE_STATE_FILE, "utf8");
   return JSON.parse(raw) as {
     port: number;
     baseUrl: string;

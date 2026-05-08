@@ -1,5 +1,6 @@
 import { refreshAndRetry } from "@/services/oauth/refreshAndRetry";
 import { enqueueRun } from "@/services/execution/enqueue";
+import { getActiveForExecution } from "@/repositories/integrations";
 import * as triggerResourcesRepo from "@/repositories/triggerResources";
 import type { PollingHandler } from "@/services/triggers/pollingRegistry";
 import { DEFAULT_INTERVAL_MS } from "@/services/cron/pollingIntervals";
@@ -67,6 +68,32 @@ async function poll(input: {
     return;
   }
 
+  // Resolve the integration's email up-front. trigger_resources.account_id
+  // is intentionally NULL per services/triggers/lifecycle.ts — the design
+  // is "account_id resolved on-demand" so that account swaps don't leave
+  // stale rows. Webhook dispatchers read it from the inbound payload;
+  // polling reads it here, once per cycle. The resolved email becomes
+  // both TriggerEvent.accountId (so action handlers can target the right
+  // inbox) AND the explicit accountId on refreshAndRetry calls (avoids
+  // the multi-account ambiguity case).
+  const integration = await getActiveForExecution(
+    trigger.userId,
+    "gmail",
+    null,
+  );
+  if (!integration) {
+    console.warn(
+      JSON.stringify({
+        event: "gmail.poll.no_integration",
+        triggerId: trigger.id,
+        workflowId: trigger.workflowId,
+        userId: trigger.userId,
+      }),
+    );
+    return;
+  }
+  const accountId = integration.providerAccountId;
+
   let cursor = config.snapshot.historyId;
 
   // Walk all pages. Page through with nextPageToken until exhausted.
@@ -81,7 +108,7 @@ async function poll(input: {
       page = await refreshAndRetry({
         userId: trigger.userId,
         provider: "gmail",
-        accountId: trigger.accountId,
+        accountId,
         apiCall: async (accessToken) =>
           usersHistoryList({
             accessToken,
@@ -96,7 +123,7 @@ async function poll(input: {
         const profile = await refreshAndRetry({
           userId: trigger.userId,
           provider: "gmail",
-          accountId: trigger.accountId,
+          accountId,
           apiCall: async (accessToken) => usersGetProfile({ accessToken }),
         });
         console.warn(
@@ -131,7 +158,7 @@ async function poll(input: {
   if (!cursorReset) {
     for (const messageId of uniqueIds) {
       try {
-        await processOneMessage({ trigger, messageId });
+        await processOneMessage({ trigger, accountId, messageId });
       } catch (err) {
         console.warn(
           JSON.stringify({
@@ -169,9 +196,10 @@ async function poll(input: {
 
 async function processOneMessage(input: {
   trigger: import("@/repositories/triggerResources").TriggerResourceRecord;
+  accountId: string;
   messageId: string;
 }): Promise<void> {
-  const { trigger, messageId } = input;
+  const { trigger, accountId, messageId } = input;
   const config = GmailNewEmailConfigSchema.parse(trigger.config);
 
   const dedupOutcome = await checkAndMarkSeen(messageId);
@@ -181,14 +209,14 @@ async function processOneMessage(input: {
   const message = await refreshAndRetry({
     userId: trigger.userId,
     provider: "gmail",
-    accountId: trigger.accountId,
+    accountId,
     apiCall: async (accessToken) => usersMessagesGet({ accessToken, messageId }),
   });
 
   if (!matchesFilters(message, config)) return;
 
   const event = buildTriggerEvent({
-    emailAddress: trigger.accountId ?? "",
+    emailAddress: accountId,
     message,
   });
 
