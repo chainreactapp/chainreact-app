@@ -2,6 +2,12 @@ import { getActiveForExecution } from "@/repositories/integrations";
 import * as triggerResourcesRepo from "@/repositories/triggerResources";
 import type { WorkflowRecord } from "@/repositories/workflows";
 import { findActivation } from "@/services/triggers/activationRegistry";
+// Side-effect import: forces provider activation/polling-handler
+// registrations at module load. Without this, an activate API request
+// that loads the orchestrator → lifecycle module graph in isolation
+// would see an empty activation registry and skip the snapshot init.
+// (Slice 2f bug — surfaced first by the Gmail e2e walkthrough.)
+import "@/integrations/_registry";
 
 /**
  * Trigger lifecycle service.
