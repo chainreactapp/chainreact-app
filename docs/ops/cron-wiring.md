@@ -1,9 +1,9 @@
 # Cron wiring for `/api/cron/poll-triggers`
 
-**Status:** deferred. `vercel.json` is intentionally **not** committed yet.
-
-This note exists so the wiring is one config-file copy away from being
-applied, the moment the prerequisites (below) are confirmed.
+**Status:** implemented on `slice-2-ops-vercel-cron`. The `vercel.json`
+snippet below is now committed at the repo root. Prerequisites (Vercel
+plan + `CRON_SECRET`) must still be verified in the Vercel dashboard
+before the deploy is healthy.
 
 ---
 
